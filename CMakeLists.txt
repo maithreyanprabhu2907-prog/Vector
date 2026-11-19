@@ -49,29 +49,37 @@ target_include_directories(vec_math
 # downstream projects that consume vec_math via FetchContent/add_subdirectory).
 
 option(VEC_MATH_BUILD_TESTS "Build vec_math unit and zero-malloc tests" ${PROJECT_IS_TOP_LEVEL})
-
-
+option(VEC_MATH_BUILD_BENCHMARKS "Build vec_math performance benchmarks" ${PROJECT_IS_TOP_LEVEL})
 
 if(VEC_MATH_BUILD_TESTS)
-
     enable_testing()
-
     add_executable(vector_math_test tests/vector_math_test.cpp)
-
     target_link_libraries(vector_math_test PRIVATE vec_math::vec_math)
-
     if(MSVC)
-
         target_compile_options(vector_math_test PRIVATE /W4 /WX)
-
     else()
-
         target_compile_options(vector_math_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
-
     endif()
-
     add_test(NAME vector_math_test COMMAND vector_math_test)
+endif()
 
+if(VEC_MATH_BUILD_BENCHMARKS)
+    add_executable(benchmark benchmarks/benchmark.cpp)
+    target_link_libraries(benchmark PRIVATE vec_math::vec_math)
+    if(MSVC)
+        target_compile_options(benchmark PRIVATE
+            $<$<CONFIG:Release>:/O2>
+            /arch:AVX2
+            /W4
+        )
+    else()
+        target_compile_options(benchmark PRIVATE
+            $<$<CONFIG:Release>:-O3>
+            -mavx2
+            -Wall
+            -Wextra
+        )
+    endif()
 endif()
 
 
