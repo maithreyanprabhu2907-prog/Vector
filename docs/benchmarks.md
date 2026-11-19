@@ -30,11 +30,11 @@ The benchmark suite is implemented in [`benchmarks/benchmark.cpp`](../benchmarks
 
 | Vector Size | Naive `std::vector` Latency | `vec_math` Latency | Speedup vs Naive | Throughput (GFLOPS) | Memory Bandwidth | Heap Allocs |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1K** | 2.47 µs | **0.39 µs** | **6.31x** | 12.77 GFLOPS | 81.71 GB/s | **0 allocs (0 B)** |
-| **10K** | 148.53 µs | **4.28 µs** | **34.67x** | 11.67 GFLOPS | 74.69 GB/s | **0 allocs (0 B)** |
-| **100K** | 1.13 ms | **44.09 µs** | **25.52x** | 11.34 GFLOPS | 72.58 GB/s | **0 allocs (0 B)** |
-| **1M** | 10.81 ms | **893.65 µs** | **12.09x** | 5.60 GFLOPS | 35.81 GB/s | **0 allocs (0 B)** |
-| **5M** | 49.19 ms | **5.88 ms** | **8.36x** | 4.25 GFLOPS | 27.20 GB/s | **0 allocs (0 B)** |
+| **1K** | 2.31 µs | **0.11 µs** | **20.19x** | 43.71 GFLOPS | 279.74 GB/s | **0 allocs (0 B)** |
+| **10K** | 146.99 µs | **2.37 µs** | **61.98x** | 21.08 GFLOPS | 134.92 GB/s | **0 allocs (0 B)** |
+| **100K** | 1.01 ms | **29.73 µs** | **33.90x** | 16.82 GFLOPS | 107.64 GB/s | **0 allocs (0 B)** |
+| **1M** | 10.19 ms | **847.18 µs** | **12.03x** | 5.90 GFLOPS | 37.77 GB/s | **0 allocs (0 B)** |
+| **5M** | 48.85 ms | **5.59 ms** | **8.74x** | 4.47 GFLOPS | 28.63 GB/s | **0 allocs (0 B)** |
 
 > **Allocation Contrast**: Naive `std::vector` performed **5 heap allocations (39 KB to 190 MB)** per evaluation. `vec_math` performed strictly **0 allocations (0 bytes)** across all scales.
 
@@ -46,9 +46,9 @@ Reductions were benchmarked with 1,000,000 double-precision elements:
 
 | Operation | Baseline | `vec_math` Implementation | Baseline Time | `vec_math` Time | Speedup | Throughput |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Dot Product** | `std::inner_product` | `vec_math::dot` (8x unrolled tree) | 12.98 ms | **14.03 ms** | **0.93x** | 7.13 GFLOPS |
-| **Sum** | `std::accumulate` | `vec_math::sum` (8x unrolled tree) | 4.80 ms | **4.77 ms** | **1.01x** | 10.47 GFLOPS |
-| **FMA** | Scalar loop ($a \cdot b + c$) | `vec_math::fma` (ternary AST) | 30.99 ms | **38.35 ms** | **0.81x** | 2.61 GFLOPS |
+| **Dot Product** | `std::inner_product` | `vec_math::dot` (SIMD FMA) | 14.43 ms | **11.45 ms** | **1.26x** | 8.73 GFLOPS |
+| **Sum** | `std::accumulate` | `vec_math::sum` (SIMD tree) | 5.80 ms | **4.55 ms** | **1.28x** | 11.00 GFLOPS |
+| **FMA** | Scalar loop ($a \cdot b + c$) | `vec_math::fma` (ternary AST) | 30.24 ms | **36.42 ms** | **0.83x** | 2.75 GFLOPS |
 
 ---
 
@@ -56,7 +56,7 @@ Reductions were benchmarked with 1,000,000 double-precision elements:
 
 Building with `-Ofast` (or MSVC `/fp:fast /O2 /arch:AVX2`) activates aggressive microarchitectural compiler transformations:
 1. **Hardware FMA Generation**: Fuses multiplications and additions into single-cycle hardware `vfmadd213pd` / `vfmadd231pd` vector instructions.
-2. **Associative Math Transformations**: Enables algebraic reassociation across `vec_math`'s 8-way unrolled reduction trees, saturating CPU execution units.
+2. **Associative Math Transformations**: Enables algebraic reassociation across `vec_math`'s vector reduction loops, saturating CPU execution units.
 3. **Removal of IEEE-754 Serialization Barriers**: Bypasses costly NaN/subnormal checks and strict IEEE serialization fences.
 
 ---
@@ -68,10 +68,10 @@ Building with `-Ofast` (or MSVC `/fp:fast /O2 /arch:AVX2`) activates aggressive 
 xychart-beta
     title "Compute Throughput (GFLOPS) across Vector Sizes"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "GFLOPS (Higher is better)" 0 --> 61
-    line [2.02, 0.34, 0.44, 0.46, 0.51]
-    line [52.63, 21.13, 14.74, 6.11, 4.33]
-    line [12.77, 11.67, 11.34, 5.60, 4.25]
+    y-axis "GFLOPS (Higher is better)" 0 --> 60
+    line [2.17, 0.34, 0.50, 0.49, 0.51]
+    line [52.03, 21.06, 16.19, 5.86, 4.39]
+    line [43.71, 21.08, 16.82, 5.90, 4.47]
 ```
 *(Line 1: Naive `std::vector` | Line 2: Hand-written Scalar Loop | Line 3: `vec_math` Expression Templates)*
 
@@ -80,9 +80,9 @@ xychart-beta
 xychart-beta
     title "Speedup Factor Relative to Naive std::vector (x-fold)"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "Speedup Factor (x)" 0 --> 73
-    line [26.01, 62.78, 33.18, 13.20, 8.51]
-    line [6.31, 34.67, 25.52, 12.09, 8.36]
+    y-axis "Speedup Factor (x)" 0 --> 72
+    line [24.03, 61.90, 32.63, 11.95, 8.57]
+    line [20.19, 61.98, 33.90, 12.03, 8.74]
 ```
 *(Line 1: Hand-written Scalar Loop | Line 2: `vec_math` Expression Templates)*
 

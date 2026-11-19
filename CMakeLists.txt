@@ -67,6 +67,7 @@ if(VEC_MATH_BUILD_BENCHMARKS)
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:/O2>
             $<$<CONFIG:Release>:/fp:fast>
+            $<$<CONFIG:Release>:/openmp>
             /arch:AVX2
             /W4
         )
@@ -74,6 +75,7 @@ if(VEC_MATH_BUILD_BENCHMARKS)
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:-Ofast>
             -mavx2
+            -fopenmp
             -Wall
             -Wextra
         )

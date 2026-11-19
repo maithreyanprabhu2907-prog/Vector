@@ -63,10 +63,13 @@
 
 #if defined(_MSC_VER)
 #define VEC_MATH_FORCE_INLINE __forceinline
+#define VEC_MATH_NOINLINE __declspec(noinline)
 #elif defined(__GNUC__) || defined(__clang__)
 #define VEC_MATH_FORCE_INLINE inline __attribute__((always_inline))
+#define VEC_MATH_NOINLINE __attribute__((noinline))
 #else
 #define VEC_MATH_FORCE_INLINE inline
+#define VEC_MATH_NOINLINE
 #endif
 
 #define VEC_MATH_HD_INLINE VEC_MATH_HOST_DEVICE VEC_MATH_FORCE_INLINE
@@ -307,27 +310,8 @@ namespace vec_math {
                 const std::size_t n = result.size();
                 value_type * VEC_MATH_RESTRICT dst = result.data();
 
-                std::size_t i = 0;
-                const std::size_t n8 = n & ~std::size_t(7);
                 VEC_MATH_PRAGMA_SIMD
-                for (; i < n8; i += 8) {
-                    dst[i + 0] = (*this)[i + 0];
-                    dst[i + 1] = (*this)[i + 1];
-                    dst[i + 2] = (*this)[i + 2];
-                    dst[i + 3] = (*this)[i + 3];
-                    dst[i + 4] = (*this)[i + 4];
-                    dst[i + 5] = (*this)[i + 5];
-                    dst[i + 6] = (*this)[i + 6];
-                    dst[i + 7] = (*this)[i + 7];
-                }
-                const std::size_t n4 = n & ~std::size_t(3);
-                for (; i < n4; i += 4) {
-                    dst[i + 0] = (*this)[i + 0];
-                    dst[i + 1] = (*this)[i + 1];
-                    dst[i + 2] = (*this)[i + 2];
-                    dst[i + 3] = (*this)[i + 3];
-                }
-                for (; i < n; ++i) { dst[i] = (*this)[i]; }
+                for (std::size_t i = 0; i < n; ++i) { dst[i] = (*this)[i]; }
                 return result;
             }
 
@@ -362,27 +346,8 @@ namespace vec_math {
                 const std::size_t n = result.size();
                 value_type * VEC_MATH_RESTRICT dst = result.data();
 
-                std::size_t i = 0;
-                const std::size_t n8 = n & ~std::size_t(7);
                 VEC_MATH_PRAGMA_SIMD
-                for (; i < n8; i += 8) {
-                    dst[i + 0] = (*this)[i + 0];
-                    dst[i + 1] = (*this)[i + 1];
-                    dst[i + 2] = (*this)[i + 2];
-                    dst[i + 3] = (*this)[i + 3];
-                    dst[i + 4] = (*this)[i + 4];
-                    dst[i + 5] = (*this)[i + 5];
-                    dst[i + 6] = (*this)[i + 6];
-                    dst[i + 7] = (*this)[i + 7];
-                }
-                const std::size_t n4 = n & ~std::size_t(3);
-                for (; i < n4; i += 4) {
-                    dst[i + 0] = (*this)[i + 0];
-                    dst[i + 1] = (*this)[i + 1];
-                    dst[i + 2] = (*this)[i + 2];
-                    dst[i + 3] = (*this)[i + 3];
-                }
-                for (; i < n; ++i) { dst[i] = (*this)[i]; }
+                for (std::size_t i = 0; i < n; ++i) { dst[i] = (*this)[i]; }
                 return result;
             }
 
@@ -446,27 +411,8 @@ namespace vec_math {
                 const std::size_t n = result.size();
                 value_type * VEC_MATH_RESTRICT dst = result.data();
 
-                std::size_t i = 0;
-                const std::size_t n8 = n & ~std::size_t(7);
                 VEC_MATH_PRAGMA_SIMD
-                for (; i < n8; i += 8) {
-                    dst[i + 0] = (*this)[i + 0];
-                    dst[i + 1] = (*this)[i + 1];
-                    dst[i + 2] = (*this)[i + 2];
-                    dst[i + 3] = (*this)[i + 3];
-                    dst[i + 4] = (*this)[i + 4];
-                    dst[i + 5] = (*this)[i + 5];
-                    dst[i + 6] = (*this)[i + 6];
-                    dst[i + 7] = (*this)[i + 7];
-                }
-                const std::size_t n4 = n & ~std::size_t(3);
-                for (; i < n4; i += 4) {
-                    dst[i + 0] = (*this)[i + 0];
-                    dst[i + 1] = (*this)[i + 1];
-                    dst[i + 2] = (*this)[i + 2];
-                    dst[i + 3] = (*this)[i + 3];
-                }
-                for (; i < n; ++i) { dst[i] = (*this)[i]; }
+                for (std::size_t i = 0; i < n; ++i) { dst[i] = (*this)[i]; }
                 return result;
             }
 
@@ -493,27 +439,8 @@ namespace vec_math {
             T * VEC_MATH_RESTRICT p = dst.data();
             const T s = static_cast<T>(scalar);
 
-            std::size_t i = 0;
-            const std::size_t n8 = n & ~std::size_t(7);
             VEC_MATH_PRAGMA_SIMD
-            for (; i < n8; i += 8) {
-                fn(p[i + 0], s);
-                fn(p[i + 1], s);
-                fn(p[i + 2], s);
-                fn(p[i + 3], s);
-                fn(p[i + 4], s);
-                fn(p[i + 5], s);
-                fn(p[i + 6], s);
-                fn(p[i + 7], s);
-            }
-            const std::size_t n4 = n & ~std::size_t(3);
-            for (; i < n4; i += 4) {
-                fn(p[i + 0], s);
-                fn(p[i + 1], s);
-                fn(p[i + 2], s);
-                fn(p[i + 3], s);
-            }
-            for (; i < n; ++i) { fn(p[i], s); }
+            for (std::size_t i = 0; i < n; ++i) { fn(p[i], s); }
         }
 
         template<typename T, typename Alloc, VectorOperand Src, typename CompoundFn>
@@ -526,27 +453,8 @@ namespace vec_math {
             T * VEC_MATH_RESTRICT p = dst.data();
             auto storage = make_operand(src);
 
-            std::size_t i = 0;
-            const std::size_t n8 = n & ~std::size_t(7);
             VEC_MATH_PRAGMA_SIMD
-            for (; i < n8; i += 8) {
-                fn(p[i + 0], static_cast<T>(storage[i + 0]));
-                fn(p[i + 1], static_cast<T>(storage[i + 1]));
-                fn(p[i + 2], static_cast<T>(storage[i + 2]));
-                fn(p[i + 3], static_cast<T>(storage[i + 3]));
-                fn(p[i + 4], static_cast<T>(storage[i + 4]));
-                fn(p[i + 5], static_cast<T>(storage[i + 5]));
-                fn(p[i + 6], static_cast<T>(storage[i + 6]));
-                fn(p[i + 7], static_cast<T>(storage[i + 7]));
-            }
-            const std::size_t n4 = n & ~std::size_t(3);
-            for (; i < n4; i += 4) {
-                fn(p[i + 0], static_cast<T>(storage[i + 0]));
-                fn(p[i + 1], static_cast<T>(storage[i + 1]));
-                fn(p[i + 2], static_cast<T>(storage[i + 2]));
-                fn(p[i + 3], static_cast<T>(storage[i + 3]));
-            }
-            for (; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
+            for (std::size_t i = 0; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
         }
 
         template<typename T, typename Alloc, VectorOperand Src>
@@ -562,27 +470,8 @@ namespace vec_math {
             T * VEC_MATH_RESTRICT p = dst.data();
             auto storage = make_operand(src);
 
-            std::size_t i = 0;
-            const std::size_t n8 = n & ~std::size_t(7);
             VEC_MATH_PRAGMA_SIMD
-            for (; i < n8; i += 8) {
-                p[i + 0] = static_cast<T>(storage[i + 0]);
-                p[i + 1] = static_cast<T>(storage[i + 1]);
-                p[i + 2] = static_cast<T>(storage[i + 2]);
-                p[i + 3] = static_cast<T>(storage[i + 3]);
-                p[i + 4] = static_cast<T>(storage[i + 4]);
-                p[i + 5] = static_cast<T>(storage[i + 5]);
-                p[i + 6] = static_cast<T>(storage[i + 6]);
-                p[i + 7] = static_cast<T>(storage[i + 7]);
-            }
-            const std::size_t n4 = n & ~std::size_t(3);
-            for (; i < n4; i += 4) {
-                p[i + 0] = static_cast<T>(storage[i + 0]);
-                p[i + 1] = static_cast<T>(storage[i + 1]);
-                p[i + 2] = static_cast<T>(storage[i + 2]);
-                p[i + 3] = static_cast<T>(storage[i + 3]);
-            }
-            for (; i < n; ++i) { p[i] = static_cast<T>(storage[i]); }
+            for (std::size_t i = 0; i < n; ++i) { p[i] = static_cast<T>(storage[i]); }
         }
     }
 
@@ -723,16 +612,8 @@ namespace vec_math {
         [[nodiscard]] inline std::vector<T, Alloc> operator-(std::vector<T, Alloc> &&v) noexcept {
             const std::size_t n = v.size();
             T * VEC_MATH_RESTRICT p = v.data();
-            std::size_t i = 0;
-            const std::size_t n4 = n & ~std::size_t(3);
             VEC_MATH_PRAGMA_SIMD
-            for (; i < n4; i += 4) {
-                p[i + 0] = -p[i + 0];
-                p[i + 1] = -p[i + 1];
-                p[i + 2] = -p[i + 2];
-                p[i + 3] = -p[i + 3];
-            }
-            for (; i < n; ++i) { p[i] = -p[i]; }
+            for (std::size_t i = 0; i < n; ++i) { p[i] = -p[i]; }
             return std::move(v);
         }
 
@@ -930,7 +811,10 @@ namespace vec_math {
         );
     }
 
-    // sum: 8x unrolled reduction with 8 accumulators for maximum IPC
+    namespace detail {
+    }
+
+    // sum: reduction with SIMD auto-vectorization
     template<VectorOperand Op>
     [[nodiscard]] constexpr auto sum(const Op &op_in) {
         auto op = detail::make_operand(op_in);
@@ -938,43 +822,15 @@ namespace vec_math {
         const std::size_t n = op.size();
         if (n == 0) { return value_type{0}; }
 
-        value_type acc0{0};
-        value_type acc1{0};
-        value_type acc2{0};
-        value_type acc3{0};
-        value_type acc4{0};
-        value_type acc5{0};
-        value_type acc6{0};
-        value_type acc7{0};
-
-        std::size_t i = 0;
-        const std::size_t n8 = n & ~std::size_t(7);
+        value_type total{0};
         VEC_MATH_PRAGMA_SIMD
-        for (; i < n8; i += 8) {
-            acc0 = acc0 + static_cast<value_type>(op[i + 0]);
-            acc1 = acc1 + static_cast<value_type>(op[i + 1]);
-            acc2 = acc2 + static_cast<value_type>(op[i + 2]);
-            acc3 = acc3 + static_cast<value_type>(op[i + 3]);
-            acc4 = acc4 + static_cast<value_type>(op[i + 4]);
-            acc5 = acc5 + static_cast<value_type>(op[i + 5]);
-            acc6 = acc6 + static_cast<value_type>(op[i + 6]);
-            acc7 = acc7 + static_cast<value_type>(op[i + 7]);
-        }
-        const std::size_t n4 = n & ~std::size_t(3);
-        for (; i < n4; i += 4) {
-            acc0 = acc0 + static_cast<value_type>(op[i + 0]);
-            acc1 = acc1 + static_cast<value_type>(op[i + 1]);
-            acc2 = acc2 + static_cast<value_type>(op[i + 2]);
-            acc3 = acc3 + static_cast<value_type>(op[i + 3]);
-        }
-        value_type total = ((acc0 + acc1) + (acc2 + acc3)) + ((acc4 + acc5) + (acc6 + acc7));
-        for (; i < n; ++i) {
+        for (std::size_t i = 0; i < n; ++i) {
             total = total + static_cast<value_type>(op[i]);
         }
         return total;
     }
 
-    // dot: 8x unrolled dot product with 8 accumulators for maximum IPC
+    // dot: dot product with SIMD auto-vectorization and FMA
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] constexpr auto dot(const Lhs &lhs_in, const Rhs &rhs_in) {
         if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
@@ -989,37 +845,9 @@ namespace vec_math {
         const std::size_t n = lhs_in.size();
         if (n == 0) { return ResType{0}; }
 
-        ResType acc0{0};
-        ResType acc1{0};
-        ResType acc2{0};
-        ResType acc3{0};
-        ResType acc4{0};
-        ResType acc5{0};
-        ResType acc6{0};
-        ResType acc7{0};
-
-        std::size_t i = 0;
-        const std::size_t n8 = n & ~std::size_t(7);
+        ResType total{0};
         VEC_MATH_PRAGMA_SIMD
-        for (; i < n8; i += 8) {
-            acc0 = acc0 + static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
-            acc1 = acc1 + static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
-            acc2 = acc2 + static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
-            acc3 = acc3 + static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
-            acc4 = acc4 + static_cast<ResType>(lhs_op[i + 4]) * static_cast<ResType>(rhs_op[i + 4]);
-            acc5 = acc5 + static_cast<ResType>(lhs_op[i + 5]) * static_cast<ResType>(rhs_op[i + 5]);
-            acc6 = acc6 + static_cast<ResType>(lhs_op[i + 6]) * static_cast<ResType>(rhs_op[i + 6]);
-            acc7 = acc7 + static_cast<ResType>(lhs_op[i + 7]) * static_cast<ResType>(rhs_op[i + 7]);
-        }
-        const std::size_t n4 = n & ~std::size_t(3);
-        for (; i < n4; i += 4) {
-            acc0 = acc0 + static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
-            acc1 = acc1 + static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
-            acc2 = acc2 + static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
-            acc3 = acc3 + static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
-        }
-        ResType total = ((acc0 + acc1) + (acc2 + acc3)) + ((acc4 + acc5) + (acc6 + acc7));
-        for (; i < n; ++i) {
+        for (std::size_t i = 0; i < n; ++i) {
             total = total + static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
         }
         return total;
