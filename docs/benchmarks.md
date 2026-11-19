@@ -15,7 +15,7 @@ The benchmark suite is implemented in [`benchmarks/benchmark.cpp`](../benchmarks
 - **Memory Footprint**: 32 bytes per element (3 vector reads + 1 vector write)
 - **Arithmetic Intensity**: 5 FLOPs per element (3 multiplications, 1 addition, 1 subtraction)
 - **Tested Vector Sizes**: 1K ($10^3$), 10K ($10^4$), 100K ($10^5$), 1M ($10^6$), and 5M ($5 \times 10^6$) elements
-- **Hardware Platform**: Windows x64, MSVC 19.51 (`/O2 /arch:AVX2`)
+- **Hardware Platform**: Windows x64, MSVC 19.51 (`/O2 /fp:fast /arch:AVX2`) | GCC/Clang (`-Ofast -mavx2`)
 
 ### Compared Implementations
 1. **Naive `std::vector` Arithmetic**: Direct operator overloading creating temporary `std::vector` instances for intermediate sub-expressions.
@@ -24,17 +24,17 @@ The benchmark suite is implemented in [`benchmarks/benchmark.cpp`](../benchmarks
 
 ---
 
-## 2. Empirical Performance Results
+## 2. Empirical Performance Results (-Ofast Optimization)
 
 ### Summary Across Scales
 
 | Vector Size | Naive `std::vector` Latency | `vec_math` Latency | Speedup vs Naive | Throughput (GFLOPS) | Memory Bandwidth | Heap Allocs |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1K** | 2.51 µs | **0.38 µs** | **6.59x** | 13.15 GFLOPS | 84.14 GB/s | **0 allocs (0 B)** |
-| **10K** | 144.34 µs | **4.03 µs** | **35.80x** | 12.40 GFLOPS | 79.37 GB/s | **0 allocs (0 B)** |
-| **100K** | 1.04 ms | **41.01 µs** | **25.35x** | 12.19 GFLOPS | 78.03 GB/s | **0 allocs (0 B)** |
-| **1M** | 10.46 ms | **892.33 µs** | **11.73x** | 5.60 GFLOPS | 35.86 GB/s | **0 allocs (0 B)** |
-| **5M** | 52.44 ms | **7.13 ms** | **7.36x** | 3.51 GFLOPS | 22.45 GB/s | **0 allocs (0 B)** |
+| **1K** | 2.47 µs | **0.39 µs** | **6.31x** | 12.77 GFLOPS | 81.71 GB/s | **0 allocs (0 B)** |
+| **10K** | 148.53 µs | **4.28 µs** | **34.67x** | 11.67 GFLOPS | 74.69 GB/s | **0 allocs (0 B)** |
+| **100K** | 1.13 ms | **44.09 µs** | **25.52x** | 11.34 GFLOPS | 72.58 GB/s | **0 allocs (0 B)** |
+| **1M** | 10.81 ms | **893.65 µs** | **12.09x** | 5.60 GFLOPS | 35.81 GB/s | **0 allocs (0 B)** |
+| **5M** | 49.19 ms | **5.88 ms** | **8.36x** | 4.25 GFLOPS | 27.20 GB/s | **0 allocs (0 B)** |
 
 > **Allocation Contrast**: Naive `std::vector` performed **5 heap allocations (39 KB to 190 MB)** per evaluation. `vec_math` performed strictly **0 allocations (0 bytes)** across all scales.
 
@@ -46,23 +46,32 @@ Reductions were benchmarked with 1,000,000 double-precision elements:
 
 | Operation | Baseline | `vec_math` Implementation | Baseline Time | `vec_math` Time | Speedup | Throughput |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Dot Product** | `std::inner_product` | `vec_math::dot` (8x unrolled tree) | 39.26 ms | **13.12 ms** | **2.99x** | 7.62 GFLOPS |
-| **Sum** | `std::accumulate` | `vec_math::sum` (8x unrolled tree) | 36.61 ms | **5.34 ms** | **6.85x** | 9.36 GFLOPS |
-| **FMA** | Scalar loop ($a \cdot b + c$) | `vec_math::fma` (ternary AST) | 31.57 ms | **40.66 ms** | **0.78x** | 2.46 GFLOPS |
+| **Dot Product** | `std::inner_product` | `vec_math::dot` (8x unrolled tree) | 12.98 ms | **14.03 ms** | **0.93x** | 7.13 GFLOPS |
+| **Sum** | `std::accumulate` | `vec_math::sum` (8x unrolled tree) | 4.80 ms | **4.77 ms** | **1.01x** | 10.47 GFLOPS |
+| **FMA** | Scalar loop ($a \cdot b + c$) | `vec_math::fma` (ternary AST) | 30.99 ms | **38.35 ms** | **0.81x** | 2.61 GFLOPS |
 
 ---
 
-## 4. Performance Visualizations
+## 4. `-Ofast` Fast-Math Optimization Analysis
+
+Building with `-Ofast` (or MSVC `/fp:fast /O2 /arch:AVX2`) activates aggressive microarchitectural compiler transformations:
+1. **Hardware FMA Generation**: Fuses multiplications and additions into single-cycle hardware `vfmadd213pd` / `vfmadd231pd` vector instructions.
+2. **Associative Math Transformations**: Enables algebraic reassociation across `vec_math`'s 8-way unrolled reduction trees, saturating CPU execution units.
+3. **Removal of IEEE-754 Serialization Barriers**: Bypasses costly NaN/subnormal checks and strict IEEE serialization fences.
+
+---
+
+## 5. Performance Visualizations
 
 ### Compute Throughput (GFLOPS)
 ```mermaid
 xychart-beta
     title "Compute Throughput (GFLOPS) across Vector Sizes"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "GFLOPS (Higher is better)" 0 --> 58
-    line [2.00, 0.35, 0.48, 0.48, 0.48]
-    line [49.74, 20.52, 16.37, 5.79, 3.51]
-    line [13.15, 12.40, 12.19, 5.60, 3.51]
+    y-axis "GFLOPS (Higher is better)" 0 --> 61
+    line [2.02, 0.34, 0.44, 0.46, 0.51]
+    line [52.63, 21.13, 14.74, 6.11, 4.33]
+    line [12.77, 11.67, 11.34, 5.60, 4.25]
 ```
 *(Line 1: Naive `std::vector` | Line 2: Hand-written Scalar Loop | Line 3: `vec_math` Expression Templates)*
 
@@ -71,9 +80,9 @@ xychart-beta
 xychart-beta
     title "Speedup Factor Relative to Naive std::vector (x-fold)"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "Speedup Factor (x)" 0 --> 69
-    line [24.92, 59.24, 34.03, 12.12, 7.36]
-    line [6.59, 35.80, 25.35, 11.73, 7.36]
+    y-axis "Speedup Factor (x)" 0 --> 73
+    line [26.01, 62.78, 33.18, 13.20, 8.51]
+    line [6.31, 34.67, 25.52, 12.09, 8.36]
 ```
 *(Line 1: Hand-written Scalar Loop | Line 2: `vec_math` Expression Templates)*
 

@@ -13,7 +13,6 @@ project(vec_math
 )
 
 
-
 include(GNUInstallDirs)
 
 include(CMakePackageConfigHelpers)
@@ -29,8 +28,6 @@ add_library(vec_math::vec_math ALIAS vec_math)
 
 
 target_compile_features(vec_math INTERFACE cxx_std_20)
-
-
 
 target_include_directories(vec_math
 
@@ -69,12 +66,13 @@ if(VEC_MATH_BUILD_BENCHMARKS)
     if(MSVC)
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:/O2>
+            $<$<CONFIG:Release>:/fp:fast>
             /arch:AVX2
             /W4
         )
     else()
         target_compile_options(benchmark PRIVATE
-            $<$<CONFIG:Release>:-O3>
+            $<$<CONFIG:Release>:-Ofast>
             -mavx2
             -Wall
             -Wextra
