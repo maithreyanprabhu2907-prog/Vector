@@ -33,7 +33,7 @@ vec_math/
 Comprehensive guides and references are available in the [`docs/`](docs/README.md) folder:
 * **[Architecture & Design Principles](docs/architecture.md)**: Zero-allocation expression templates, AST lazy evaluation, SIMD unrolling, and memory optimization.
 * **[API Reference](docs/api_reference.md)**: Exhaustive catalog of concepts, operators, expressions, views, and math utilities.
-* **[SYCL Acceleration Guide](docs/sycl_guide.md)**: Zero-header SYCL compatibility, USM device pointers, and buffer accessor integration.
+* **[SYCL Compatibility Guide](docs/sycl_guide.md)**: Zero-header SYCL compiler compatibility, TriviallyCopyable expressions, and device execution.
 * **[Performance & Benchmarking](docs/benchmarks.md)**: In-depth metrics, GFLOPS, memory bandwidth, and scalability analysis.
 * **[Integration & Build Guide](docs/integration.md)**: CMake FetchContent, system installation, compiler tuning, and test instructions.
 
@@ -116,25 +116,23 @@ xychart-beta
     title "Compute Throughput (GFLOPS) across Vector Sizes"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
     y-axis "GFLOPS (Higher is better)" 0 --> 57
-    line [2.05, 0.35, 0.49, 0.52, 0.50]
-    line [49.14, 19.80, 16.56, 6.21, 4.13]
-    line [13.06, 12.62, 12.56, 6.01, 4.18]
-    line [12.83, 12.38, 12.65, 5.96, 4.26]
+    line [2.04, 0.35, 0.46, 0.48, 0.42]
+    line [48.92, 20.41, 14.77, 6.28, 4.26]
+    line [13.04, 12.25, 11.42, 6.05, 4.41]
 ```
 
-> **Chart Legend (Throughput)**: Line 1 (bottom) = Naive `std::vector` (temporary heap mallocs) | Line 2 = Scalar Loop | Line 3 = `vec_math` Expression Templates (zero mallocs) | Line 4 = `vec_math` SYCL Device View (zero mallocs)
+> **Chart Legend (Throughput)**: Line 1 = Naive `std::vector` (temporary heap mallocs) | Line 2 = Hand-written Scalar Loop | Line 3 = `vec_math` Expression Templates (zero mallocs)
 
 ```mermaid
 xychart-beta
     title "Speedup Factor Relative to Naive std::vector (x-fold)"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "Speedup Factor (x)" 0 --> 66
-    line [24.03, 56.71, 33.75, 11.92, 8.24]
-    line [6.39, 36.13, 25.60, 11.54, 8.34]
-    line [6.28, 35.46, 25.78, 11.44, 8.50]
+    y-axis "Speedup Factor (x)" 0 --> 67
+    line [23.93, 57.78, 32.01, 13.04, 10.11]
+    line [6.38, 34.67, 24.75, 12.56, 10.48]
 ```
 
-> **Chart Legend (Speedup vs Naive)**: Line 1 = Scalar Loop | Line 2 = `vec_math` Expression Templates | Line 3 = `vec_math` SYCL Device View
+> **Chart Legend (Speedup vs Naive)**: Line 1 = Hand-written Scalar Loop | Line 2 = `vec_math` Expression Templates (zero mallocs)
 
 ### Benchmark Results Across Vector Scales
 
@@ -142,130 +140,57 @@ xychart-beta
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 2.44 µs | **1.00x** | 5 allocs (39.3 KB) | 2.05 GFLOPS | 13.09 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 0.10 µs | **24.03x** | `0 allocs (0 B)` | 49.14 GFLOPS | 314.53 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 0.38 µs | **6.39x** | `0 allocs (0 B)` | 13.06 GFLOPS | 83.60 GB/s | `█████░░░░░░░░░░░░░░░` |
-| **vec_math (SYCL Device View)** | 0.39 µs | **6.28x** | `0 allocs (0 B)` | 12.83 GFLOPS | 82.14 GB/s | `█████░░░░░░░░░░░░░░░` |
+| **Naive std::vector** | 2.45 µs | **1.00x** | 5 allocs (39.3 KB) | 2.04 GFLOPS | 13.08 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 0.10 µs | **23.93x** | `0 allocs (0 B)` | 48.92 GFLOPS | 313.08 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 0.38 µs | **6.38x** | `0 allocs (0 B)` | 13.04 GFLOPS | 83.43 GB/s | `█████░░░░░░░░░░░░░░░` |
 
 #### Vector Size: 10K (10000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 143.18 µs | **1.00x** | 5 allocs (390.8 KB) | 0.35 GFLOPS | 2.24 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 2.52 µs | **56.71x** | `0 allocs (0 B)` | 19.80 GFLOPS | 126.74 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 3.96 µs | **36.13x** | `0 allocs (0 B)` | 12.62 GFLOPS | 80.76 GB/s | `█████████████░░░░░░░` |
-| **vec_math (SYCL Device View)** | 4.04 µs | **35.46x** | `0 allocs (0 B)` | 12.38 GFLOPS | 79.25 GB/s | `█████████████░░░░░░░` |
+| **Naive std::vector** | 141.55 µs | **1.00x** | 5 allocs (390.8 KB) | 0.35 GFLOPS | 2.26 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 2.45 µs | **57.78x** | `0 allocs (0 B)` | 20.41 GFLOPS | 130.62 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 4.08 µs | **34.67x** | `0 allocs (0 B)` | 12.25 GFLOPS | 78.38 GB/s | `████████████░░░░░░░░` |
 
 #### Vector Size: 100K (100000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 1.02 ms | **1.00x** | 5 allocs (3.8 MB) | 0.49 GFLOPS | 3.14 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 30.20 µs | **33.75x** | `0 allocs (0 B)` | 16.56 GFLOPS | 105.98 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 39.82 µs | **25.60x** | `0 allocs (0 B)` | 12.56 GFLOPS | 80.36 GB/s | `███████████████░░░░░` |
-| **vec_math (SYCL Device View)** | 39.54 µs | **25.78x** | `0 allocs (0 B)` | 12.65 GFLOPS | 80.94 GB/s | `███████████████░░░░░` |
+| **Naive std::vector** | 1.08 ms | **1.00x** | 5 allocs (3.8 MB) | 0.46 GFLOPS | 2.95 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 33.85 µs | **32.01x** | `0 allocs (0 B)` | 14.77 GFLOPS | 94.53 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 43.78 µs | **24.75x** | `0 allocs (0 B)` | 11.42 GFLOPS | 73.10 GB/s | `███████████████░░░░░` |
 
 #### Vector Size: 1M (1000000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 9.60 ms | **1.00x** | 5 allocs (38.1 MB) | 0.52 GFLOPS | 3.33 GB/s | `██░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 805.77 µs | **11.92x** | `0 allocs (0 B)` | 6.21 GFLOPS | 39.71 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 832.01 µs | **11.54x** | `0 allocs (0 B)` | 6.01 GFLOPS | 38.46 GB/s | `███████████████████░` |
-| **vec_math (SYCL Device View)** | 839.42 µs | **11.44x** | `0 allocs (0 B)` | 5.96 GFLOPS | 38.12 GB/s | `███████████████████░` |
+| **Naive std::vector** | 10.39 ms | **1.00x** | 5 allocs (38.1 MB) | 0.48 GFLOPS | 3.08 GB/s | `██░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 796.65 µs | **13.04x** | `0 allocs (0 B)` | 6.28 GFLOPS | 40.17 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 827.13 µs | **12.56x** | `0 allocs (0 B)` | 6.05 GFLOPS | 38.69 GB/s | `███████████████████░` |
 
 #### Vector Size: 5M (5000000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 49.86 ms | **1.00x** | 5 allocs (190.7 MB) | 0.50 GFLOPS | 3.21 GB/s | `██░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 6.05 ms | **8.24x** | `0 allocs (0 B)` | 4.13 GFLOPS | 26.46 GB/s | `███████████████████░` |
-| **vec_math (Expr Template)** | 5.98 ms | **8.34x** | `0 allocs (0 B)` | 4.18 GFLOPS | 26.77 GB/s | `████████████████████` |
-| **vec_math (SYCL Device View)** | 5.87 ms | **8.50x** | `0 allocs (0 B)` | 4.26 GFLOPS | 27.27 GB/s | `████████████████████` |
+| **Naive std::vector** | 59.37 ms | **1.00x** | 5 allocs (190.7 MB) | 0.42 GFLOPS | 2.70 GB/s | `██░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 5.87 ms | **10.11x** | `0 allocs (0 B)` | 4.26 GFLOPS | 27.24 GB/s | `███████████████████░` |
+| **vec_math (Expr Template)** | 5.66 ms | **10.48x** | `0 allocs (0 B)` | 4.41 GFLOPS | 28.25 GB/s | `████████████████████` |
 
 ### Reductions & Extended Math Utilities (1M Elements)
 
 | Operation | Baseline | `vec_math` | Baseline Time | `vec_math` Time | Speedup | Throughput |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Dot Product (dot)** | std::inner_product | **vec_math::dot (8x unrolled)** | 45.34 ms | **25.34 ms** | **1.79x** | 3.95 GFLOPS |
-| **Sum Reduction (sum)** | std::accumulate | **vec_math::sum (8x tree)** | 36.52 ms | **5.02 ms** | **7.27x** | 9.95 GFLOPS |
-| **Fused Multiply-Add (fma)** | Scalar a*b + c | **vec_math::fma (Ternary)** | 31.12 ms | **39.37 ms** | **0.79x** | 2.54 GFLOPS |
+| **Dot Product (dot)** | std::inner_product | **vec_math::dot (8x unrolled)** | 37.61 ms | **13.09 ms** | **2.87x** | 7.64 GFLOPS |
+| **Sum Reduction (sum)** | std::accumulate | **vec_math::sum (8x tree)** | 35.79 ms | **4.87 ms** | **7.35x** | 10.27 GFLOPS |
+| **Fused Multiply-Add (fma)** | Scalar a*b + c | **vec_math::fma (Ternary)** | 29.83 ms | **36.12 ms** | **0.83x** | 2.77 GFLOPS |
 
-## SYCL & Heterogeneous Compute Compatibility
+## SYCL Compatibility
 
-`vec_math` provides full SYCL 2020 device compatibility **without requiring any SYCL headers** (`<sycl/sycl.hpp>`). This guarantees clean compilation in pure host C++20 code while functioning seamlessly inside SYCL device kernels.
+`vec_math` is engineered for full compatibility with modern heterogeneous C++ frameworks, including SYCL compilers (such as Intel oneAPI DPC++ and AdaptiveCpp):
 
-### Key Architectural Guarantees
-1. **Zero Header Dependency**: The library uses predefined macros (`__SYCL_DEVICE_ONLY__`, `SYCL_LANGUAGE_VERSION`) to map annotations (`VEC_MATH_DEVICE`, `VEC_MATH_HOST_DEVICE`, `SYCL_EXTERNAL`) without polluting translation units with vendor headers.
-2. **TriviallyCopyable Kernel Capture**: All expression nodes (`BinExpr`, `UnaryExpr`, `TernaryExpr`) and memory views (`vec_span<T>`, `device_view<T>`) satisfy `std::is_trivially_copyable_v<T>`. This allows safe by-value capture inside device kernel lambdas (`cgh.parallel_for(...)`) across GPU/accelerator memory spaces.
-3. **Unified Memory & USM Support**: `vec_span<T>` / `device_view<T>` seamlessly wraps raw pointers from host memory, Unified Shared Memory (`sycl::malloc_shared`), device memory (`sycl::malloc_device`), or `sycl::buffer` accessors.
-4. **Kernel Evaluation Helpers**: `vec_math::device_eval(dst, expr, i)` provides zero-allocation element-wise evaluation directly inside GPU work-items.
+- **Zero SYCL Headers Included**: The library contains strictly zero `#include <sycl/sycl.hpp>` or proprietary vendor header dependencies. Host code compiles cleanly under standard C++20 with no foreign runtime or SDK overhead.
+- **TriviallyCopyable Expression Templates**: All expression nodes (`VecRef`, `ScalarVal`, `BinExpr`, `UnaryExpr`, `TernaryExpr`) are standard-layout and satisfy `std::is_trivially_copyable_v<T>`. This allows expressions to be captured by value in SYCL device kernel lambdas (`cgh.parallel_for`) without violating device capture rules.
+- **Device-Callable Core Annotations**: All core evaluation operators and expression evaluators are decorated with `VEC_MATH_DEVICE`, `VEC_MATH_HOST_DEVICE`, and `SYCL_EXTERNAL` macros when compiled under SYCL device compilation modes (`__SYCL_DEVICE_ONLY__` or `SYCL_LANGUAGE_VERSION`), enabling direct device execution.
 
-### SYCL Usage Examples
-
-#### Example 1: Expression Evaluation with Unified Shared Memory (USM)
-```cpp
-#include <sycl/sycl.hpp>
-#include <vec_math/vector_math.hpp>
-
-using namespace vec_math;
-
-void run_usm_example(sycl::queue& q, std::size_t N) {
-    // Allocate USM shared or device memory
-    double* a_ptr   = sycl::malloc_shared<double>(N, q);
-    double* b_ptr   = sycl::malloc_shared<double>(N, q);
-    double* out_ptr = sycl::malloc_shared<double>(N, q);
-
-    // Wrap in vec_math device views (TriviallyCopyable, 0 bytes heap overhead)
-    vec_math::device_view<const double> va = vec_math::make_device_view(a_ptr, N);
-    vec_math::device_view<const double> vb = vec_math::make_device_view(b_ptr, N);
-    vec_math::device_view<double> vout     = vec_math::make_device_view(out_ptr, N);
-
-    // Submit SYCL kernel
-    q.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
-        const std::size_t i = idx[0];
-        // Construct expression graph (stored on kernel registers / stack)
-        auto expr = 2.5 * va + 1.5 * vb - 0.5;
-        // Evaluate element with zero allocations
-        vec_math::device_eval(vout, expr, i);
-    }).wait();
-
-    sycl::free(a_ptr, q);
-    sycl::free(b_ptr, q);
-    sycl::free(out_ptr, q);
-}
-```
-
-#### Example 2: SYCL Buffer Accessor Integration
-```cpp
-#include <sycl/sycl.hpp>
-#include <vec_math/vector_math.hpp>
-
-using namespace vec_math;
-
-void run_buffer_example(sycl::queue& q, std::vector<float>& host_a, std::vector<float>& host_b, std::vector<float>& host_out) {
-    const std::size_t N = host_a.size();
-    sycl::buffer<float, 1> buf_a(host_a.data(), sycl::range<1>(N));
-    sycl::buffer<float, 1> buf_b(host_b.data(), sycl::range<1>(N));
-    sycl::buffer<float, 1> buf_out(host_out.data(), sycl::range<1>(N));
-
-    q.submit([&](sycl::handler& cgh) {
-        auto acc_a   = buf_a.get_access<sycl::access::mode::read>(cgh);
-        auto acc_b   = buf_b.get_access<sycl::access::mode::read>(cgh);
-        auto acc_out = buf_out.get_access<sycl::access::mode::write>(cgh);
-
-        cgh.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {
-            const std::size_t i = idx[0];
-            // Wrap accessor pointers inside work-item
-            auto va = vec_math::make_device_view(acc_a.get_pointer(), N);
-            auto vb = vec_math::make_device_view(acc_b.get_pointer(), N);
-            auto vout = vec_math::make_device_view(acc_out.get_pointer(), N);
-
-            auto expr = vec_math::fma(va, vb, 10.0f);
-            vec_math::device_eval(vout, expr, i);
-        });
-    }).wait();
-}
-```
 
 <!-- END_BENCHMARK_SECTION -->

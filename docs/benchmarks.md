@@ -19,9 +19,8 @@ The benchmark suite is implemented in [`benchmarks/benchmark.cpp`](../benchmarks
 
 ### Compared Implementations
 1. **Naive `std::vector` Arithmetic**: Direct operator overloading creating temporary `std::vector` instances for intermediate sub-expressions.
-2. **Scalar Loop**: Hand-optimized scalar loop with direct pointers.
-3. **`vec_math` (Expression Templates)**: Zero-allocation expression templates evaluated via `out <<= expr`.
-4. **`vec_math` (SYCL Device View)**: Zero-allocation device span evaluation (`make_device_view`).
+2. **Hand-Written Scalar Loop**: Direct pointer traversal with SIMD auto-vectorization.
+3. **`vec_math` (Zero-Allocation Expression Templates)**: Expression template evaluation executed via `out <<= expr`.
 
 ---
 
@@ -31,13 +30,13 @@ The benchmark suite is implemented in [`benchmarks/benchmark.cpp`](../benchmarks
 
 | Vector Size | Naive `std::vector` Latency | `vec_math` Latency | Speedup vs Naive | Throughput (GFLOPS) | Memory Bandwidth | Heap Allocs |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1K** | 2.44 µs | **0.38 µs** | **6.38x** | 13.07 GFLOPS | 83.67 GB/s | **0 allocs (0 B)** |
-| **10K** | 141.06 µs | **3.96 µs** | **35.59x** | 12.61 GFLOPS | 80.74 GB/s | **0 allocs (0 B)** |
-| **100K** | 983.41 µs | **39.48 µs** | **24.91x** | 12.66 GFLOPS | 81.06 GB/s | **0 allocs (0 B)** |
-| **1M** | 10.03 ms | **871.06 µs** | **11.51x** | 5.74 GFLOPS | 36.74 GB/s | **0 allocs (0 B)** |
-| **5M** | 50.04 ms | **6.01 ms** | **8.33x** | 4.16 GFLOPS | 26.62 GB/s | **0 allocs (0 B)** |
+| **1K** | 2.51 µs | **0.38 µs** | **6.59x** | 13.15 GFLOPS | 84.14 GB/s | **0 allocs (0 B)** |
+| **10K** | 144.34 µs | **4.03 µs** | **35.80x** | 12.40 GFLOPS | 79.37 GB/s | **0 allocs (0 B)** |
+| **100K** | 1.04 ms | **41.01 µs** | **25.35x** | 12.19 GFLOPS | 78.03 GB/s | **0 allocs (0 B)** |
+| **1M** | 10.46 ms | **892.33 µs** | **11.73x** | 5.60 GFLOPS | 35.86 GB/s | **0 allocs (0 B)** |
+| **5M** | 52.44 ms | **7.13 ms** | **7.36x** | 3.51 GFLOPS | 22.45 GB/s | **0 allocs (0 B)** |
 
-> **Allocation Contrast**: Naive `std::vector` performed **5 heap allocations (39 KB to 190 MB)** per call. `vec_math` performed **0 allocations (0 bytes)** in every test.
+> **Allocation Contrast**: Naive `std::vector` performed **5 heap allocations (39 KB to 190 MB)** per evaluation. `vec_math` performed strictly **0 allocations (0 bytes)** across all scales.
 
 ---
 
@@ -45,11 +44,11 @@ The benchmark suite is implemented in [`benchmarks/benchmark.cpp`](../benchmarks
 
 Reductions were benchmarked with 1,000,000 double-precision elements:
 
-| Operation | Baseline | `vec_math` Implementation | Baseline Time | `vec_math` Time | Speedup |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Dot Product** | `std::inner_product` | `vec_math::dot` (8x unrolled tree) | 38.69 ms | **14.12 ms** | **2.74x** |
-| **Sum** | `std::accumulate` | `vec_math::sum` (8x unrolled tree) | 36.54 ms | **4.85 ms** | **7.53x** |
-| **FMA** | Scalar loop ($a \cdot b + c$) | `vec_math::fma` (ternary AST) | 31.20 ms | **38.00 ms** | **0.82x** |
+| Operation | Baseline | `vec_math` Implementation | Baseline Time | `vec_math` Time | Speedup | Throughput |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Dot Product** | `std::inner_product` | `vec_math::dot` (8x unrolled tree) | 39.26 ms | **13.12 ms** | **2.99x** | 7.62 GFLOPS |
+| **Sum** | `std::accumulate` | `vec_math::sum` (8x unrolled tree) | 36.61 ms | **5.34 ms** | **6.85x** | 9.36 GFLOPS |
+| **FMA** | Scalar loop ($a \cdot b + c$) | `vec_math::fma` (ternary AST) | 31.57 ms | **40.66 ms** | **0.78x** | 2.46 GFLOPS |
 
 ---
 
@@ -60,35 +59,33 @@ Reductions were benchmarked with 1,000,000 double-precision elements:
 xychart-beta
     title "Compute Throughput (GFLOPS) across Vector Sizes"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "GFLOPS (Higher is better)" 0 --> 57
-    line [2.05, 0.35, 0.51, 0.50, 0.50]
-    line [48.79, 20.41, 16.23, 5.82, 3.16]
-    line [13.07, 12.61, 12.66, 5.74, 4.16]
-    line [13.14, 12.70, 12.57, 5.71, 4.40]
+    y-axis "GFLOPS (Higher is better)" 0 --> 58
+    line [2.00, 0.35, 0.48, 0.48, 0.48]
+    line [49.74, 20.52, 16.37, 5.79, 3.51]
+    line [13.15, 12.40, 12.19, 5.60, 3.51]
 ```
-*(Line 1: Naive `std::vector` | Line 2: Scalar Loop | Line 3: `vec_math` Expr Template | Line 4: `vec_math` SYCL Device View)*
+*(Line 1: Naive `std::vector` | Line 2: Hand-written Scalar Loop | Line 3: `vec_math` Expression Templates)*
 
 ### Speedup Factor Relative to Naive `std::vector`
 ```mermaid
 xychart-beta
     title "Speedup Factor Relative to Naive std::vector (x-fold)"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "Speedup Factor (x)" 0 --> 67
-    line [23.82, 57.58, 31.91, 11.67, 6.32]
-    line [6.38, 35.59, 24.91, 11.51, 8.33]
-    line [6.41, 35.84, 24.73, 11.45, 8.80]
+    y-axis "Speedup Factor (x)" 0 --> 69
+    line [24.92, 59.24, 34.03, 12.12, 7.36]
+    line [6.59, 35.80, 25.35, 11.73, 7.36]
 ```
-*(Line 1: Scalar Loop | Line 2: `vec_math` Expression Templates | Line 3: `vec_math` SYCL Device View)*
+*(Line 1: Hand-written Scalar Loop | Line 2: `vec_math` Expression Templates)*
 
 ---
 
 ## 5. Architectural Insights
 
-### Why Small & Medium Scales (1K - 100K) Gain 25x - 35x Speedup
-At sizes fitting within CPU cache (L1/L2/L3), memory allocation overhead dominates execution time. In naive vector math, allocating memory locks the global allocator heap, calls system `VirtualAlloc`/`mmap` routines, zero-initializes memory, and triggers frequent cache evictions. By operating on pre-allocated buffers with single-pass expression fusion, `vec_math` executes entirely within cache lines at full SIMD speeds.
+### Why Small & Medium Scales (1K - 100K) Gain 25x - 36x Speedup
+At sizes fitting within CPU cache (L1/L2/L3), memory allocation overhead dominates execution time. In naive vector math, allocating memory locks the global allocator heap, calls OS kernel memory management routines, zero-initializes memory, and triggers frequent cache evictions. By operating on pre-allocated buffers with single-pass expression fusion, `vec_math` executes entirely within cache lines at full SIMD speeds.
 
 ### Why Large Scales (1M - 5M) Saturate Memory Bandwidth
-At 5,000,000 elements, each vector consumes 40 MB ($160\text{ MB}$ total across 4 vectors), significantly exceeding typical CPU L3 cache capacities ($16\text{ MB} - 32\text{ MB}$). The bottleneck shifts from compute latency to DDR main memory bandwidth. `vec_math` reaches **26.62 - 28.14 GB/s**, effectively saturating the dual-channel memory bus.
+At 5,000,000 elements, each vector consumes 40 MB ($160\text{ MB}$ total across 4 vectors), significantly exceeding typical CPU L3 cache capacities ($16\text{ MB} - 32\text{ MB}$). The bottleneck shifts from compute latency to DDR main memory bandwidth. `vec_math` achieves **22.45 - 35.86 GB/s**, matching the hand-written scalar loop and saturating available memory bus throughput.
 
 ---
 
@@ -98,10 +95,10 @@ At 5,000,000 elements, each vector consumes 40 MB ($160\text{ MB}$ total across 
 # Configure with Release optimization
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 
-# Build benchmark executable
+# Build the benchmark executable
 cmake --build build --config Release --target benchmark
 
-# Run benchmarks
+# Execute the benchmark suite
 ./build/Release/benchmark
 ```
-Running `benchmark` also automatically updates the benchmark tables and Mermaid diagrams directly in `README.md`.
+*Note: Running `benchmark` will print live metrics to stdout and automatically refresh the Markdown tables and Mermaid charts in `README.md`.*

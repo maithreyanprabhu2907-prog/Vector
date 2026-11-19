@@ -113,10 +113,8 @@ int main() {
     // ========================================================================
     // SYCL Compatibility & TriviallyCopyable Static Assertions
     // ========================================================================
-    static_assert(sycl_compatible<vec_span<float>>);
-    static_assert(sycl_compatible<vec_span<const double>>);
-    static_assert(sycl_compatible<device_view<int>>);
-    static_assert(sycl_compatible<device_view<const float>>);
+    static_assert(sycl_compatible<detail::VecRef<std::vector<double>>>);
+    static_assert(sycl_compatible<detail::ScalarVal<double>>);
 
     std::vector<double> a = {1.0, 2.0, 3.0, 4.0};
     std::vector<double> b = {10.0, 20.0, 30.0, 40.0};
@@ -126,6 +124,9 @@ int main() {
     static_assert(sycl_compatible<decltype(2.0 * a + b)>);
     static_assert(sycl_compatible<decltype(vec_math::abs(a))>);
     static_assert(sycl_compatible<decltype(vec_math::fma(a, b, c))>);
+    static_assert(std::is_trivially_copyable_v<decltype(2.0 * a + b)>);
+    static_assert(std::is_trivially_copyable_v<decltype(vec_math::abs(a))>);
+    static_assert(std::is_trivially_copyable_v<decltype(vec_math::fma(a, b, c))>);
 
     // Original battle test 1: compound operations
     {
@@ -280,58 +281,6 @@ int main() {
         }
     }
 
-    // ========================================================================
-    // Device-Compatible Span / View & SYCL Evaluation Tests
-    // ========================================================================
-    {
-        double raw_a[4] = {1.0, 2.0, 3.0, 4.0};
-        double raw_b[4] = {10.0, 20.0, 30.0, 40.0};
-        double raw_out[4] = {0.0, 0.0, 0.0, 0.0};
-
-        vec_span<const double> span_a(raw_a, 4);
-        vec_span<const double> span_b(raw_b, 4);
-        device_view<double> span_out(raw_out, 4);
-
-        {
-            ZeroMallocGuard guard("span_expressions_and_compound");
-            span_out <<= 2.0 * span_a + span_b;
-            span_out += span_a;
-            span_out -= 1.0;
-            span_out *= 2.0;
-            span_out /= 2.0;
-        }
-
-        for (std::size_t i = 0; i < 4; ++i) {
-            double expected = (2.0 * raw_a[i] + raw_b[i]) + raw_a[i] - 1.0;
-            assert(approx_eq(span_out[i], expected));
-        }
-
-        // device_eval full & element-wise
-        {
-            ZeroMallocGuard guard("device_eval_tests");
-            device_eval(span_out, span_a + span_b);
-            for (std::size_t i = 0; i < 4; ++i) {
-                assert(approx_eq(span_out[i], raw_a[i] + raw_b[i]));
-            }
-
-            for (std::size_t i = 0; i < 4; ++i) {
-                device_eval(raw_out, fma(span_a, span_b, 5.0), i);
-            }
-            for (std::size_t i = 0; i < 4; ++i) {
-                assert(approx_eq(raw_out[i], raw_a[i] * raw_b[i] + 5.0));
-            }
-        }
-
-        // Span reduction
-        {
-            ZeroMallocGuard guard("span_reductions");
-            double s_span = sum(span_a);
-            assert(approx_eq(s_span, 10.0));
-
-            double d_span = dot(span_a, span_b);
-            assert(approx_eq(d_span, 300.0));
-        }
-    }
 
     // ========================================================================
     // Error Handling Tests

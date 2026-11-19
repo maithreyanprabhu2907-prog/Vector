@@ -1,6 +1,6 @@
 # Architecture & Design Principles
 
-`vec_math` is engineered to solve a fundamental performance flaw in standard C++ scientific computing: **temporary heap allocations in vector arithmetic expressions**.
+`vec_math` is engineered to solve a fundamental performance bottleneck in C++ numerical computing: **temporary heap allocations in vector arithmetic expressions**.
 
 ---
 
@@ -9,7 +9,7 @@
 In standard C++, implementing overloaded operators for `std::vector` naively leads to disastrous allocation overhead:
 
 ```cpp
-// Naive implementation
+// Naive operator implementation
 std::vector<double> operator+(const std::vector<double>& a, const std::vector<double>& b) {
     std::vector<double> res(a.size());
     for (size_t i = 0; i < a.size(); ++i) res[i] = a[i] + b[i];
@@ -21,7 +21,7 @@ Evaluating an expression like:
 ```cpp
 out = 2.5 * a + 1.5 * b - 0.5 * c;
 ```
-creates **5 intermediate `std::vector` heap allocations and deallocations** (`malloc` + `free`) per evaluation, along with 5 full memory passes that flood the CPU L1/L2 caches with redundant intermediate data.
+creates **5 intermediate `std::vector` heap allocations and deallocations** (`malloc` + `free`) per evaluation, along with 5 full memory passes that flood the CPU L1/L2 caches with redundant intermediate buffers.
 
 ---
 
@@ -38,7 +38,7 @@ creates **5 intermediate `std::vector` heap allocations and deallocations** (`ma
 ```
 
 ### AST Representation
-- **`VecRef<T>`**: Wraps a pointer to an existing vector's underlying contiguous data (`data()`) and size. Size: 16 bytes (ptr + size).
+- **`VecRef<T>`**: Non-owning lightweight reference wrapping a pointer to an existing vector's underlying contiguous data (`data()`) and its size. Size: 16 bytes (pointer + size).
 - **`ScalarVal<S>`**: Stores a numeric scalar value.
 - **`BinExpr<Op, Lhs, Rhs>`**: Encapsulates a binary operation (`OpAdd`, `OpSub`, `OpMul`, `OpDiv`) and two sub-expressions.
 - **`UnaryExpr<Op, Arg>`**: Encapsulates a unary operation (`OpPos`, `OpNeg`, `OpAbs`).
@@ -49,7 +49,7 @@ Each AST node implements:
 ```cpp
 [[nodiscard]] VEC_MATH_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept;
 ```
-No computation occurs when the expression is declared. The entire tree is evaluated lazily, element by element, when assigned to a destination buffer.
+No computation occurs when the expression is declared. The entire tree is evaluated lazily, element by element, in a single loop pass when assigned to a destination buffer.
 
 ---
 
@@ -61,7 +61,7 @@ No computation occurs when the expression is declared. The entire tree is evalua
 ```cpp
 out <<= 2.0 * a + b / 2.0;
 ```
-- Checks that `out.capacity() >= src.size()`. If capacity is insufficient, throws `std::length_error` (or aborts under `VEC_MATH_NO_EXCEPTIONS`).
+- Validates that `out.capacity() >= src.size()`. If capacity is insufficient, throws `std::length_error` (or aborts under `VEC_MATH_NO_EXCEPTIONS`).
 - Resizes `out` without reallocating.
 - Writes each computed element directly into `out.data()[i]`.
 - **Heap Allocations: 0**.
@@ -72,7 +72,7 @@ out += 2.0 * a;
 out *= 0.5;
 ```
 - Operates directly on the destination buffer in place.
-- Eliminates any destination memory allocation.
+- Eliminates any destination memory reallocation.
 - **Heap Allocations: 0**.
 
 ### C. Rvalue Buffer Recycling
@@ -122,25 +122,31 @@ ResType acc4{0}, acc5{0}, acc6{0}, acc7{0};
 // Loop updates all 8 accumulators independently...
 ResType total = ((acc0 + acc1) + (acc2 + acc3)) + ((acc4 + acc5) + (acc6 + acc7));
 ```
-By breaking the single-accumulator serial dependency chain, the CPU can schedule 8 independent FMA/addition instructions per clock cycle. This yields a **2.74x speedup in dot product** and **7.53x speedup in sum reduction**.
+By breaking the single-accumulator serial dependency chain, the CPU can schedule 8 independent FMA/addition instructions per clock cycle. This yields up to a **3x speedup in dot product** and **7x speedup in sum reduction**.
 
 ---
 
-## 5. SYCL Device Memory Abstraction (`vec_span`)
+## 5. SYCL Compiler Compatibility & Heterogeneous Readiness
 
-To support heterogeneous accelerators (GPUs, FPGAs) without depending on SYCL headers, `vec_math` introduces `vec_span<T>` (aliased as `device_view<T>`):
+`vec_math` is designed for seamless use in projects targeting heterogeneous accelerators (GPUs, FPGAs) with SYCL compilers (such as Intel oneAPI DPC++ and AdaptiveCpp) **without including SYCL headers**:
 
-```cpp
-template<typename T>
-class vec_span {
-    T* ptr_;
-    std::size_t size_;
-    // ...
-};
-```
+### Zero Header Inclusions
+- The library does not include `<sycl/sycl.hpp>` or any vendor-specific header.
+- Pure standard C++20 host applications compile cleanly without requiring SYCL toolchains or runtime libraries.
 
-### Design Guarantees
-1. **`std::is_trivially_copyable_v<vec_span<T>> == true`**: The span is a lightweight non-owning view of contiguous device or host memory.
-2. **`std::is_standard_layout_v<vec_span<T>> == true`**: Safe to capture by value in device kernel lambdas.
-3. **No Dynamic Allocations**: Device execution has no access to host heap allocators; `vec_span` and AST nodes operate entirely on stack/registers.
-4. **Headerless Portability**: Works out of the box with USM device pointers, USM shared pointers, and SYCL buffer accessors without `#include <sycl/sycl.hpp>`.
+### TriviallyCopyable Expression Templates
+- In SYCL, any object captured by value inside a device kernel lambda (`cgh.parallel_for([=](sycl::id<1> idx) { ... })`) must be TriviallyCopyable (`std::is_trivially_copyable_v<T>`).
+- All `vec_math` expression templates (`VecRef`, `ScalarVal`, `BinExpr`, `UnaryExpr`, `TernaryExpr`) are standard layout and TriviallyCopyable.
+- The `sycl_compatible` concept verifies this compile-time property:
+  ```cpp
+  template<typename T>
+  concept sycl_compatible = std::is_trivially_copyable_v<std::remove_cvref_t<T>>;
+  ```
+
+### Predefined Macro Annotations
+- The core math functors and expression node indexing operators are decorated with `VEC_MATH_HD_INLINE` (`VEC_MATH_HOST_DEVICE VEC_MATH_FORCE_INLINE`) and `SYCL_EXTERNAL`.
+- These macros detect SYCL device compilation passes (`__SYCL_DEVICE_ONLY__` or `SYCL_LANGUAGE_VERSION`) and apply the appropriate attributes (`__attribute__((sycl_device))` or `__declspec(sycl_device)`). On pure host compilers, they expand to standard inline qualifiers.
+
+### Zero Dynamic Allocation
+- SYCL device kernels forbid dynamic allocations (`malloc`, `new`).
+- All `vec_math` expression trees reside entirely in CPU/GPU registers and thread stack frames, guaranteeing zero runtime allocations.

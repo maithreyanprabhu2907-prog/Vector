@@ -22,13 +22,6 @@ concept NumericVector = detail::is_std_vector_v<T> && Scalar<typename std::remov
 ```
 Satisfied by `std::vector<T, Alloc>` where `T` models `Scalar`.
 
-### `DeviceSpan<T>`
-```cpp
-template<typename T>
-concept DeviceSpan = detail::is_vec_span_v<T>;
-```
-Satisfied by `vec_math::vec_span<T>` and `vec_math::device_view<T>`.
-
 ### `VecExpression<T>`
 ```cpp
 template<typename T>
@@ -39,7 +32,7 @@ Satisfied by any expression template node inheriting from `detail::ExprBase` (`B
 ### `VectorOperand<T>`
 ```cpp
 template<typename T>
-concept VectorOperand = NumericVector<T> || DeviceSpan<T> || VecExpression<T>;
+concept VectorOperand = NumericVector<T> || VecExpression<T>;
 ```
 General concept representing any operand participating in vector mathematics.
 
@@ -47,108 +40,21 @@ General concept representing any operand participating in vector mathematics.
 ```cpp
 template<typename T>
 concept sycl_compatible = std::is_trivially_copyable_v<std::remove_cvref_t<T>>;
+
+template<typename T>
+inline constexpr bool is_sycl_compatible_v = sycl_compatible<T>;
 ```
-Ensures that a type can be safely captured by-value inside a SYCL device kernel lambda (`cgh.parallel_for`).
+Ensures that a type is TriviallyCopyable and standard layout so it can be safely captured by value in SYCL device kernel lambdas (`cgh.parallel_for`) without violating device capture rules. All `vec_math` expression templates satisfy this concept.
 
 ---
 
-## 2. Views & Spans (`vec_span` / `device_view`)
+## 2. Arithmetic Operators
 
-### Class Template `vec_math::vec_span<T>`
-A non-owning, TriviallyCopyable view over contiguous memory. Useful for host vectors, raw pointers, SYCL Unified Shared Memory (USM), and SYCL buffer accessors.
-
-```cpp
-template<typename T>
-class vec_span;
-
-template<typename T>
-using device_view = vec_span<T>;
-```
-
-#### Member Types
-- `value_type`: `std::remove_cv_t<T>`
-- `element_type`: `T`
-- `pointer`: `T*`
-- `const_pointer`: `const T*`
-- `reference`: `T&`
-- `const_reference`: `const T&`
-- `size_type`: `std::size_t`
-- `difference_type`: `std::ptrdiff_t`
-
-#### Constructors
-```cpp
-constexpr vec_span() noexcept;
-constexpr vec_span(T* ptr, std::size_t count) noexcept;
-
-template<typename Alloc>
-constexpr vec_span(std::vector<T, Alloc>& v) noexcept;
-
-template<typename Alloc>
-constexpr vec_span(const std::vector<std::remove_const_t<T>, Alloc>& v) noexcept;
-```
-
-#### Member Functions
-- `constexpr T* data() const noexcept`: Returns pointer to memory.
-- `constexpr std::size_t size() const noexcept`: Returns element count.
-- `constexpr bool empty() const noexcept`: Returns `true` if `size() == 0`.
-- `constexpr reference operator[](std::size_t i) const noexcept`: Unchecked element access.
-- `constexpr pointer begin() const noexcept`: Beginning iterator.
-- `constexpr pointer end() const noexcept`: Ending iterator.
-
-#### Compound Assignment Operators on `vec_span<T>`
-*(Available when `!std::is_const_v<T>`)*
-```cpp
-template<VectorOperand Rhs>
-constexpr vec_span& operator+=(const Rhs& rhs);
-
-template<Scalar S>
-constexpr vec_span& operator+=(const S& scalar) noexcept;
-
-template<VectorOperand Rhs>
-constexpr vec_span& operator-=(const Rhs& rhs);
-
-template<Scalar S>
-constexpr vec_span& operator-=(const S& scalar) noexcept;
-
-template<VectorOperand Rhs>
-constexpr vec_span& operator*=(const Rhs& rhs);
-
-template<Scalar S>
-constexpr vec_span& operator*=(const S& scalar) noexcept;
-
-template<VectorOperand Rhs>
-constexpr vec_span& operator/=(const Rhs& rhs);
-
-template<Scalar S>
-constexpr vec_span& operator/=(const S& scalar) noexcept;
-
-template<VectorOperand Src>
-constexpr vec_span& operator<<=(const Src& src);
-```
-
-#### Factory Functions
-```cpp
-template<Scalar T>
-[[nodiscard]] constexpr vec_span<T> make_vec_span(T* ptr, std::size_t n) noexcept;
-
-template<Scalar T>
-[[nodiscard]] constexpr vec_span<const T> make_vec_span(const T* ptr, std::size_t n) noexcept;
-
-template<Scalar T>
-[[nodiscard]] constexpr device_view<T> make_device_view(T* ptr, std::size_t n) noexcept;
-
-template<Scalar T>
-[[nodiscard]] constexpr device_view<const T> make_device_view(const T* ptr, std::size_t n) noexcept;
-```
-
----
-
-## 3. Arithmetic Operators
-
-Overloaded operators are in inline namespace `vec_math::ops`.
+Overloaded operators reside in inline namespace `vec_math::ops` and are automatically available when using namespace `vec_math`.
 
 ### Binary Operators (`+`, `-`, `*`, `/`)
-Construct a lazy `BinExpr` without performing allocations:
+Construct a lazy `BinExpr` without performing dynamic memory allocations:
+
 ```cpp
 // Vector-Vector
 template<VectorOperand Lhs, VectorOperand Rhs>
@@ -170,7 +76,23 @@ template<VectorOperand Lhs, Scalar S>
 template<Scalar S, VectorOperand Rhs>
 [[nodiscard]] constexpr auto operator+(const S& scalar, const Rhs& rhs);
 
-// (Similar signatures exist for -, *, /)
+template<VectorOperand Lhs, Scalar S>
+[[nodiscard]] constexpr auto operator-(const Lhs& lhs, const S& scalar);
+
+template<Scalar S, VectorOperand Rhs>
+[[nodiscard]] constexpr auto operator-(const S& scalar, const Rhs& rhs);
+
+template<VectorOperand Lhs, Scalar S>
+[[nodiscard]] constexpr auto operator*(const Lhs& lhs, const S& scalar);
+
+template<Scalar S, VectorOperand Rhs>
+[[nodiscard]] constexpr auto operator*(const S& scalar, const Rhs& rhs);
+
+template<VectorOperand Lhs, Scalar S>
+[[nodiscard]] constexpr auto operator/(const Lhs& lhs, const S& scalar);
+
+template<Scalar S, VectorOperand Rhs>
+[[nodiscard]] constexpr auto operator/(const S& scalar, const Rhs& rhs);
 ```
 
 ### Unary Operators
@@ -200,14 +122,14 @@ template<VectorOperand A, Scalar S, VectorOperand C>
 
 ---
 
-## 4. Evaluation & Assignment
+## 3. Evaluation & Assignment
 
 ### Pre-Allocated Evaluation (`<<=`)
 ```cpp
 template<typename T, typename Alloc, VectorOperand Src>
 std::vector<T, Alloc>& operator<<=(std::vector<T, Alloc>& dst, const Src& src);
 ```
-Evaluates `src` directly into `dst` using 8x/4x unrolled SIMD loops. Requires `dst.capacity() >= src.size()`. **Zero allocations.**
+Evaluates `src` directly into `dst` using 8x/4x unrolled SIMD loops. Requires `dst.capacity() >= src.size()`. **Zero dynamic heap allocations.**
 
 ### Free Function `assign()`
 ```cpp
@@ -218,23 +140,32 @@ Equivalent to `dst <<= src`.
 
 ### In-Place Compound Assignment on `std::vector`
 ```cpp
-dst += rhs;    dst += scalar;
-dst -= rhs;    dst -= scalar;
-dst *= rhs;    dst *= scalar;
-dst /= rhs;    dst /= scalar;
-```
-Direct in-place arithmetic without intermediate buffers.
+// Vector-Vector
+dst += rhs;
+dst -= rhs;
+dst *= rhs;
+dst /= rhs;
 
-### Rvalue Recycling Operators
+// Vector-Scalar
+dst += scalar;
+dst -= scalar;
+dst *= scalar;
+dst /= scalar;
+```
+Direct in-place arithmetic without intermediate buffers or reallocations.
+
+### Rvalue Buffer Recycling
 When operating on temporary or moved `std::vector&&`:
 ```cpp
 auto res = 2.0 * std::move(a) + b;
 ```
-The internal memory buffer of `a` is recycled for the result. **Zero allocations.**
+The internal heap buffer of `a` is reused for the result, bypassing new allocations. **Zero dynamic heap allocations.**
 
 ---
 
-## 5. Reduction Utilities
+## 4. Reduction Utilities
+
+Header: `<vec_math/vector_math.hpp>`
 
 ### `sum(v)`
 ```cpp
@@ -248,46 +179,34 @@ Calculates the sum of all elements using an 8-way dependency-broken reduction tr
 template<VectorOperand Lhs, VectorOperand Rhs>
 [[nodiscard]] constexpr auto dot(const Lhs& lhs, const Rhs& rhs);
 ```
-Calculates the dot product $\sum a_i \cdot b_i$ using 8 independent accumulators.
+Calculates the dot product $\sum a_i \cdot b_i$ using 8 independent accumulators for high instruction-level parallelism.
 
 ### `norm_sq(v)`
 ```cpp
 template<VectorOperand Op>
 [[nodiscard]] constexpr auto norm_sq(const Op& op);
 ```
-Calculates squared Euclidean norm: `dot(v, v)`.
+Calculates the squared Euclidean norm: $\sum v_i^2 = \text{dot}(v, v)$.
 
 ### `norm(v)`
 ```cpp
 template<VectorOperand Op>
 [[nodiscard]] inline auto norm(const Op& op);
 ```
-Calculates Euclidean L2 norm: $\sqrt{\text{dot}(v, v)}$.
+Calculates the Euclidean L2 norm: $\sqrt{\text{norm\_sq}(v)}$.
 
 ---
 
-## 6. Device Evaluation Helpers (SYCL)
-
-```cpp
-template<typename Dst, VectorOperand Expr>
-VEC_MATH_HD_INLINE constexpr void device_eval(Dst& dst, const Expr& expr);
-
-template<typename Dst, VectorOperand Expr>
-VEC_MATH_HD_INLINE constexpr void device_eval(Dst& dst, const Expr& expr, std::size_t i) noexcept;
-
-template<typename T, VectorOperand Expr>
-VEC_MATH_HD_INLINE constexpr void device_eval(T* VEC_MATH_RESTRICT dst, const Expr& expr, std::size_t i) noexcept;
-```
-Evaluates an expression element inside a SYCL work-item without host-device synchronization or dynamic allocations.
-
----
-
-## 7. Configuration Macros
+## 5. Configuration Macros & Annotations
 
 | Macro | Description |
 | :--- | :--- |
-| `VEC_MATH_NO_EXCEPTIONS` | Define to replace exceptions with `assert` + `std::abort()` (useful for `-fno-exceptions` and embedded environments). |
-| `SYCL_EXTERNAL` | Declared as `__attribute__((sycl_device))` or `__declspec(sycl_device)` when compiling with a SYCL compiler. |
-| `VEC_MATH_FORCE_INLINE` | Inlining specifier (`__forceinline` on MSVC, `always_inline` on GCC/Clang). |
-| `VEC_MATH_RESTRICT` | Pointer aliasing restrict modifier (`__restrict` / `__restrict__`). |
-| `VEC_MATH_PRAGMA_SIMD` | Compiler vectorization hint (`loop(ivdep)`, `clang loop vectorize`, `GCC ivdep`, `omp simd`). |
+| `VEC_MATH_NO_EXCEPTIONS` | Define before including `vector_math.hpp` to replace exception throwing with `assert` + `std::abort()` (useful for `-fno-exceptions` and embedded environments). |
+| `SYCL_EXTERNAL` | Defined as `__attribute__((sycl_device))` or `__declspec(sycl_device)` when compiled under a SYCL compiler (`__SYCL_DEVICE_ONLY__` or `SYCL_LANGUAGE_VERSION`); expands to empty on host compilers. |
+| `VEC_MATH_DEVICE` | Decorator for device-only functions in SYCL compilation passes. |
+| `VEC_MATH_HOST_DEVICE` | Decorator for functions callable on both host and device in SYCL compilation passes. |
+| `VEC_MATH_FORCE_INLINE` | Compiler-specific forced inline specifier (`__forceinline` on MSVC, `always_inline` on GCC/Clang). |
+| `VEC_MATH_HD_INLINE` | Combination of `VEC_MATH_HOST_DEVICE` and `VEC_MATH_FORCE_INLINE`. |
+| `VEC_MATH_D_INLINE` | Combination of `VEC_MATH_DEVICE` and `VEC_MATH_FORCE_INLINE`. |
+| `VEC_MATH_RESTRICT` | Pointer aliasing restrict modifier (`__restrict` on MSVC, `__restrict__` on GCC/Clang). |
+| `VEC_MATH_PRAGMA_SIMD` | Compiler vectorization hint (`__pragma(loop(ivdep))` on MSVC, `#pragma clang loop vectorize(enable)` on Clang, `#pragma GCC ivdep` on GCC, `#pragma omp simd` on OpenMP). |

@@ -36,3 +36,7 @@ Testing/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Generated benchmark output
+benchmark_results.md
+

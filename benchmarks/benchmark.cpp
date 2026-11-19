@@ -144,31 +144,6 @@ namespace vm_expr {
     }
 }
 
-// 4. vec_math SYCL-compatible device view evaluation
-namespace vm_device {
-    template <typename T>
-    void evaluate_fused(vec_math::device_view<T> vout,
-                        vec_math::device_view<const T> va,
-                        vec_math::device_view<const T> vb,
-                        vec_math::device_view<const T> vc) {
-        vout <<= T(2.5) * va + T(1.5) * vb - T(0.5) * vc;
-    }
-
-    template <typename T>
-    void evaluate_kernel_sim(vec_math::device_view<T> vout,
-                             vec_math::device_view<const T> va,
-                             vec_math::device_view<const T> vb,
-                             vec_math::device_view<const T> vc) {
-        auto expr = T(2.5) * va + T(1.5) * vb - T(0.5) * vc;
-        const std::size_t n = vout.size();
-        T* VEC_MATH_RESTRICT p = vout.data();
-        VEC_MATH_PRAGMA_SIMD
-        for (std::size_t i = 0; i < n; ++i) {
-            vec_math::device_eval(p, expr, i);
-        }
-    }
-}
-
 // ============================================================================
 // Benchmark Runner Structures & Utilities
 // ============================================================================
@@ -178,7 +153,7 @@ struct BenchmarkResult {
     std::size_t vector_size;
     std::size_t iterations;
     double time_ms;              // total time for all iterations
-    double avg_latency_us;        // average latency per run in microseconds
+    double avg_latency_us;       // average latency per run in microseconds
     double speedup;              // vs Naive std::vector
     std::size_t alloc_count;     // heap allocations per run
     std::size_t alloc_bytes;     // bytes allocated per run
@@ -243,12 +218,6 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     naive::evaluate_fused(out, a, b, c);
     scalar::evaluate_fused(out, a, b, c);
     vm_expr::evaluate_fused(out, a, b, c);
-
-    vec_math::device_view<double> vout = vec_math::make_device_view(out.data(), out.size());
-    vec_math::device_view<const double> va = vec_math::make_device_view(a.data(), a.size());
-    vec_math::device_view<const double> vb = vec_math::make_device_view(b.data(), b.size());
-    vec_math::device_view<const double> vc = vec_math::make_device_view(c.data(), c.size());
-    vm_device::evaluate_fused(vout, va, vb, vc);
 
     // FLOP count: 5 FLOPs per element (3 mul, 1 add, 1 sub)
     const double total_flops = 5.0 * static_cast<double>(n) * static_cast<double>(iters);
@@ -319,6 +288,18 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     double scalar_ms = scalar_sec * 1000.0;
     double scalar_us = (scalar_sec / static_cast<double>(iters)) * 1e6;
 
+    BenchmarkResult r_scalar;
+    r_scalar.name = "Scalar Loop";
+    r_scalar.vector_size = n;
+    r_scalar.iterations = iters;
+    r_scalar.time_ms = scalar_ms;
+    r_scalar.avg_latency_us = scalar_us;
+    r_scalar.speedup = naive_sec / scalar_sec;
+    r_scalar.alloc_count = scalar_allocs;
+    r_scalar.alloc_bytes = scalar_alloc_bytes;
+    r_scalar.gflops = (total_flops / scalar_sec) / 1e9;
+    r_scalar.bandwidth_gb_s = (total_bytes / scalar_sec) / 1e9;
+
     // -------------------------------------------------------------
     // Test 3: vec_math (Expression Template)
     // -------------------------------------------------------------
@@ -345,50 +326,6 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     double expr_ms = expr_sec * 1000.0;
     double expr_us = (expr_sec / static_cast<double>(iters)) * 1e6;
 
-    // -------------------------------------------------------------
-    // Test 4: vec_math (SYCL Device View)
-    // -------------------------------------------------------------
-    // Re-create views so vout points to out's current valid buffer
-    vout = vec_math::make_device_view(out.data(), out.size());
-    va = vec_math::make_device_view(a.data(), a.size());
-    vb = vec_math::make_device_view(b.data(), b.size());
-    vc = vec_math::make_device_view(c.data(), c.size());
-
-    std::size_t dev_allocs = 0;
-    std::size_t dev_alloc_bytes = 0;
-    {
-        g_alloc_count = 0;
-        g_alloc_bytes = 0;
-        g_track_allocs = true;
-        vm_device::evaluate_fused(vout, va, vb, vc);
-        g_track_allocs = false;
-        dev_allocs = g_alloc_count;
-        dev_alloc_bytes = g_alloc_bytes;
-        do_not_optimize(vout.data());
-    }
-
-    t0 = std::chrono::high_resolution_clock::now();
-    for (std::size_t i = 0; i < iters; ++i) {
-        vm_device::evaluate_fused(vout, va, vb, vc);
-        do_not_optimize(vout.data());
-    }
-    t1 = std::chrono::high_resolution_clock::now();
-    double dev_sec = std::chrono::duration<double>(t1 - t0).count();
-    double dev_ms = dev_sec * 1000.0;
-    double dev_us = (dev_sec / static_cast<double>(iters)) * 1e6;
-
-    BenchmarkResult r_scalar;
-    r_scalar.name = "Scalar Loop";
-    r_scalar.vector_size = n;
-    r_scalar.iterations = iters;
-    r_scalar.time_ms = scalar_ms;
-    r_scalar.avg_latency_us = scalar_us;
-    r_scalar.speedup = naive_sec / scalar_sec;
-    r_scalar.alloc_count = scalar_allocs;
-    r_scalar.alloc_bytes = scalar_alloc_bytes;
-    r_scalar.gflops = (total_flops / scalar_sec) / 1e9;
-    r_scalar.bandwidth_gb_s = (total_bytes / scalar_sec) / 1e9;
-
     BenchmarkResult r_expr;
     r_expr.name = "vec_math (Expr Template)";
     r_expr.vector_size = n;
@@ -401,29 +338,15 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     r_expr.gflops = (total_flops / expr_sec) / 1e9;
     r_expr.bandwidth_gb_s = (total_bytes / expr_sec) / 1e9;
 
-    BenchmarkResult r_device;
-    r_device.name = "vec_math (SYCL Device View)";
-    r_device.vector_size = n;
-    r_device.iterations = iters;
-    r_device.time_ms = dev_ms;
-    r_device.avg_latency_us = dev_us;
-    r_device.speedup = naive_sec / dev_sec;
-    r_device.alloc_count = dev_allocs;
-    r_device.alloc_bytes = dev_alloc_bytes;
-    r_device.gflops = (total_flops / dev_sec) / 1e9;
-    r_device.bandwidth_gb_s = (total_bytes / dev_sec) / 1e9;
-
     // Calculate ASCII bars
-    double max_speedup = std::max({r_naive.speedup, r_scalar.speedup, r_expr.speedup, r_device.speedup});
+    double max_speedup = std::max({r_naive.speedup, r_scalar.speedup, r_expr.speedup});
     r_naive.visual_bar = make_ascii_bar(r_naive.speedup, max_speedup);
     r_scalar.visual_bar = make_ascii_bar(r_scalar.speedup, max_speedup);
     r_expr.visual_bar = make_ascii_bar(r_expr.speedup, max_speedup);
-    r_device.visual_bar = make_ascii_bar(r_device.speedup, max_speedup);
 
     group.results.push_back(r_naive);
     group.results.push_back(r_scalar);
     group.results.push_back(r_expr);
-    group.results.push_back(r_device);
 
     return group;
 }
@@ -607,15 +530,8 @@ std::string generate_markdown_report(const std::vector<SizeBenchmarkGroup>& grou
         ss << std::fixed << std::setprecision(2) << groups[i].results[2].gflops << (i + 1 < groups.size() ? ", " : "");
     }
     ss << "]\n";
-
-    // Series for vec_math Device View
-    ss << "    line [";
-    for (std::size_t i = 0; i < groups.size(); ++i) {
-        ss << std::fixed << std::setprecision(2) << groups[i].results[3].gflops << (i + 1 < groups.size() ? ", " : "");
-    }
-    ss << "]\n";
     ss << "```\n\n";
-    ss << "> **Chart Legend (Throughput)**: Line 1 (bottom) = Naive `std::vector` (temporary heap mallocs) | Line 2 = Scalar Loop | Line 3 = `vec_math` Expression Templates (zero mallocs) | Line 4 = `vec_math` SYCL Device View (zero mallocs)\n\n";
+    ss << "> **Chart Legend (Throughput)**: Line 1 = Naive `std::vector` (temporary heap mallocs) | Line 2 = Hand-written Scalar Loop | Line 3 = `vec_math` Expression Templates (zero mallocs)\n\n";
 
     // Chart 2: Speedup comparison
     ss << "```mermaid\n";
@@ -650,15 +566,8 @@ std::string generate_markdown_report(const std::vector<SizeBenchmarkGroup>& grou
         ss << std::fixed << std::setprecision(2) << groups[i].results[2].speedup << (i + 1 < groups.size() ? ", " : "");
     }
     ss << "]\n";
-
-    // Device view speedup
-    ss << "    line [";
-    for (std::size_t i = 0; i < groups.size(); ++i) {
-        ss << std::fixed << std::setprecision(2) << groups[i].results[3].speedup << (i + 1 < groups.size() ? ", " : "");
-    }
-    ss << "]\n";
     ss << "```\n\n";
-    ss << "> **Chart Legend (Speedup vs Naive)**: Line 1 = Scalar Loop | Line 2 = `vec_math` Expression Templates | Line 3 = `vec_math` SYCL Device View\n\n";
+    ss << "> **Chart Legend (Speedup vs Naive)**: Line 1 = Hand-written Scalar Loop | Line 2 = `vec_math` Expression Templates (zero mallocs)\n\n";
 
     // 2. Formatted Markdown Tables with Visual ASCII Progress Bars
     ss << "### Benchmark Results Across Vector Scales\n\n";
@@ -705,69 +614,11 @@ std::string generate_markdown_report(const std::vector<SizeBenchmarkGroup>& grou
     ss << "\n";
 
     // 4. SYCL Compatibility Documentation
-    ss << "## SYCL & Heterogeneous Compute Compatibility\n\n";
-    ss << "`vec_math` provides full SYCL 2020 device compatibility **without requiring any SYCL headers** (`<sycl/sycl.hpp>`). This guarantees clean compilation in pure host C++20 code while functioning seamlessly inside SYCL device kernels.\n\n";
-    ss << "### Key Architectural Guarantees\n";
-    ss << "1. **Zero Header Dependency**: The library uses predefined macros (`__SYCL_DEVICE_ONLY__`, `SYCL_LANGUAGE_VERSION`) to map annotations (`VEC_MATH_DEVICE`, `VEC_MATH_HOST_DEVICE`, `SYCL_EXTERNAL`) without polluting translation units with vendor headers.\n";
-    ss << "2. **TriviallyCopyable Kernel Capture**: All expression nodes (`BinExpr`, `UnaryExpr`, `TernaryExpr`) and memory views (`vec_span<T>`, `device_view<T>`) satisfy `std::is_trivially_copyable_v<T>`. This allows safe by-value capture inside device kernel lambdas (`cgh.parallel_for(...)`) across GPU/accelerator memory spaces.\n";
-    ss << "3. **Unified Memory & USM Support**: `vec_span<T>` / `device_view<T>` seamlessly wraps raw pointers from host memory, Unified Shared Memory (`sycl::malloc_shared`), device memory (`sycl::malloc_device`), or `sycl::buffer` accessors.\n";
-    ss << "4. **Kernel Evaluation Helpers**: `vec_math::device_eval(dst, expr, i)` provides zero-allocation element-wise evaluation directly inside GPU work-items.\n\n";
-
-    ss << "### SYCL Usage Examples\n\n";
-    ss << "#### Example 1: Expression Evaluation with Unified Shared Memory (USM)\n";
-    ss << "```cpp\n";
-    ss << "#include <sycl/sycl.hpp>\n";
-    ss << "#include <vec_math/vector_math.hpp>\n\n";
-    ss << "using namespace vec_math;\n\n";
-    ss << "void run_usm_example(sycl::queue& q, std::size_t N) {\n";
-    ss << "    // Allocate USM shared or device memory\n";
-    ss << "    double* a_ptr   = sycl::malloc_shared<double>(N, q);\n";
-    ss << "    double* b_ptr   = sycl::malloc_shared<double>(N, q);\n";
-    ss << "    double* out_ptr = sycl::malloc_shared<double>(N, q);\n\n";
-    ss << "    // Wrap in vec_math device views (TriviallyCopyable, 0 bytes heap overhead)\n";
-    ss << "    vec_math::device_view<const double> va = vec_math::make_device_view(a_ptr, N);\n";
-    ss << "    vec_math::device_view<const double> vb = vec_math::make_device_view(b_ptr, N);\n";
-    ss << "    vec_math::device_view<double> vout     = vec_math::make_device_view(out_ptr, N);\n\n";
-    ss << "    // Submit SYCL kernel\n";
-    ss << "    q.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {\n";
-    ss << "        const std::size_t i = idx[0];\n";
-    ss << "        // Construct expression graph (stored on kernel registers / stack)\n";
-    ss << "        auto expr = 2.5 * va + 1.5 * vb - 0.5;\n";
-    ss << "        // Evaluate element with zero allocations\n";
-    ss << "        vec_math::device_eval(vout, expr, i);\n";
-    ss << "    }).wait();\n\n";
-    ss << "    sycl::free(a_ptr, q);\n";
-    ss << "    sycl::free(b_ptr, q);\n";
-    ss << "    sycl::free(out_ptr, q);\n";
-    ss << "}\n";
-    ss << "```\n\n";
-
-    ss << "#### Example 2: SYCL Buffer Accessor Integration\n";
-    ss << "```cpp\n";
-    ss << "#include <sycl/sycl.hpp>\n";
-    ss << "#include <vec_math/vector_math.hpp>\n\n";
-    ss << "using namespace vec_math;\n\n";
-    ss << "void run_buffer_example(sycl::queue& q, std::vector<float>& host_a, std::vector<float>& host_b, std::vector<float>& host_out) {\n";
-    ss << "    const std::size_t N = host_a.size();\n";
-    ss << "    sycl::buffer<float, 1> buf_a(host_a.data(), sycl::range<1>(N));\n";
-    ss << "    sycl::buffer<float, 1> buf_b(host_b.data(), sycl::range<1>(N));\n";
-    ss << "    sycl::buffer<float, 1> buf_out(host_out.data(), sycl::range<1>(N));\n\n";
-    ss << "    q.submit([&](sycl::handler& cgh) {\n";
-    ss << "        auto acc_a   = buf_a.get_access<sycl::access::mode::read>(cgh);\n";
-    ss << "        auto acc_b   = buf_b.get_access<sycl::access::mode::read>(cgh);\n";
-    ss << "        auto acc_out = buf_out.get_access<sycl::access::mode::write>(cgh);\n\n";
-    ss << "        cgh.parallel_for(sycl::range<1>(N), [=](sycl::id<1> idx) {\n";
-    ss << "            const std::size_t i = idx[0];\n";
-    ss << "            // Wrap accessor pointers inside work-item\n";
-    ss << "            auto va = vec_math::make_device_view(acc_a.get_pointer(), N);\n";
-    ss << "            auto vb = vec_math::make_device_view(acc_b.get_pointer(), N);\n";
-    ss << "            auto vout = vec_math::make_device_view(acc_out.get_pointer(), N);\n\n";
-    ss << "            auto expr = vec_math::fma(va, vb, 10.0f);\n";
-    ss << "            vec_math::device_eval(vout, expr, i);\n";
-    ss << "        });\n";
-    ss << "    }).wait();\n";
-    ss << "}\n";
-    ss << "```\n";
+    ss << "## SYCL Compatibility\n\n";
+    ss << "`vec_math` is engineered for full compatibility with modern heterogeneous C++ frameworks, including SYCL compilers (such as Intel oneAPI DPC++ and AdaptiveCpp):\n\n";
+    ss << "- **Zero SYCL Headers Included**: The library contains strictly zero `#include <sycl/sycl.hpp>` or proprietary vendor header dependencies. Host code compiles cleanly under standard C++20 with no foreign runtime or SDK overhead.\n";
+    ss << "- **TriviallyCopyable Expression Templates**: All expression nodes (`VecRef`, `ScalarVal`, `BinExpr`, `UnaryExpr`, `TernaryExpr`) are standard-layout and satisfy `std::is_trivially_copyable_v<T>`. This allows expressions to be captured by value in SYCL device kernel lambdas (`cgh.parallel_for`) without violating device capture rules.\n";
+    ss << "- **Device-Callable Core Annotations**: All core evaluation operators and expression evaluators are decorated with `VEC_MATH_DEVICE`, `VEC_MATH_HOST_DEVICE`, and `SYCL_EXTERNAL` macros when compiled under SYCL device compilation modes (`__SYCL_DEVICE_ONLY__` or `SYCL_LANGUAGE_VERSION`), enabling direct device execution.\n";
 
     return ss.str();
 }
@@ -791,11 +642,11 @@ void update_readme_file(const std::string& benchmark_md) {
 
     if (pos_start != std::string::npos && pos_end != std::string::npos) {
         new_content = content.substr(0, pos_start + marker_start.length()) + "\n\n"
-                    + benchmark_md + "\n"
+                    + benchmark_md + "\n\n"
                     + content.substr(pos_end);
     } else {
         // Append benchmark section to the end of README.md
-        new_content = content + "\n\n" + marker_start + "\n\n" + benchmark_md + "\n" + marker_end + "\n";
+        new_content = content + "\n\n" + marker_start + "\n\n" + benchmark_md + "\n\n" + marker_end + "\n";
     }
 
     std::ofstream out("README.md");
@@ -815,7 +666,7 @@ void update_readme_file(const std::string& benchmark_md) {
 int main() {
     try {
         std::cout << "======================================================================\n";
-        std::cout << " vec_math High-Performance Zero-Allocation & SYCL Benchmark Suite\n";
+        std::cout << " vec_math High-Performance Zero-Allocation Benchmark Suite\n";
         std::cout << "======================================================================\n";
 
         struct SizeConfig {

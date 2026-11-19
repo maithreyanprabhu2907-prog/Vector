@@ -1,6 +1,6 @@
 # vec_math Documentation
 
-Welcome to the official documentation for **vec_math**, a high-performance, zero-allocation, header-only C++20 vector mathematics library engineered for `std::vector` and heterogeneous compute environments (such as SYCL).
+Welcome to the official documentation for **vec_math**, a high-performance, zero-allocation, header-only C++20 vector mathematics library engineered for `std::vector` with seamless SYCL compiler compatibility.
 
 ---
 
@@ -12,29 +12,28 @@ Welcome to the official documentation for **vec_math**, a high-performance, zero
    - In-place compound operations and rvalue buffer recycling
    - SIMD auto-vectorization and loop unrolling (8x/4x)
    - Cache locality and memory traffic minimization
+   - SYCL compiler compatibility & TriviallyCopyable expressions
 
 2. [API Reference](api_reference.md)
-   - Core concepts (`Scalar`, `NumericVector`, `DeviceSpan`, `VecExpression`, `VectorOperand`, `sycl_compatible`)
-   - `vec_span<T>` and `device_view<T>` wrappers
+   - Core concepts (`Scalar`, `NumericVector`, `VecExpression`, `VectorOperand`, `sycl_compatible`)
    - Overloaded arithmetic operators (`+`, `-`, `*`, `/`)
    - Compound assignment operators (`+=`, `-=`, `*=`, `/=`)
    - Zero-allocation evaluation assignment (`<<=`) and `assign()`
    - Unary operators (`+`, `-`, `abs`) and fused operations (`fma`)
    - Reduction utilities (`sum`, `dot`, `norm`, `norm_sq`)
-   - Device evaluation helpers (`device_eval`)
-   - Compile-time configuration macros
+   - Compile-time configuration macros & device annotations
 
-3. [SYCL & Heterogeneous Acceleration Guide](sycl_guide.md)
-   - Architectural overview: Headerless SYCL compatibility
-   - TriviallyCopyable expression graph capture
-   - Unified Shared Memory (USM) workflows
-   - SYCL buffer and accessor integration
-   - Step-by-step kernel examples for Intel oneAPI and AdaptiveCpp
+3. [SYCL Compiler Compatibility Guide](sycl_guide.md)
+   - Architectural overview: Headerless SYCL compiler compatibility
+   - Zero SYCL headers included (no vendor lock-in or build bloat)
+   - TriviallyCopyable expression graph capture in device kernels
+   - Predefined compiler macro annotations (`SYCL_EXTERNAL`, `VEC_MATH_DEVICE`, `VEC_MATH_HOST_DEVICE`)
+   - Compatibility across Intel oneAPI DPC++, AdaptiveCpp, Clang, and standard host compilers
 
 4. [Performance & Benchmarking](benchmarks.md)
    - Benchmark methodology and metrics
-   - Throughput (GFLOPS) and memory bandwidth (GB/s) analysis
-   - Multi-scale comparison against naive `std::vector` and raw scalar loops
+   - 3-way performance comparison: Naive `std::vector`, Scalar Loop, and `vec_math`
+   - Throughput (GFLOPS) and memory bandwidth (GB/s) across scales (1K to 5M elements)
    - Reduction benchmark analysis (`dot`, `sum`, `fma`)
    - Auto-vectorization guidelines for MSVC, Clang, and GCC
 

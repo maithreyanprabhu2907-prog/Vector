@@ -5,16 +5,15 @@
  * Extended & Optimized for Zero-Allocation Vector Math & SYCL Device Compatibility
  *
  * Purpose:
- *   Provide a modern, expressive, intensely optimized vector math library for std::vector
- *   and device-compatible spans/views.
+ *   Provide a modern, expressive, intensely optimized vector math library for std::vector.
  *   Operator overloading keeps mathematical expressions short, readable, and fully fused.
  *
  * Goals:
  *      - Modern C++20 style, zero-allocation throughout all operations.
  *      - SIMD-vectorized loops with loop unrolling (8x/4x) and restrict pointers.
- *      - TriviallyCopyable expressions and views for seamless SYCL device kernel capture.
+ *      - TriviallyCopyable expression templates for seamless SYCL device kernel capture.
  *      - SYCL device annotations without requiring SYCL header dependencies.
- *      - Extended math utilities: dot product, sum, norm, fma, abs.
+ *      - Extended math utilities: dot product, sum, norm, norm_sq, fma, abs.
  */
 
 #include <cassert>
@@ -104,13 +103,6 @@
 
 namespace vec_math {
 
-    // Forward declaration of vec_span / device_view
-    template<typename T>
-    class vec_span;
-
-    template<typename T>
-    using device_view = vec_span<T>;
-
     namespace detail {
         template<typename T>
         struct is_std_vector : std::false_type {};
@@ -120,15 +112,6 @@ namespace vec_math {
 
         template<typename T>
         inline constexpr bool is_std_vector_v = is_std_vector<std::remove_cvref_t<T>>::value;
-
-        template<typename T>
-        struct is_vec_span : std::false_type {};
-
-        template<typename T>
-        struct is_vec_span<vec_span<T>> : std::true_type {};
-
-        template<typename T>
-        inline constexpr bool is_vec_span_v = is_vec_span<std::remove_cvref_t<T>>::value;
 
         template<typename T>
         struct is_valid_numeric : std::bool_constant<
@@ -151,92 +134,20 @@ namespace vec_math {
     concept NumericVector = detail::is_std_vector_v<T> && Scalar<typename std::remove_cvref_t<T>::value_type>;
 
     template<typename T>
-    concept DeviceSpan = detail::is_vec_span_v<T>;
-
-    template<typename T>
     concept VecExpression = detail::is_vec_expr_v<T>;
 
     template<typename T>
-    concept VectorOperand = NumericVector<T> || DeviceSpan<T> || VecExpression<T>;
+    concept VectorOperand = NumericVector<T> || VecExpression<T>;
 
-    // SYCL Compatibility Concept
+    // SYCL Compatibility Concept (verifies TriviallyCopyable for device kernel capture)
     template<typename T>
     concept sycl_compatible = std::is_trivially_copyable_v<std::remove_cvref_t<T>>;
 
     template<typename T>
     inline constexpr bool is_sycl_compatible_v = sycl_compatible<T>;
 
-    // ============================================================================
-    // Device-Compatible Span / View (USM / Device / Host memory wrapper)
-    // ============================================================================
-
-    template<typename T>
-    class vec_span {
-    public:
-        using value_type = std::remove_cv_t<T>;
-        using element_type = T;
-        using pointer = T*;
-        using const_pointer = const T*;
-        using reference = T&;
-        using const_reference = const T&;
-        using size_type = std::size_t;
-        using difference_type = std::ptrdiff_t;
-        using iterator = T*;
-        using const_iterator = const T*;
-
-    private:
-        T* data_ = nullptr;
-        std::size_t size_ = 0;
-
-    public:
-        constexpr vec_span() noexcept = default;
-        constexpr vec_span(const vec_span&) noexcept = default;
-        constexpr vec_span(vec_span&&) noexcept = default;
-        constexpr vec_span& operator=(const vec_span&) noexcept = default;
-        constexpr vec_span& operator=(vec_span&&) noexcept = default;
-        ~vec_span() = default;
-
-        VEC_MATH_HD_INLINE constexpr vec_span(T* ptr, std::size_t count) noexcept
-            : data_(ptr), size_(count) {}
-
-        template<typename Alloc> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE constexpr vec_span(std::vector<value_type, Alloc>& v) noexcept
-            : data_(v.data()), size_(v.size()) {}
-
-        template<typename Alloc>
-        VEC_MATH_HD_INLINE constexpr vec_span(const std::vector<value_type, Alloc>& v) noexcept
-            : data_(v.data()), size_(v.size()) {}
-
-        template<typename U> requires (std::is_const_v<T> && std::is_same_v<std::remove_const_t<T>, U>)
-        VEC_MATH_HD_INLINE constexpr vec_span(const vec_span<U>& other) noexcept
-            : data_(other.data()), size_(other.size()) {}
-
-        [[nodiscard]] VEC_MATH_HD_INLINE constexpr T* data() const noexcept { return data_; }
-        [[nodiscard]] VEC_MATH_HD_INLINE constexpr std::size_t size() const noexcept { return size_; }
-        [[nodiscard]] VEC_MATH_HD_INLINE constexpr bool empty() const noexcept { return size_ == 0; }
-
-        [[nodiscard]] VEC_MATH_HD_INLINE constexpr reference operator[](std::size_t i) const noexcept {
-            return data_[i];
-        }
-
-        [[nodiscard]] VEC_MATH_HD_INLINE constexpr iterator begin() const noexcept { return data_; }
-        [[nodiscard]] VEC_MATH_HD_INLINE constexpr iterator end() const noexcept { return data_ + size_; }
-        [[nodiscard]] VEC_MATH_HD_INLINE constexpr const_iterator cbegin() const noexcept { return data_; }
-        [[nodiscard]] VEC_MATH_HD_INLINE constexpr const_iterator cend() const noexcept { return data_ + size_; }
-    };
-
-    template<Scalar T>
-    [[nodiscard]] VEC_MATH_HD_INLINE constexpr vec_span<T> make_vec_span(T* ptr, std::size_t count) noexcept {
-        return vec_span<T>(ptr, count);
-    }
-
-    template<Scalar T>
-    [[nodiscard]] VEC_MATH_HD_INLINE constexpr device_view<T> make_device_view(T* ptr, std::size_t count) noexcept {
-        return device_view<T>(ptr, count);
-    }
-
     namespace detail {
-        // Functors
+        // Arithmetic Functors
         struct OpAdd {
             template<typename L, typename R>
             [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept { return l + r; }
@@ -285,7 +196,7 @@ namespace vec_math {
             }
         };
 
-        // TriviallyCopyable View of vector operands
+        // TriviallyCopyable View of std::vector operands for expression evaluation
         template<NumericVector Vec>
         struct VecRef {
             using value_type = typename std::remove_cvref_t<Vec>::value_type;
@@ -301,6 +212,9 @@ namespace vec_math {
 
             explicit constexpr VecRef(const Vec &v) noexcept
                 : ptr_(v.data()), size_(v.size()) {}
+
+            VEC_MATH_HD_INLINE constexpr VecRef(const value_type* ptr, std::size_t count) noexcept
+                : ptr_(ptr), size_(count) {}
 
             [[nodiscard]] VEC_MATH_HD_INLINE constexpr std::size_t size() const noexcept { return size_; }
             [[nodiscard]] VEC_MATH_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept { return ptr_[i]; }
@@ -332,11 +246,6 @@ namespace vec_math {
             using type = VecRef<std::remove_cvref_t<Vec>>;
         };
 
-        template<DeviceSpan Span>
-        struct OperandStorage<Span> {
-            using type = std::remove_cvref_t<Span>;
-        };
-
         template<Scalar S>
         struct OperandStorage<S> {
             using type = ScalarVal<std::remove_cvref_t<S>>;
@@ -352,11 +261,7 @@ namespace vec_math {
 
         template<typename T>
         [[nodiscard]] constexpr auto make_operand(const T &x) noexcept {
-            if constexpr (detail::is_vec_span_v<T>) {
-                return x;
-            } else {
-                return operand_storage_t<T>(x);
-            }
+            return operand_storage_t<T>(x);
         }
 
         template<typename T>
@@ -381,6 +286,12 @@ namespace vec_math {
                     }
                 }
             }
+
+            constexpr BinExpr(const BinExpr&) noexcept = default;
+            constexpr BinExpr(BinExpr&&) noexcept = default;
+            constexpr BinExpr& operator=(const BinExpr&) noexcept = default;
+            constexpr BinExpr& operator=(BinExpr&&) noexcept = default;
+            ~BinExpr() = default;
 
             [[nodiscard]] VEC_MATH_HD_INLINE constexpr std::size_t size() const noexcept {
                 if constexpr (is_scalar_val_v<Lhs>) { return rhs.size(); } else { return lhs.size(); }
@@ -432,6 +343,12 @@ namespace vec_math {
             Operand operand;
 
             constexpr UnaryExpr(Op o, Operand arg) : op(o), operand(std::move(arg)) {}
+
+            constexpr UnaryExpr(const UnaryExpr&) noexcept = default;
+            constexpr UnaryExpr(UnaryExpr&&) noexcept = default;
+            constexpr UnaryExpr& operator=(const UnaryExpr&) noexcept = default;
+            constexpr UnaryExpr& operator=(UnaryExpr&&) noexcept = default;
+            ~UnaryExpr() = default;
 
             [[nodiscard]] VEC_MATH_HD_INLINE constexpr std::size_t size() const noexcept { return operand.size(); }
 
@@ -506,6 +423,12 @@ namespace vec_math {
                 check_size(b);
                 check_size(c);
             }
+
+            constexpr TernaryExpr(const TernaryExpr&) noexcept = default;
+            constexpr TernaryExpr(TernaryExpr&&) noexcept = default;
+            constexpr TernaryExpr& operator=(const TernaryExpr&) noexcept = default;
+            constexpr TernaryExpr& operator=(TernaryExpr&&) noexcept = default;
+            ~TernaryExpr() = default;
 
             [[nodiscard]] VEC_MATH_HD_INLINE constexpr std::size_t size() const noexcept {
                 if constexpr (!is_scalar_val_v<A>) { return a.size(); }
@@ -661,101 +584,6 @@ namespace vec_math {
             }
             for (; i < n; ++i) { p[i] = static_cast<T>(storage[i]); }
         }
-
-        template<Scalar T, VectorOperand Src>
-        VEC_MATH_HD_INLINE void assign_span(vec_span<T> dst, const Src &src) {
-            if (dst.size() != src.size()) [[unlikely]] {
-                VEC_MATH_THROW_OR_ABORT(std::invalid_argument,
-                                        "vec_math: span size mismatch in assignment");
-            }
-            const std::size_t n = dst.size();
-            T * VEC_MATH_RESTRICT p = dst.data();
-            auto storage = make_operand(src);
-
-            std::size_t i = 0;
-            const std::size_t n8 = n & ~std::size_t(7);
-            VEC_MATH_PRAGMA_SIMD
-            for (; i < n8; i += 8) {
-                p[i + 0] = static_cast<T>(storage[i + 0]);
-                p[i + 1] = static_cast<T>(storage[i + 1]);
-                p[i + 2] = static_cast<T>(storage[i + 2]);
-                p[i + 3] = static_cast<T>(storage[i + 3]);
-                p[i + 4] = static_cast<T>(storage[i + 4]);
-                p[i + 5] = static_cast<T>(storage[i + 5]);
-                p[i + 6] = static_cast<T>(storage[i + 6]);
-                p[i + 7] = static_cast<T>(storage[i + 7]);
-            }
-            const std::size_t n4 = n & ~std::size_t(3);
-            for (; i < n4; i += 4) {
-                p[i + 0] = static_cast<T>(storage[i + 0]);
-                p[i + 1] = static_cast<T>(storage[i + 1]);
-                p[i + 2] = static_cast<T>(storage[i + 2]);
-                p[i + 3] = static_cast<T>(storage[i + 3]);
-            }
-            for (; i < n; ++i) { p[i] = static_cast<T>(storage[i]); }
-        }
-
-        template<Scalar T, VectorOperand Src, typename CompoundFn>
-        VEC_MATH_HD_INLINE void apply_span_inplace(vec_span<T> dst, const Src &src, CompoundFn fn) {
-            if (dst.size() != src.size()) [[unlikely]] {
-                VEC_MATH_THROW_OR_ABORT(std::invalid_argument,
-                                        "vec_math: span size mismatch in compound assignment");
-            }
-            const std::size_t n = dst.size();
-            T * VEC_MATH_RESTRICT p = dst.data();
-            auto storage = make_operand(src);
-
-            std::size_t i = 0;
-            const std::size_t n8 = n & ~std::size_t(7);
-            VEC_MATH_PRAGMA_SIMD
-            for (; i < n8; i += 8) {
-                fn(p[i + 0], static_cast<T>(storage[i + 0]));
-                fn(p[i + 1], static_cast<T>(storage[i + 1]));
-                fn(p[i + 2], static_cast<T>(storage[i + 2]));
-                fn(p[i + 3], static_cast<T>(storage[i + 3]));
-                fn(p[i + 4], static_cast<T>(storage[i + 4]));
-                fn(p[i + 5], static_cast<T>(storage[i + 5]));
-                fn(p[i + 6], static_cast<T>(storage[i + 6]));
-                fn(p[i + 7], static_cast<T>(storage[i + 7]));
-            }
-            const std::size_t n4 = n & ~std::size_t(3);
-            for (; i < n4; i += 4) {
-                fn(p[i + 0], static_cast<T>(storage[i + 0]));
-                fn(p[i + 1], static_cast<T>(storage[i + 1]));
-                fn(p[i + 2], static_cast<T>(storage[i + 2]));
-                fn(p[i + 3], static_cast<T>(storage[i + 3]));
-            }
-            for (; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
-        }
-
-        template<Scalar T, Scalar S, typename CompoundFn>
-        VEC_MATH_HD_INLINE void apply_span_scalar_inplace(vec_span<T> dst, const S &scalar, CompoundFn fn) noexcept {
-            const std::size_t n = dst.size();
-            T * VEC_MATH_RESTRICT p = dst.data();
-            const T s = static_cast<T>(scalar);
-
-            std::size_t i = 0;
-            const std::size_t n8 = n & ~std::size_t(7);
-            VEC_MATH_PRAGMA_SIMD
-            for (; i < n8; i += 8) {
-                fn(p[i + 0], s);
-                fn(p[i + 1], s);
-                fn(p[i + 2], s);
-                fn(p[i + 3], s);
-                fn(p[i + 4], s);
-                fn(p[i + 5], s);
-                fn(p[i + 6], s);
-                fn(p[i + 7], s);
-            }
-            const std::size_t n4 = n & ~std::size_t(3);
-            for (; i < n4; i += 4) {
-                fn(p[i + 0], s);
-                fn(p[i + 1], s);
-                fn(p[i + 2], s);
-                fn(p[i + 3], s);
-            }
-            for (; i < n; ++i) { fn(p[i], s); }
-        }
     }
 
     // ============================================================================
@@ -767,19 +595,6 @@ namespace vec_math {
         template<typename T, typename Alloc, VectorOperand Src>
         inline std::vector<T, Alloc> &operator<<=(std::vector<T, Alloc> &dst, const Src &src) {
             detail::assign_zero_malloc(dst, src);
-            return dst;
-        }
-
-        // Zero-malloc assign for vec_span
-        template<Scalar T, VectorOperand Src> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE vec_span<T> &operator<<=(vec_span<T> &dst, const Src &src) {
-            detail::assign_span(dst, src);
-            return dst;
-        }
-
-        template<Scalar T, VectorOperand Src> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE vec_span<T> operator<<=(vec_span<T> &&dst, const Src &src) {
-            detail::assign_span(dst, src);
             return dst;
         }
 
@@ -829,55 +644,6 @@ namespace vec_math {
         template<typename T, typename Alloc, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::vector<T, Alloc> &operator/=(std::vector<T, Alloc> &lhs, const S &scalar) noexcept {
             detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a /= s; });
-            return lhs;
-        }
-
-        // Compound assignment operators for vec_span
-        template<Scalar T, VectorOperand Rhs> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE vec_span<T> &operator+=(vec_span<T> &lhs, const Rhs &rhs) {
-            detail::apply_span_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a += b; });
-            return lhs;
-        }
-
-        template<Scalar T, Scalar S> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE vec_span<T> &operator+=(vec_span<T> &lhs, const S &scalar) noexcept {
-            detail::apply_span_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a += s; });
-            return lhs;
-        }
-
-        template<Scalar T, VectorOperand Rhs> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE vec_span<T> &operator-=(vec_span<T> &lhs, const Rhs &rhs) {
-            detail::apply_span_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a -= b; });
-            return lhs;
-        }
-
-        template<Scalar T, Scalar S> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE vec_span<T> &operator-=(vec_span<T> &lhs, const S &scalar) noexcept {
-            detail::apply_span_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a -= s; });
-            return lhs;
-        }
-
-        template<Scalar T, VectorOperand Rhs> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE vec_span<T> &operator*=(vec_span<T> &lhs, const Rhs &rhs) {
-            detail::apply_span_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a *= b; });
-            return lhs;
-        }
-
-        template<Scalar T, Scalar S> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE vec_span<T> &operator*=(vec_span<T> &lhs, const S &scalar) noexcept {
-            detail::apply_span_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a *= s; });
-            return lhs;
-        }
-
-        template<Scalar T, VectorOperand Rhs> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE vec_span<T> &operator/=(vec_span<T> &lhs, const Rhs &rhs) {
-            detail::apply_span_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a /= b; });
-            return lhs;
-        }
-
-        template<Scalar T, Scalar S> requires (!std::is_const_v<T>)
-        VEC_MATH_HD_INLINE vec_span<T> &operator/=(vec_span<T> &lhs, const S &scalar) noexcept {
-            detail::apply_span_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a /= s; });
             return lhs;
         }
 
@@ -1101,11 +867,6 @@ namespace vec_math {
         detail::assign_zero_malloc(dst, src);
     }
 
-    template<Scalar T, VectorOperand Src> requires (!std::is_const_v<T>)
-    VEC_MATH_HD_INLINE void assign(vec_span<T> dst, const Src &src) {
-        detail::assign_span(dst, src);
-    }
-
     // ============================================================================
     // Extended Math Utilities (dot, sum, norm, norm_sq, fma, abs)
     // ============================================================================
@@ -1277,27 +1038,5 @@ namespace vec_math {
         using ResType = std::conditional_t<std::is_floating_point_v<Val>, Val, double>;
         const auto d = dot(op, op);
         return std::sqrt(static_cast<ResType>(d));
-    }
-
-    // ============================================================================
-    // SYCL Device Evaluation Helpers (zero-allocation kernel execution)
-    // ============================================================================
-
-    template<typename Dst, VectorOperand Expr>
-    VEC_MATH_HD_INLINE constexpr void device_eval(Dst &dst, const Expr &expr) {
-        const std::size_t n = expr.size();
-        for (std::size_t i = 0; i < n; ++i) {
-            dst[i] = static_cast<typename Dst::value_type>(expr[i]);
-        }
-    }
-
-    template<typename Dst, VectorOperand Expr>
-    VEC_MATH_HD_INLINE constexpr void device_eval(Dst &dst, const Expr &expr, std::size_t i) noexcept {
-        dst[i] = static_cast<typename Dst::value_type>(expr[i]);
-    }
-
-    template<typename T, VectorOperand Expr>
-    VEC_MATH_HD_INLINE constexpr void device_eval(T * VEC_MATH_RESTRICT dst, const Expr &expr, std::size_t i) noexcept {
-        dst[i] = static_cast<T>(expr[i]);
     }
 }
