@@ -115,10 +115,10 @@ Benchmark configuration:
 xychart-beta
     title "Compute Throughput (GFLOPS) across Vector Sizes"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "GFLOPS (Higher is better)" 0 --> 57
-    line [2.04, 0.35, 0.46, 0.48, 0.42]
-    line [48.92, 20.41, 14.77, 6.28, 4.26]
-    line [13.04, 12.25, 11.42, 6.05, 4.41]
+    y-axis "GFLOPS (Higher is better)" 0 --> 58
+    line [2.02, 0.34, 0.45, 0.47, 0.50]
+    line [50.01, 19.75, 16.59, 5.41, 4.54]
+    line [13.23, 12.72, 12.29, 5.61, 4.46]
 ```
 
 > **Chart Legend (Throughput)**: Line 1 = Naive `std::vector` (temporary heap mallocs) | Line 2 = Hand-written Scalar Loop | Line 3 = `vec_math` Expression Templates (zero mallocs)
@@ -127,9 +127,9 @@ xychart-beta
 xychart-beta
     title "Speedup Factor Relative to Naive std::vector (x-fold)"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "Speedup Factor (x)" 0 --> 67
-    line [23.93, 57.78, 32.01, 13.04, 10.11]
-    line [6.38, 34.67, 24.75, 12.56, 10.48]
+    y-axis "Speedup Factor (x)" 0 --> 68
+    line [24.70, 58.41, 37.26, 11.43, 9.09]
+    line [6.53, 37.60, 27.61, 11.87, 8.93]
 ```
 
 > **Chart Legend (Speedup vs Naive)**: Line 1 = Hand-written Scalar Loop | Line 2 = `vec_math` Expression Templates (zero mallocs)
@@ -140,49 +140,49 @@ xychart-beta
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 2.45 µs | **1.00x** | 5 allocs (39.3 KB) | 2.04 GFLOPS | 13.08 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 0.10 µs | **23.93x** | `0 allocs (0 B)` | 48.92 GFLOPS | 313.08 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 0.38 µs | **6.38x** | `0 allocs (0 B)` | 13.04 GFLOPS | 83.43 GB/s | `█████░░░░░░░░░░░░░░░` |
+| **Naive std::vector** | 2.47 µs | **1.00x** | 5 allocs (39.3 KB) | 2.02 GFLOPS | 12.96 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 0.10 µs | **24.70x** | `0 allocs (0 B)` | 50.01 GFLOPS | 320.06 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 0.38 µs | **6.53x** | `0 allocs (0 B)` | 13.23 GFLOPS | 84.64 GB/s | `█████░░░░░░░░░░░░░░░` |
 
 #### Vector Size: 10K (10000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 141.55 µs | **1.00x** | 5 allocs (390.8 KB) | 0.35 GFLOPS | 2.26 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 2.45 µs | **57.78x** | `0 allocs (0 B)` | 20.41 GFLOPS | 130.62 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 4.08 µs | **34.67x** | `0 allocs (0 B)` | 12.25 GFLOPS | 78.38 GB/s | `████████████░░░░░░░░` |
+| **Naive std::vector** | 147.85 µs | **1.00x** | 5 allocs (390.8 KB) | 0.34 GFLOPS | 2.16 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 2.53 µs | **58.41x** | `0 allocs (0 B)` | 19.75 GFLOPS | 126.42 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 3.93 µs | **37.60x** | `0 allocs (0 B)` | 12.72 GFLOPS | 81.38 GB/s | `█████████████░░░░░░░` |
 
 #### Vector Size: 100K (100000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 1.08 ms | **1.00x** | 5 allocs (3.8 MB) | 0.46 GFLOPS | 2.95 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 33.85 µs | **32.01x** | `0 allocs (0 B)` | 14.77 GFLOPS | 94.53 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 43.78 µs | **24.75x** | `0 allocs (0 B)` | 11.42 GFLOPS | 73.10 GB/s | `███████████████░░░░░` |
+| **Naive std::vector** | 1.12 ms | **1.00x** | 5 allocs (3.8 MB) | 0.45 GFLOPS | 2.85 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 30.14 µs | **37.26x** | `0 allocs (0 B)` | 16.59 GFLOPS | 106.16 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 40.68 µs | **27.61x** | `0 allocs (0 B)` | 12.29 GFLOPS | 78.67 GB/s | `███████████████░░░░░` |
 
 #### Vector Size: 1M (1000000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 10.39 ms | **1.00x** | 5 allocs (38.1 MB) | 0.48 GFLOPS | 3.08 GB/s | `██░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 796.65 µs | **13.04x** | `0 allocs (0 B)` | 6.28 GFLOPS | 40.17 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 827.13 µs | **12.56x** | `0 allocs (0 B)` | 6.05 GFLOPS | 38.69 GB/s | `███████████████████░` |
+| **Naive std::vector** | 10.57 ms | **1.00x** | 5 allocs (38.1 MB) | 0.47 GFLOPS | 3.03 GB/s | `██░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 924.78 µs | **11.43x** | `0 allocs (0 B)` | 5.41 GFLOPS | 34.60 GB/s | `███████████████████░` |
+| **vec_math (Expr Template)** | 890.72 µs | **11.87x** | `0 allocs (0 B)` | 5.61 GFLOPS | 35.93 GB/s | `████████████████████` |
 
 #### Vector Size: 5M (5000000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 59.37 ms | **1.00x** | 5 allocs (190.7 MB) | 0.42 GFLOPS | 2.70 GB/s | `██░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 5.87 ms | **10.11x** | `0 allocs (0 B)` | 4.26 GFLOPS | 27.24 GB/s | `███████████████████░` |
-| **vec_math (Expr Template)** | 5.66 ms | **10.48x** | `0 allocs (0 B)` | 4.41 GFLOPS | 28.25 GB/s | `████████████████████` |
+| **Naive std::vector** | 50.00 ms | **1.00x** | 5 allocs (190.7 MB) | 0.50 GFLOPS | 3.20 GB/s | `██░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 5.50 ms | **9.09x** | `0 allocs (0 B)` | 4.54 GFLOPS | 29.08 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 5.60 ms | **8.93x** | `0 allocs (0 B)` | 4.46 GFLOPS | 28.57 GB/s | `████████████████████` |
 
 ### Reductions & Extended Math Utilities (1M Elements)
 
 | Operation | Baseline | `vec_math` | Baseline Time | `vec_math` Time | Speedup | Throughput |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Dot Product (dot)** | std::inner_product | **vec_math::dot (8x unrolled)** | 37.61 ms | **13.09 ms** | **2.87x** | 7.64 GFLOPS |
-| **Sum Reduction (sum)** | std::accumulate | **vec_math::sum (8x tree)** | 35.79 ms | **4.87 ms** | **7.35x** | 10.27 GFLOPS |
-| **Fused Multiply-Add (fma)** | Scalar a*b + c | **vec_math::fma (Ternary)** | 29.83 ms | **36.12 ms** | **0.83x** | 2.77 GFLOPS |
+| **Dot Product (dot)** | std::inner_product | **vec_math::dot (8x unrolled)** | 38.18 ms | **13.60 ms** | **2.81x** | 7.35 GFLOPS |
+| **Sum Reduction (sum)** | std::accumulate | **vec_math::sum (8x tree)** | 36.03 ms | **4.85 ms** | **7.43x** | 10.32 GFLOPS |
+| **Fused Multiply-Add (fma)** | Scalar a*b + c | **vec_math::fma (Ternary)** | 30.42 ms | **37.03 ms** | **0.82x** | 2.70 GFLOPS |
 
 ## SYCL Compatibility
 
