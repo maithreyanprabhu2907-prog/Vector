@@ -20,10 +20,25 @@
 #include <cmath>
 #include <concepts>
 #include <cstddef>
+#include <cstdlib>
+#include <new>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#if defined(_WIN32) || defined(_MSC_VER)
+#include <malloc.h>
+#endif
+
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#include <immintrin.h>
+#define VEC_MATH_HAS_X86_INTRIN 1
+#endif
+
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
 
 // ============================================================================
 // SYCL & Device Compatibility Annotations (WITHOUT including SYCL headers)
@@ -149,6 +164,73 @@ namespace vec_math {
     template<typename T>
     inline constexpr bool is_sycl_compatible_v = sycl_compatible<T>;
 
+    // ============================================================================
+    // 64-Byte Cache-Line Aligned Memory
+    // ============================================================================
+
+    template<typename T, std::size_t Alignment = 64>
+    struct aligned_allocator {
+        using value_type = T;
+        static constexpr std::size_t alignment = Alignment;
+
+        template<typename U>
+        struct rebind {
+            using other = aligned_allocator<U, Alignment>;
+        };
+
+        constexpr aligned_allocator() noexcept = default;
+
+        template<typename U>
+        constexpr aligned_allocator(const aligned_allocator<U, Alignment>&) noexcept {}
+
+        [[nodiscard]] T* allocate(std::size_t n) {
+            if (n == 0) return nullptr;
+            if (n > std::size_t(-1) / sizeof(T)) {
+                throw std::bad_array_new_length{};
+            }
+            const std::size_t bytes = n * sizeof(T);
+#if defined(_MSC_VER) || defined(__MINGW32__)
+            void* ptr = _aligned_malloc(bytes, Alignment);
+            if (!ptr) throw std::bad_alloc{};
+            return static_cast<T*>(ptr);
+#elif defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+            void* ptr = nullptr;
+            constexpr std::size_t align = Alignment < sizeof(void*) ? sizeof(void*) : Alignment;
+            if (posix_memalign(&ptr, align, bytes) != 0 || !ptr) {
+                throw std::bad_alloc{};
+            }
+            return static_cast<T*>(ptr);
+#else
+            const std::size_t rounded_bytes = ((bytes + Alignment - 1) / Alignment) * Alignment;
+            void* ptr = std::aligned_alloc(Alignment, rounded_bytes);
+            if (!ptr) throw std::bad_alloc{};
+            return static_cast<T*>(ptr);
+#endif
+        }
+
+        void deallocate(T* p, [[maybe_unused]] std::size_t n) noexcept {
+            if (!p) return;
+#if defined(_MSC_VER) || defined(__MINGW32__)
+            _aligned_free(p);
+#else
+            std::free(p);
+#endif
+        }
+
+        template<typename U, std::size_t A2>
+        constexpr bool operator==(const aligned_allocator<U, A2>&) const noexcept {
+            return Alignment == A2;
+        }
+
+        template<typename U, std::size_t A2>
+        constexpr bool operator!=(const aligned_allocator<U, A2>&) const noexcept {
+            return Alignment != A2;
+        }
+    };
+
+    template<typename T>
+    using aligned_vector = std::vector<T, aligned_allocator<T, 64>>;
+
     namespace detail {
         // Arithmetic Functors
         struct OpAdd {
@@ -196,6 +278,75 @@ namespace vec_math {
             template<typename A, typename B, typename C>
             [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const A &a, const B &b, const C &c) const noexcept {
                 return a * b + c;
+            }
+        };
+
+        struct OpMin {
+            template<typename L, typename R>
+            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept {
+                return l < r ? l : r;
+            }
+        };
+
+        struct OpMax {
+            template<typename L, typename R>
+            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept {
+                return l > r ? l : r;
+            }
+        };
+
+        struct OpClamp {
+            template<typename V, typename Lo, typename Hi>
+            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const V &v, const Lo &lo, const Hi &hi) const noexcept {
+                return v < lo ? lo : (v > hi ? hi : v);
+            }
+        };
+
+        struct OpSqrt {
+            template<typename T>
+            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const T &x) const noexcept {
+                using std::sqrt;
+                return sqrt(x);
+            }
+        };
+
+        struct OpExp {
+            template<typename T>
+            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const T &x) const noexcept {
+                using std::exp;
+                return exp(x);
+            }
+        };
+
+        struct OpLog {
+            template<typename T>
+            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const T &x) const noexcept {
+                using std::log;
+                return log(x);
+            }
+        };
+
+        struct OpSin {
+            template<typename T>
+            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const T &x) const noexcept {
+                using std::sin;
+                return sin(x);
+            }
+        };
+
+        struct OpCos {
+            template<typename T>
+            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const T &x) const noexcept {
+                using std::cos;
+                return cos(x);
+            }
+        };
+
+        struct OpPow {
+            template<typename B, typename E>
+            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const B &base, const E &exp) const noexcept {
+                using std::pow;
+                return pow(base, exp);
             }
         };
 
@@ -275,7 +426,10 @@ namespace vec_math {
         // Binary Expression (TriviallyCopyable when Lhs and Rhs are TriviallyCopyable)
         template<typename Op, typename Lhs, typename Rhs>
         struct BinExpr : ExprBase {
-            using value_type = std::common_type_t<typename Lhs::value_type, typename Rhs::value_type>;
+            using value_type = std::remove_cvref_t<decltype(std::declval<Op>()(
+                std::declval<typename Lhs::value_type>(),
+                std::declval<typename Rhs::value_type>()
+            ))>;
 
             [[no_unique_address]] Op op;
             Lhs lhs;
@@ -866,5 +1020,361 @@ namespace vec_math {
         using ResType = std::conditional_t<std::is_floating_point_v<Val>, Val, double>;
         const auto d = dot(op, op);
         return std::sqrt(static_cast<ResType>(d));
+    }
+
+    // ============================================================================
+    // Operator Overloading for Dot / Inner Product
+    // ============================================================================
+
+    inline namespace ops {
+        // Inner product / dot product operator: u | v
+        template<VectorOperand Lhs, VectorOperand Rhs>
+        [[nodiscard]] constexpr auto operator|(const Lhs &lhs, const Rhs &rhs) {
+            return dot(lhs, rhs);
+        }
+    }
+
+    // ============================================================================
+    // Non-Temporal Streaming Stores
+    // ============================================================================
+
+    template<typename T, typename Alloc, VectorOperand Src>
+    inline void assign_stream(std::vector<T, Alloc> &dst, const Src &src) {
+        const std::size_t n = src.size();
+        if (dst.capacity() < n) [[unlikely]] {
+            VEC_MATH_THROW_OR_ABORT(std::length_error,
+                                    "vec_math: destination capacity < source size in assign_stream");
+        }
+        dst.resize(n);
+        if (n == 0) return;
+
+        T * VEC_MATH_RESTRICT p = dst.data();
+        auto storage = detail::make_operand(src);
+
+#if defined(VEC_MATH_HAS_X86_INTRIN)
+        if constexpr (std::is_same_v<T, double>) {
+            std::size_t i = 0;
+#if defined(__AVX__)
+            while (i < n && (reinterpret_cast<std::uintptr_t>(p + i) & 31) != 0) {
+                p[i] = static_cast<double>(storage[i]);
+                ++i;
+            }
+            for (; i + 4 <= n; i += 4) {
+                __m256d val = _mm256_setr_pd(
+                    static_cast<double>(storage[i]),
+                    static_cast<double>(storage[i + 1]),
+                    static_cast<double>(storage[i + 2]),
+                    static_cast<double>(storage[i + 3])
+                );
+                _mm256_stream_pd(p + i, val);
+            }
+#endif
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+            while (i < n && (reinterpret_cast<std::uintptr_t>(p + i) & 15) != 0) {
+                p[i] = static_cast<double>(storage[i]);
+                ++i;
+            }
+            for (; i + 2 <= n; i += 2) {
+                __m128d val = _mm_setr_pd(
+                    static_cast<double>(storage[i]),
+                    static_cast<double>(storage[i + 1])
+                );
+                _mm_stream_pd(p + i, val);
+            }
+#endif
+            for (; i < n; ++i) {
+                p[i] = static_cast<double>(storage[i]);
+            }
+            _mm_sfence();
+        } else if constexpr (std::is_same_v<T, float>) {
+            std::size_t i = 0;
+#if defined(__AVX__)
+            while (i < n && (reinterpret_cast<std::uintptr_t>(p + i) & 31) != 0) {
+                p[i] = static_cast<float>(storage[i]);
+                ++i;
+            }
+            for (; i + 8 <= n; i += 8) {
+                __m256 val = _mm256_setr_ps(
+                    static_cast<float>(storage[i]),
+                    static_cast<float>(storage[i + 1]),
+                    static_cast<float>(storage[i + 2]),
+                    static_cast<float>(storage[i + 3]),
+                    static_cast<float>(storage[i + 4]),
+                    static_cast<float>(storage[i + 5]),
+                    static_cast<float>(storage[i + 6]),
+                    static_cast<float>(storage[i + 7])
+                );
+                _mm256_stream_ps(p + i, val);
+            }
+#endif
+#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+            while (i < n && (reinterpret_cast<std::uintptr_t>(p + i) & 15) != 0) {
+                p[i] = static_cast<float>(storage[i]);
+                ++i;
+            }
+            for (; i + 4 <= n; i += 4) {
+                __m128 val = _mm_setr_ps(
+                    static_cast<float>(storage[i]),
+                    static_cast<float>(storage[i + 1]),
+                    static_cast<float>(storage[i + 2]),
+                    static_cast<float>(storage[i + 3])
+                );
+                _mm_stream_ps(p + i, val);
+            }
+#endif
+            for (; i < n; ++i) {
+                p[i] = static_cast<float>(storage[i]);
+            }
+            _mm_sfence();
+        } else
+#endif
+        {
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t i = 0; i < n; ++i) {
+                p[i] = static_cast<T>(storage[i]);
+            }
+        }
+    }
+
+    // ============================================================================
+    // Explicit Parallel Helpers (OpenMP-guarded)
+    // ============================================================================
+
+    template<typename T, typename Alloc, VectorOperand Src>
+    inline void assign_par(std::vector<T, Alloc> &dst, const Src &src) {
+        const std::size_t n = src.size();
+        if (dst.capacity() < n) [[unlikely]] {
+            VEC_MATH_THROW_OR_ABORT(std::length_error,
+                                    "vec_math: destination capacity < source size in assign_par");
+        }
+        dst.resize(n);
+        if (n == 0) return;
+
+        T * VEC_MATH_RESTRICT p = dst.data();
+        auto storage = detail::make_operand(src);
+
+#if defined(_OPENMP)
+        const std::int64_t n_signed = static_cast<std::int64_t>(n);
+        #pragma omp parallel for schedule(static)
+        for (std::int64_t i = 0; i < n_signed; ++i) {
+            p[i] = static_cast<T>(storage[static_cast<std::size_t>(i)]);
+        }
+#else
+        VEC_MATH_PRAGMA_SIMD
+        for (std::size_t i = 0; i < n; ++i) {
+            p[i] = static_cast<T>(storage[i]);
+        }
+#endif
+    }
+
+    template<VectorOperand Lhs, VectorOperand Rhs>
+    [[nodiscard]] inline auto dot_par(const Lhs &lhs_in, const Rhs &rhs_in) {
+        if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
+            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: vector size mismatch in dot_par");
+        }
+        auto lhs_op = detail::make_operand(lhs_in);
+        auto rhs_op = detail::make_operand(rhs_in);
+        using ResType = std::common_type_t<
+            typename detail::operand_storage_t<Lhs>::value_type,
+            typename detail::operand_storage_t<Rhs>::value_type
+        >;
+        const std::size_t n = lhs_in.size();
+        if (n == 0) { return ResType{0}; }
+
+#if defined(_OPENMP)
+        ResType total{0};
+        const std::int64_t n_signed = static_cast<std::int64_t>(n);
+        #pragma omp parallel for schedule(static) reduction(+:total)
+        for (std::int64_t i = 0; i < n_signed; ++i) {
+            total += static_cast<ResType>(lhs_op[static_cast<std::size_t>(i)]) *
+                     static_cast<ResType>(rhs_op[static_cast<std::size_t>(i)]);
+        }
+        return total;
+#else
+        return dot(lhs_in, rhs_in);
+#endif
+    }
+
+    template<VectorOperand Op>
+    [[nodiscard]] inline auto sum_par(const Op &op_in) {
+        auto op = detail::make_operand(op_in);
+        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        const std::size_t n = op.size();
+        if (n == 0) { return value_type{0}; }
+
+#if defined(_OPENMP)
+        value_type total{0};
+        const std::int64_t n_signed = static_cast<std::int64_t>(n);
+        #pragma omp parallel for schedule(static) reduction(+:total)
+        for (std::int64_t i = 0; i < n_signed; ++i) {
+            total += static_cast<value_type>(op[static_cast<std::size_t>(i)]);
+        }
+        return total;
+#else
+        return sum(op_in);
+#endif
+    }
+
+    // ============================================================================
+    // CFL & Time-stepping Reductions
+    // ============================================================================
+
+    template<VectorOperand Op>
+    [[nodiscard]] constexpr auto min_val(const Op &op_in) {
+        auto op = detail::make_operand(op_in);
+        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        const std::size_t n = op.size();
+        if (n == 0) [[unlikely]] {
+            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: min_val called on empty operand");
+        }
+        value_type res = static_cast<value_type>(op[0]);
+        VEC_MATH_PRAGMA_SIMD
+        for (std::size_t i = 1; i < n; ++i) {
+            value_type val = static_cast<value_type>(op[i]);
+            if (val < res) { res = val; }
+        }
+        return res;
+    }
+
+    template<VectorOperand Op>
+    [[nodiscard]] constexpr auto max_val(const Op &op_in) {
+        auto op = detail::make_operand(op_in);
+        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        const std::size_t n = op.size();
+        if (n == 0) [[unlikely]] {
+            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: max_val called on empty operand");
+        }
+        value_type res = static_cast<value_type>(op[0]);
+        VEC_MATH_PRAGMA_SIMD
+        for (std::size_t i = 1; i < n; ++i) {
+            value_type val = static_cast<value_type>(op[i]);
+            if (val > res) { res = val; }
+        }
+        return res;
+    }
+
+    template<VectorOperand Op>
+    [[nodiscard]] inline auto norm_inf(const Op &op_in) {
+        auto op = detail::make_operand(op_in);
+        using Val = typename detail::operand_storage_t<Op>::value_type;
+        using ResType = std::conditional_t<std::is_floating_point_v<Val>, Val, double>;
+        const std::size_t n = op.size();
+        if (n == 0) { return ResType{0}; }
+        ResType res{0};
+        VEC_MATH_PRAGMA_SIMD
+        for (std::size_t i = 0; i < n; ++i) {
+            ResType val = std::abs(static_cast<ResType>(op[i]));
+            if (val > res) { res = val; }
+        }
+        return res;
+    }
+
+    template<VectorOperand Op>
+    [[nodiscard]] inline auto norm_l1(const Op &op_in) {
+        auto op = detail::make_operand(op_in);
+        using Val = typename detail::operand_storage_t<Op>::value_type;
+        using ResType = std::conditional_t<std::is_floating_point_v<Val>, Val, double>;
+        const std::size_t n = op.size();
+        if (n == 0) { return ResType{0}; }
+        ResType total{0};
+        VEC_MATH_PRAGMA_SIMD
+        for (std::size_t i = 0; i < n; ++i) {
+            total += std::abs(static_cast<ResType>(op[i]));
+        }
+        return total;
+    }
+
+    // ============================================================================
+    // Element-wise Limiters (Positivity & WENO Limiters)
+    // ============================================================================
+
+    template<typename V, typename Lo, typename Hi>
+        requires VectorOperand<V> &&
+                 (VectorOperand<Lo> || Scalar<Lo>) &&
+                 (VectorOperand<Hi> || Scalar<Hi>)
+    [[nodiscard]] constexpr auto clamp(const V &v, const Lo &lo, const Hi &hi) {
+        return detail::TernaryExpr<detail::OpClamp,
+            detail::operand_storage_t<V>,
+            detail::operand_storage_t<Lo>,
+            detail::operand_storage_t<Hi>>(
+                detail::OpClamp{},
+                detail::make_operand(v),
+                detail::make_operand(lo),
+                detail::make_operand(hi)
+        );
+    }
+
+    template<VectorOperand Lhs, VectorOperand Rhs>
+    [[nodiscard]] constexpr auto min(const Lhs &lhs, const Rhs &rhs) {
+        return detail::make_bin_expr(detail::OpMin{}, lhs, rhs);
+    }
+
+    template<VectorOperand Lhs, Scalar S>
+    [[nodiscard]] constexpr auto min(const Lhs &lhs, const S &scalar) {
+        return detail::make_bin_expr(detail::OpMin{}, lhs, scalar);
+    }
+
+    template<Scalar S, VectorOperand Rhs>
+    [[nodiscard]] constexpr auto min(const S &scalar, const Rhs &rhs) {
+        return detail::make_bin_expr(detail::OpMin{}, scalar, rhs);
+    }
+
+    template<VectorOperand Lhs, VectorOperand Rhs>
+    [[nodiscard]] constexpr auto max(const Lhs &lhs, const Rhs &rhs) {
+        return detail::make_bin_expr(detail::OpMax{}, lhs, rhs);
+    }
+
+    template<VectorOperand Lhs, Scalar S>
+    [[nodiscard]] constexpr auto max(const Lhs &lhs, const S &scalar) {
+        return detail::make_bin_expr(detail::OpMax{}, lhs, scalar);
+    }
+
+    template<Scalar S, VectorOperand Rhs>
+    [[nodiscard]] constexpr auto max(const S &scalar, const Rhs &rhs) {
+        return detail::make_bin_expr(detail::OpMax{}, scalar, rhs);
+    }
+
+    // ============================================================================
+    // Element-wise Scientific Functions
+    // ============================================================================
+
+    template<VectorOperand Arg>
+    [[nodiscard]] inline auto sqrt(const Arg &arg) {
+        return detail::make_unary_expr(detail::OpSqrt{}, arg);
+    }
+
+    template<VectorOperand Arg>
+    [[nodiscard]] inline auto exp(const Arg &arg) {
+        return detail::make_unary_expr(detail::OpExp{}, arg);
+    }
+
+    template<VectorOperand Arg>
+    [[nodiscard]] inline auto log(const Arg &arg) {
+        return detail::make_unary_expr(detail::OpLog{}, arg);
+    }
+
+    template<VectorOperand Arg>
+    [[nodiscard]] inline auto sin(const Arg &arg) {
+        return detail::make_unary_expr(detail::OpSin{}, arg);
+    }
+
+    template<VectorOperand Arg>
+    [[nodiscard]] inline auto cos(const Arg &arg) {
+        return detail::make_unary_expr(detail::OpCos{}, arg);
+    }
+
+    template<VectorOperand Base, VectorOperand Exp>
+    [[nodiscard]] inline auto pow(const Base &base, const Exp &exp) {
+        return detail::make_bin_expr(detail::OpPow{}, base, exp);
+    }
+
+    template<VectorOperand Base, Scalar Exp>
+    [[nodiscard]] inline auto pow(const Base &base, const Exp &exp) {
+        return detail::make_bin_expr(detail::OpPow{}, base, exp);
+    }
+
+    template<Scalar Base, VectorOperand Exp>
+    [[nodiscard]] inline auto pow(const Base &base, const Exp &exp) {
+        return detail::make_bin_expr(detail::OpPow{}, base, exp);
     }
 }

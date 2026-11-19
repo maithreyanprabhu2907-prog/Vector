@@ -25,19 +25,22 @@ Traditional heterogeneous libraries often directly include `<sycl/sycl.hpp>`. Wh
 ### A. TriviallyCopyable Expression Templates
 The SYCL specification mandates that any object captured by value in a device kernel lambda (`cgh.parallel_for([=](sycl::id<1> idx) { ... })`) must satisfy `std::is_trivially_copyable_v<T>`.
 
-All `vec_math` expression templates are standard-layout and TriviallyCopyable:
+All `vec_math` expression templates and mathematical nodes are standard-layout and TriviallyCopyable:
 - `VecRef<T>` (16-byte pointer + size wrapper)
 - `ScalarVal<S>` (scalar value wrapper)
-- `BinExpr<Op, Lhs, Rhs>`
-- `UnaryExpr<Op, Arg>`
-- `TernaryExpr<Op, A, B, C>`
+- `BinExpr<Op, Lhs, Rhs>` (including `+`, `-`, `*`, `/`, `min`, `max`, `pow`)
+- `UnaryExpr<Op, Arg>` (including `+`, `-`, `abs`, `sqrt`, `exp`, `log`, `sin`, `cos`)
+- `TernaryExpr<Op, A, B, C>` (including `fma` and `clamp`)
 
 The `sycl_compatible` concept verifies this property at compile time:
 ```cpp
 template<typename T>
 concept sycl_compatible = std::is_trivially_copyable_v<std::remove_cvref_t<T>>;
 
+// Verified at compile time
 static_assert(vec_math::sycl_compatible<decltype(2.0 * a + b)>);
+static_assert(vec_math::sycl_compatible<decltype(vec_math::clamp(a, 0.0, 1.0))>);
+static_assert(vec_math::sycl_compatible<decltype(vec_math::sqrt(a))>);
 ```
 
 ### B. Conditional Device Function Annotations
@@ -85,7 +88,7 @@ Device kernels prohibit dynamic heap allocation (`malloc`, `new`, `std::vector::
 Because `vec_math` does not bundle proprietary span/view wrappers or force SYCL types into host code, using it in SYCL projects is straightforward and clean:
 
 ### Host-Side Preparation & Vector Math
-In SYCL applications, host pre-processing and post-processing often utilize `std::vector`:
+In SYCL applications, host pre-processing and post-processing often utilize `std::vector` or `vec_math::aligned_vector`:
 
 ```cpp
 #include <vec_math/vector_math.hpp>
@@ -147,7 +150,17 @@ static_assert(std::is_trivially_copyable_v<vec_math::detail::ScalarVal<double>>)
 
 ---
 
-## 4. Compiler Compatibility Matrix
+## 4. Documentation Cross-References
+
+For deeper technical exploration of other library components:
+- **[Architecture & Design Principles](architecture.md)**: Details the zero-allocation AST engine, 64-byte cache alignment, streaming stores, and dual-FMA instruction scheduling.
+- **[API Reference](api_reference.md)**: Complete catalog of operators, expression nodes, reductions, and device annotations.
+- **[Performance & Benchmarking](benchmarks.md)**: Empirical measurements, throughput charts, and scalability analysis.
+- **[Integration & Build Guide](integration.md)**: Build instructions, CMake options, and test workflows.
+
+---
+
+## 5. Compiler Compatibility Matrix
 
 | Compiler | Build Command Example | Target Platforms | Status |
 | :--- | :--- | :--- | :--- |
@@ -158,7 +171,7 @@ static_assert(std::is_trivially_copyable_v<vec_math::detail::ScalarVal<double>>)
 
 ---
 
-## 5. Summary of Benefits
+## 6. Summary of Benefits
 
 - **Zero Vendor Lock-in**: Developers are not tied to Intel, AdaptiveCpp, or any specific accelerator framework.
 - **Zero Include Overhead**: Including `<vec_math/vector_math.hpp>` does not pull in `<sycl/sycl.hpp>`.

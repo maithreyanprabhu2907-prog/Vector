@@ -56,6 +56,7 @@ if(MSVC)
         /O2          # Maximum speed optimization
         /arch:AVX2   # Enable AVX2 and FMA SIMD instructions
         /fp:fast     # (Optional) Aggressive floating-point reassociation
+        /openmp      # (Optional) Enable multi-core parallel helpers (assign_par, dot_par, sum_par)
     )
 endif()
 ```
@@ -69,6 +70,7 @@ if(NOT MSVC)
         -mavx2          # Enable AVX2 instruction set
         -mfma           # Enable hardware FMA instructions
         -march=native   # (Optional) Optimize for host CPU architecture
+        -fopenmp        # (Optional) Enable multi-core parallel helpers (assign_par, dot_par, sum_par)
     )
 endif()
 ```
