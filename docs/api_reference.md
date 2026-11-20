@@ -385,7 +385,7 @@ Multi-core parallel summation reduction using OpenMP parallel reduction.
 | `VEC_MATH_HD_INLINE` | Combination of `VEC_MATH_HOST_DEVICE` and `VEC_MATH_FORCE_INLINE`. |
 | `VEC_MATH_D_INLINE` | Combination of `VEC_MATH_DEVICE` and `VEC_MATH_FORCE_INLINE`. |
 | `VEC_MATH_RESTRICT` | Pointer aliasing restrict modifier (`__restrict` on MSVC, `__restrict__` on GCC/Clang). |
-| `VEC_MATH_PRAGMA_SIMD` | Compiler vectorization hint (`__pragma(loop(ivdep))` on MSVC, `#pragma clang loop vectorize(enable)` on Clang, `#pragma GCC ivdep` on GCC, `#pragma omp simd` on OpenMP). |
+| `VEC_MATH_PRAGMA_SIMD` | Compiler vectorization hint (`__pragma(loop(ivdep))` on MSVC, `#pragma clang loop vectorize(assume_safety)` on Clang, `#pragma GCC ivdep` on GCC, `#pragma omp simd` on OpenMP). |
 | `VEC_MATH_HAS_X86_INTRIN` | Defined automatically on x86/x64 architectures when `<immintrin.h>` is available. |
 | `VEC_MATH_NO_INTRINSICS` | Define before including `vector_math.hpp` to skip `<immintrin.h>`, reducing translation unit compile times by ~800 ms. |
 | `VEC_MATH_HAS_AVX2_FMA` | Defined automatically only when the compiler enables both AVX2 and FMA flags (`-mavx2 -mfma` on GCC/Clang, `/arch:AVX2` on MSVC). |

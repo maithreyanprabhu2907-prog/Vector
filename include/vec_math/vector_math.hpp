@@ -118,7 +118,7 @@
 #if defined(_MSC_VER) && !defined(__clang__)
 #define VEC_MATH_PRAGMA_SIMD __pragma(loop(ivdep))
 #elif defined(__clang__)
-#define VEC_MATH_PRAGMA_SIMD _Pragma("clang loop vectorize(enable)")
+#define VEC_MATH_PRAGMA_SIMD _Pragma("clang loop vectorize(assume_safety)")
 #elif defined(__GNUC__)
 #define VEC_MATH_PRAGMA_SIMD _Pragma("GCC ivdep")
 #elif defined(_OPENMP)
