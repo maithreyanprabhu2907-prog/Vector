@@ -495,36 +495,34 @@ int main() {
         {
             ZeroMallocGuard guard("limiters_zero_malloc");
             // clamp with scalar bounds
-            res_lim <<= clamp(v_lim, -1.0, 5.0);
+            res_lim <<= vec_math::clamp(v_lim, -1.0, 5.0);
             assert(approx_eq(res_lim[0], -1.0));
             assert(approx_eq(res_lim[1], 0.5));
             assert(approx_eq(res_lim[2], 3.0));
             assert(approx_eq(res_lim[3], 5.0));
 
             // clamp with vector bounds
-            res_lim <<= clamp(v_lim, vlo, vhi);
-            if (!approx_eq(res_lim[0], -1.0) || !approx_eq(res_lim[3], 5.0)) {
-                std::cerr << "clamp(v_lim, vlo, vhi) FAILED: res_lim = {"
-                          << res_lim[0] << ", " << res_lim[1] << ", " << res_lim[2] << ", " << res_lim[3] << "}\n";
-            }
+            res_lim <<= vec_math::clamp(v_lim, vlo, vhi);
             assert(approx_eq(res_lim[0], -1.0));
+            assert(approx_eq(res_lim[1], 0.5));
+            assert(approx_eq(res_lim[2], 3.0));
             assert(approx_eq(res_lim[3], 5.0));
 
             // min / max expressions
-            res_lim <<= min(v_lim, 2.0);
+            res_lim <<= vec_math::min(v_lim, 2.0);
             assert(approx_eq(res_lim[0], -2.0));
             assert(approx_eq(res_lim[1], 0.5));
             assert(approx_eq(res_lim[2], 2.0));
             assert(approx_eq(res_lim[3], 2.0));
 
-            res_lim <<= max(v_lim, 1.0);
+            res_lim <<= vec_math::max(v_lim, 1.0);
             assert(approx_eq(res_lim[0], 1.0));
             assert(approx_eq(res_lim[1], 1.0));
             assert(approx_eq(res_lim[2], 3.0));
             assert(approx_eq(res_lim[3], 10.0));
 
             // binary vector min / max
-            res_lim <<= max(v_lim, vlo);
+            res_lim <<= vec_math::max(v_lim, vlo);
             assert(approx_eq(res_lim[0], -1.0));
         }
     }
