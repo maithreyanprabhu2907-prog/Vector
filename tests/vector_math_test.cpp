@@ -644,6 +644,124 @@ int main() {
     }
     assert(caught_max_val_empty);
 
+    // ========================================================================
+    // DG Math Core & Review Probes Verification
+    // ========================================================================
+    // 1. All tail sizes n = 1..37 exact comparison
+    for (std::size_t n = 1; n <= 37; ++n) {
+        std::vector<double> v1(n, 1.5);
+        std::vector<double> v2(n, 2.5);
+        double expected_dot = static_cast<double>(n) * (1.5 * 2.5);
+        double actual_dot = (v1 | v2);
+        assert(approx_eq(actual_dot, expected_dot));
+
+        double expected_sum = static_cast<double>(n) * 1.5;
+        double actual_sum = sum(v1);
+        assert(approx_eq(actual_sum, expected_sum));
+
+        double actual_norm_sq = norm_sq(v1);
+        double expected_norm_sq = static_cast<double>(n) * (1.5 * 1.5);
+        assert(approx_eq(actual_norm_sq, expected_norm_sq));
+    }
+
+    // 2. Self-aliasing without UB
+    {
+        std::vector<double> self_v = {1.0, 2.0, 3.0, 4.0};
+        {
+            ZeroMallocGuard guard("self_aliasing_add");
+            self_v += self_v;
+        }
+        assert(approx_eq(self_v[0], 2.0));
+        assert(approx_eq(self_v[3], 8.0));
+
+        {
+            ZeroMallocGuard guard("self_aliasing_fused");
+            self_v <<= self_v * 2.0;
+        }
+        assert(approx_eq(self_v[0], 4.0));
+        assert(approx_eq(self_v[3], 16.0));
+    }
+
+    // 3. std::span zero-copy support
+    {
+        std::vector<double> big(8, 2.0);
+        std::span<double> s1(big.data(), 4);
+        std::span<double> s2(big.data() + 4, 4);
+        double dot_spans = (s1 | s2);
+        assert(approx_eq(dot_spans, 4.0 * (2.0 * 2.0)));
+
+        std::vector<double> span_dst(4, 0.0);
+        std::span<double> dst_span(span_dst.data(), 4);
+        {
+            ZeroMallocGuard guard("span_assign");
+            dst_span <<= s1 + s2;
+        }
+        for (std::size_t i = 0; i < 4; ++i) {
+            assert(approx_eq(dst_span[i], 4.0));
+        }
+    }
+
+    // 4. std::array<double, 4> fixed-size zero-malloc states
+    {
+        std::array<double, 4> arr1 = {1.0, 2.0, 3.0, 4.0};
+        std::array<double, 4> arr2 = {10.0, 20.0, 30.0, 40.0};
+        std::array<double, 4> arr_out = {0.0, 0.0, 0.0, 0.0};
+
+        {
+            ZeroMallocGuard guard("array_assign");
+            arr_out <<= 2.0 * arr1 + arr2;
+        }
+        assert(approx_eq(arr_out[0], 12.0));
+        assert(approx_eq(arr_out[1], 24.0));
+        assert(approx_eq(arr_out[2], 36.0));
+        assert(approx_eq(arr_out[3], 48.0));
+
+        double arr_dot = (arr1 | arr2);
+        assert(approx_eq(arr_dot, 10.0 + 40.0 + 90.0 + 160.0));
+    }
+
+    // 5. eval_into direct buffer write
+    {
+        double raw_buf[4] = {0.0, 0.0, 0.0, 0.0};
+        {
+            ZeroMallocGuard guard("eval_into");
+            eval_into(raw_buf, 4, a + b);
+        }
+        for (std::size_t i = 0; i < 4; ++i) {
+            assert(approx_eq(raw_buf[i], a[i] + b[i]));
+        }
+    }
+
+    // 6. Dense matvec (DG polynomial order Np=4)
+    {
+        // 4x4 matrix
+        double A[16] = {
+            1.0, 0.0, 0.0, 0.0,
+            0.0, 2.0, 0.0, 0.0,
+            0.0, 0.0, 3.0, 0.0,
+            0.0, 0.0, 0.0, 4.0
+        };
+        double x_vec[4] = {1.0, 1.0, 1.0, 1.0};
+        double y_vec[4] = {0.0, 0.0, 0.0, 0.0};
+        matvec(A, x_vec, y_vec, 4, 4);
+        assert(approx_eq(y_vec[0], 1.0));
+        assert(approx_eq(y_vec[1], 2.0));
+        assert(approx_eq(y_vec[2], 3.0));
+        assert(approx_eq(y_vec[3], 4.0));
+    }
+
+    // 7. Single-pass norm check
+    {
+        double n_sq = norm_sq(a + b);
+        double expected_n_sq = 0.0;
+        for (std::size_t i = 0; i < 4; ++i) {
+            double v = a[i] + b[i];
+            expected_n_sq += v * v;
+        }
+        assert(approx_eq(n_sq, expected_n_sq));
+        assert(approx_eq(norm(a + b), std::sqrt(expected_n_sq)));
+    }
+
     std::vector<std::string> svec = {"hello", "world"};
     assert(svec.size() == 2);
 

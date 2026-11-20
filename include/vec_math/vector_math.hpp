@@ -16,12 +16,16 @@
  *      - Extended math utilities: dot product, sum, norm, norm_sq, fma, abs.
  */
 
+#include <array>
 #include <cassert>
 #include <cmath>
+#include <complex>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <new>
+#include <span>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -34,6 +38,18 @@
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #include <immintrin.h>
 #define VEC_MATH_HAS_X86_INTRIN 1
+#endif
+
+#if !defined(__SYCL_DEVICE_ONLY__)
+  #if defined(__GNUC__) || defined(__clang__)
+    #if defined(__AVX2__) && defined(__FMA__)
+      #define VEC_MATH_HAS_AVX2_FMA 1
+    #endif
+  #elif defined(_MSC_VER)
+    #if defined(__AVX2__)
+      #define VEC_MATH_HAS_AVX2_FMA 1
+    #endif
+  #endif
 #endif
 
 #if defined(_OPENMP)
@@ -132,8 +148,39 @@ namespace vec_math {
         inline constexpr bool is_std_vector_v = is_std_vector<std::remove_cvref_t<T>>::value;
 
         template<typename T>
+        struct is_std_span : std::false_type {};
+
+        template<typename T, std::size_t Extent>
+        struct is_std_span<std::span<T, Extent>> : std::true_type {};
+
+        template<typename T>
+        inline constexpr bool is_std_span_v = is_std_span<std::remove_cvref_t<T>>::value;
+
+        template<typename T>
+        struct is_std_array : std::false_type {};
+
+        template<typename T, std::size_t N>
+        struct is_std_array<std::array<T, N>> : std::true_type {};
+
+        template<typename T>
+        inline constexpr bool is_std_array_v = is_std_array<std::remove_cvref_t<T>>::value;
+
+        template<typename T>
+        inline constexpr bool is_contiguous_vector_v = is_std_vector_v<T> || is_std_span_v<T> || is_std_array_v<T>;
+
+        template<typename T>
+        struct is_complex_val : std::false_type {};
+
+        template<typename T>
+        struct is_complex_val<std::complex<T>> : std::true_type {};
+
+        template<typename T>
+        inline constexpr bool is_complex_v = is_complex_val<std::remove_cvref_t<T>>::value;
+
+        template<typename T>
         struct is_valid_numeric : std::bool_constant<
-            std::is_arithmetic_v<std::remove_cvref_t<T>> && !std::is_same_v<std::remove_cvref_t<T>, bool>
+            (std::is_arithmetic_v<std::remove_cvref_t<T>> || is_complex_v<T>) &&
+            !std::is_same_v<std::remove_cvref_t<T>, bool>
         > {};
 
         template<typename T>
@@ -149,7 +196,7 @@ namespace vec_math {
     concept Scalar = detail::is_valid_numeric_v<T>;
 
     template<typename T>
-    concept NumericVector = detail::is_std_vector_v<T> && Scalar<typename std::remove_cvref_t<T>::value_type>;
+    concept NumericVector = detail::is_contiguous_vector_v<T> && Scalar<typename std::remove_cvref_t<T>::value_type>;
 
     template<typename T>
     concept VecExpression = detail::is_vec_expr_v<T>;
@@ -590,7 +637,7 @@ namespace vec_math {
         template<typename T, typename Alloc, Scalar S, typename CompoundFn>
         VEC_MATH_FORCE_INLINE void apply_scalar_inplace(std::vector<T, Alloc> &dst, const S &scalar, CompoundFn fn) noexcept {
             const std::size_t n = dst.size();
-            T * VEC_MATH_RESTRICT p = dst.data();
+            T * p = dst.data();
             const T s = static_cast<T>(scalar);
 
             VEC_MATH_PRAGMA_SIMD
@@ -604,7 +651,7 @@ namespace vec_math {
             }
 
             const std::size_t n = dst.size();
-            T * VEC_MATH_RESTRICT p = dst.data();
+            T * p = dst.data();
             auto storage = make_operand(src);
 
             VEC_MATH_PRAGMA_SIMD
@@ -621,11 +668,33 @@ namespace vec_math {
 
             dst.resize(n);
 
-            T * VEC_MATH_RESTRICT p = dst.data();
+            T * p = dst.data();
             auto storage = make_operand(src);
 
             VEC_MATH_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) { p[i] = static_cast<T>(storage[i]); }
+        }
+
+        template<typename T, std::size_t Extent, VectorOperand Src>
+        VEC_MATH_FORCE_INLINE void assign_zero_malloc(std::span<T, Extent> dst, const Src &src) {
+            if (dst.size() != src.size()) [[unlikely]] {
+                VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: span size mismatch in assignment");
+            }
+            T * p = dst.data();
+            auto storage = make_operand(src);
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t i = 0; i < dst.size(); ++i) { p[i] = static_cast<T>(storage[i]); }
+        }
+
+        template<typename T, std::size_t N, VectorOperand Src>
+        VEC_MATH_FORCE_INLINE void assign_zero_malloc(std::array<T, N> &dst, const Src &src) {
+            if (N != src.size()) [[unlikely]] {
+                VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: array size mismatch in assignment");
+            }
+            T * p = dst.data();
+            auto storage = make_operand(src);
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t i = 0; i < N; ++i) { p[i] = static_cast<T>(storage[i]); }
         }
     }
 
@@ -637,6 +706,20 @@ namespace vec_math {
         // Zero-malloc assign for std::vector
         template<typename T, typename Alloc, VectorOperand Src>
         inline std::vector<T, Alloc> &operator<<=(std::vector<T, Alloc> &dst, const Src &src) {
+            detail::assign_zero_malloc(dst, src);
+            return dst;
+        }
+
+        // Zero-malloc assign for std::span
+        template<typename T, std::size_t Extent, VectorOperand Src>
+        inline std::span<T, Extent> operator<<=(std::span<T, Extent> dst, const Src &src) {
+            detail::assign_zero_malloc(dst, src);
+            return dst;
+        }
+
+        // Zero-malloc assign for std::array
+        template<typename T, std::size_t N, VectorOperand Src>
+        inline std::array<T, N> &operator<<=(std::array<T, N> &dst, const Src &src) {
             detail::assign_zero_malloc(dst, src);
             return dst;
         }
@@ -1009,7 +1092,7 @@ namespace vec_math {
         const std::size_t n = lhs_in.size();
         if (n == 0) { return ResType{0}; }
 
-#if (defined(__AVX2__) || defined(_M_X64) || defined(__AVX__)) && !defined(__SYCL_DEVICE_ONLY__)
+#if defined(VEC_MATH_HAS_AVX2_FMA)
         if constexpr (requires { { lhs_op.data() }; { rhs_op.data() }; } && std::is_same_v<ResType, double>) {
             const double* VEC_MATH_RESTRICT p1 = lhs_op.data();
             const double* VEC_MATH_RESTRICT p2 = rhs_op.data();
@@ -1087,10 +1170,32 @@ namespace vec_math {
         return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
     }
 
-    // norm_sq: squared L2 norm
+    // norm_sq: squared L2 norm (single-pass, zero redundant evaluation)
     template<VectorOperand Op>
-    [[nodiscard]] constexpr auto norm_sq(const Op &op) {
-        return dot(op, op);
+    [[nodiscard]] constexpr auto norm_sq(const Op &op_in) {
+        auto op = detail::make_operand(op_in);
+        using Val = typename detail::operand_storage_t<Op>::value_type;
+        using ResType = std::conditional_t<std::is_floating_point_v<Val>, Val, double>;
+        const std::size_t n = op.size();
+        if (n == 0) { return ResType{0}; }
+
+        ResType a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
+        std::size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            ResType v0 = static_cast<ResType>(op[i + 0]); a0 += v0 * v0;
+            ResType v1 = static_cast<ResType>(op[i + 1]); a1 += v1 * v1;
+            ResType v2 = static_cast<ResType>(op[i + 2]); a2 += v2 * v2;
+            ResType v3 = static_cast<ResType>(op[i + 3]); a3 += v3 * v3;
+            ResType v4 = static_cast<ResType>(op[i + 4]); a4 += v4 * v4;
+            ResType v5 = static_cast<ResType>(op[i + 5]); a5 += v5 * v5;
+            ResType v6 = static_cast<ResType>(op[i + 6]); a6 += v6 * v6;
+            ResType v7 = static_cast<ResType>(op[i + 7]); a7 += v7 * v7;
+        }
+        for (; i < n; ++i) {
+            ResType v = static_cast<ResType>(op[i]);
+            a0 += v * v;
+        }
+        return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
     }
 
     // norm: Euclidean L2 norm
@@ -1098,8 +1203,7 @@ namespace vec_math {
     [[nodiscard]] inline auto norm(const Op &op) {
         using Val = typename detail::operand_storage_t<Op>::value_type;
         using ResType = std::conditional_t<std::is_floating_point_v<Val>, Val, double>;
-        const auto d = dot(op, op);
-        return std::sqrt(static_cast<ResType>(d));
+        return std::sqrt(static_cast<ResType>(norm_sq(op)));
     }
 
     // ============================================================================
@@ -1148,8 +1252,7 @@ namespace vec_math {
                 );
                 _mm256_stream_pd(p + i, val);
             }
-#endif
-#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
             while (i < n && (reinterpret_cast<std::uintptr_t>(p + i) & 15) != 0) {
                 p[i] = static_cast<double>(storage[i]);
                 ++i;
@@ -1186,8 +1289,7 @@ namespace vec_math {
                 );
                 _mm256_stream_ps(p + i, val);
             }
-#endif
-#if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
+#elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
             while (i < n && (reinterpret_cast<std::uintptr_t>(p + i) & 15) != 0) {
                 p[i] = static_cast<float>(storage[i]);
                 ++i;
@@ -1212,6 +1314,50 @@ namespace vec_math {
             VEC_MATH_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) {
                 p[i] = static_cast<T>(storage[i]);
+            }
+        }
+    }
+
+    // ============================================================================
+    // Direct Device / Buffer Evaluation & Matrix-Vector Operations
+    // ============================================================================
+
+    template<typename T, VectorOperand Src>
+    VEC_MATH_HD_INLINE void eval_into(T* dst, std::size_t n, const Src& src) {
+        if (n != src.size()) [[unlikely]] {
+            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: destination size mismatch in eval_into");
+        }
+        auto storage = detail::make_operand(src);
+        VEC_MATH_PRAGMA_SIMD
+        for (std::size_t i = 0; i < n; ++i) {
+            dst[i] = static_cast<T>(storage[i]);
+        }
+    }
+
+    template<typename MatT, typename VecInT, typename VecOutT>
+    VEC_MATH_HD_INLINE void matvec(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
+        for (std::size_t r = 0; r < rows; ++r) {
+            VecOutT sum{0};
+            const MatT* row = A + r * cols;
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t c = 0; c < cols; ++c) {
+                sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
+            }
+            y[r] = sum;
+        }
+    }
+
+    template<typename MatT, typename VecInT, typename VecOutT>
+    VEC_MATH_HD_INLINE void matvec_transposed(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
+        for (std::size_t c = 0; c < cols; ++c) {
+            y[c] = VecOutT{0};
+        }
+        for (std::size_t r = 0; r < rows; ++r) {
+            const MatT* row = A + r * cols;
+            const auto xr = static_cast<VecOutT>(x[r]);
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t c = 0; c < cols; ++c) {
+                y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
             }
         }
     }
