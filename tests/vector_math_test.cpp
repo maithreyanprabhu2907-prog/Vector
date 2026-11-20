@@ -1,3 +1,7 @@
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ >= 11)
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+
 #if defined(_MSC_VER) && defined(_DEBUG)
 #define _ITERATOR_DEBUG_LEVEL 0
 #endif
@@ -768,6 +772,88 @@ int main() {
         double d_det = dot_deterministic(a, b);
         assert(approx_eq(s_det, sum(a)));
         assert(approx_eq(d_det, (a | b)));
+    }
+
+    // 9. std::complex support: norm, norm_sq, real_of
+    {
+        std::vector<std::complex<double>> vc = {
+            std::complex<double>(3.0, 4.0),
+            std::complex<double>(1.0, -2.0)
+        };
+        static_assert(std::is_same_v<typename vec_math::real_of<std::complex<double>>::type, double>);
+        double c_norm_sq = 0.0;
+        double c_norm = 0.0;
+        {
+            ZeroMallocGuard guard("complex_norm");
+            c_norm_sq = norm_sq(vc);
+            c_norm = norm(vc);
+        }
+        assert(approx_eq(c_norm_sq, 30.0));
+        assert(approx_eq(c_norm, std::sqrt(30.0)));
+    }
+
+    // 10. dotc conjugate inner product
+    {
+        std::vector<std::complex<double>> c1 = {
+            std::complex<double>(1.0, 2.0),
+            std::complex<double>(3.0, -1.0)
+        };
+        std::vector<std::complex<double>> c2 = {
+            std::complex<double>(2.0, 3.0),
+            std::complex<double>(-2.0, 4.0)
+        };
+        std::complex<double> c_res;
+        {
+            ZeroMallocGuard guard("complex_dotc");
+            c_res = dotc(c1, c2);
+        }
+        assert(approx_eq(c_res.real(), -2.0));
+        assert(approx_eq(c_res.imag(), 9.0));
+
+        std::complex<double> self_dotc = dotc(c1, c1);
+        assert(approx_eq(self_dotc.real(), norm_sq(c1)));
+        assert(approx_eq(self_dotc.imag(), 0.0));
+    }
+
+    // 11. matvec and matvec_transposed in-place self-aliasing (x == y)
+    {
+        double A[16] = {
+            1.0, 2.0, 0.0, 0.0,
+            0.0, 3.0, 4.0, 0.0,
+            0.0, 0.0, 5.0, 6.0,
+            7.0, 0.0, 0.0, 8.0
+        };
+        double x_inplace[4] = {1.0, 2.0, 3.0, 4.0};
+        {
+            ZeroMallocGuard guard("matvec_self_alias");
+            matvec(A, x_inplace, x_inplace, 4, 4);
+        }
+        assert(approx_eq(x_inplace[0], 5.0));
+        assert(approx_eq(x_inplace[1], 18.0));
+        assert(approx_eq(x_inplace[2], 39.0));
+        assert(approx_eq(x_inplace[3], 39.0));
+
+        double x_tr_inplace[4] = {1.0, 2.0, 3.0, 4.0};
+        {
+            ZeroMallocGuard guard("matvec_tr_self_alias");
+            matvec_transposed(A, x_tr_inplace, x_tr_inplace, 4, 4);
+        }
+        assert(approx_eq(x_tr_inplace[0], 29.0));
+        assert(approx_eq(x_tr_inplace[1], 8.0));
+        assert(approx_eq(x_tr_inplace[2], 23.0));
+        assert(approx_eq(x_tr_inplace[3], 50.0));
+    }
+
+    // 12. VEC_MATH_NO_INTRINSICS compilation check
+    {
+#if defined(VEC_MATH_NO_INTRINSICS)
+#if defined(VEC_MATH_HAS_AVX2_FMA) || defined(VEC_MATH_HAS_X86_INTRIN)
+        static_assert(false, "VEC_MATH_NO_INTRINSICS violated: intrinsics detected");
+#endif
+#endif
+        std::vector<double> v_test = {2.0, 4.0, 6.0, 8.0};
+        double s_val = sum_deterministic(v_test);
+        assert(approx_eq(s_val, 20.0));
     }
 
     std::vector<std::string> svec = {"hello", "world"};

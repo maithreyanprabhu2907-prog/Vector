@@ -40,7 +40,7 @@
 #define VEC_MATH_HAS_X86_INTRIN 1
 #endif
 
-#if !defined(__SYCL_DEVICE_ONLY__)
+#if !defined(__SYCL_DEVICE_ONLY__) && !defined(VEC_MATH_NO_INTRINSICS)
   #if defined(__GNUC__) || defined(__clang__)
     #if defined(__AVX2__) && defined(__FMA__)
       #define VEC_MATH_HAS_AVX2_FMA 1
@@ -178,6 +178,39 @@ namespace vec_math {
         inline constexpr bool is_complex_v = is_complex_val<std::remove_cvref_t<T>>::value;
 
         template<typename T>
+        struct real_of {
+            using type = std::remove_cvref_t<T>;
+        };
+
+        template<typename T>
+        struct real_of<std::complex<T>> {
+            using type = std::remove_cvref_t<T>;
+        };
+
+        template<typename T>
+        using real_of_t = typename real_of<T>::type;
+
+        template<typename T>
+        VEC_MATH_HD_INLINE constexpr auto mag2(const T& v) noexcept {
+            if constexpr (is_complex_v<T>) {
+                const auto re = v.real();
+                const auto im = v.imag();
+                return re * re + im * im;
+            } else {
+                return v * v;
+            }
+        }
+
+        template<typename T>
+        VEC_MATH_HD_INLINE constexpr auto conj_helper(const T& v) {
+            if constexpr (is_complex_v<T>) {
+                return std::conj(v);
+            } else {
+                return v;
+            }
+        }
+
+        template<typename T>
         struct is_valid_numeric : std::bool_constant<
             (std::is_arithmetic_v<std::remove_cvref_t<T>> || is_complex_v<T>) &&
             !std::is_same_v<std::remove_cvref_t<T>, bool>
@@ -191,6 +224,12 @@ namespace vec_math {
         template<typename T>
         inline constexpr bool is_vec_expr_v = std::is_base_of_v<ExprBase, std::remove_cvref_t<T>>;
     }
+
+    template<typename T>
+    using real_of = detail::real_of<T>;
+
+    template<typename T>
+    using real_of_t = typename detail::real_of<T>::type;
 
     template<typename T>
     concept Scalar = detail::is_valid_numeric_v<T>;
@@ -1182,25 +1221,26 @@ namespace vec_math {
                 total += p1[i] * p2[i];
             }
             return total;
-        }
+        } else
 #endif
-
-        ResType a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
-        std::size_t i = 0;
-        for (; i + 8 <= n; i += 8) {
-            a0 += static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
-            a1 += static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
-            a2 += static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
-            a3 += static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
-            a4 += static_cast<ResType>(lhs_op[i + 4]) * static_cast<ResType>(rhs_op[i + 4]);
-            a5 += static_cast<ResType>(lhs_op[i + 5]) * static_cast<ResType>(rhs_op[i + 5]);
-            a6 += static_cast<ResType>(lhs_op[i + 6]) * static_cast<ResType>(rhs_op[i + 6]);
-            a7 += static_cast<ResType>(lhs_op[i + 7]) * static_cast<ResType>(rhs_op[i + 7]);
+        {
+            ResType a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
+            std::size_t i = 0;
+            for (; i + 8 <= n; i += 8) {
+                a0 += static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
+                a1 += static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
+                a2 += static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
+                a3 += static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
+                a4 += static_cast<ResType>(lhs_op[i + 4]) * static_cast<ResType>(rhs_op[i + 4]);
+                a5 += static_cast<ResType>(lhs_op[i + 5]) * static_cast<ResType>(rhs_op[i + 5]);
+                a6 += static_cast<ResType>(lhs_op[i + 6]) * static_cast<ResType>(rhs_op[i + 6]);
+                a7 += static_cast<ResType>(lhs_op[i + 7]) * static_cast<ResType>(rhs_op[i + 7]);
+            }
+            for (; i < n; ++i) {
+                a0 += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+            }
+            return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
         }
-        for (; i < n; ++i) {
-            a0 += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
-        }
-        return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
     }
 
     // norm_sq: squared L2 norm (single-pass, zero redundant evaluation)
@@ -1208,25 +1248,25 @@ namespace vec_math {
     [[nodiscard]] constexpr auto norm_sq(const Op &op_in) {
         auto op = detail::make_operand(op_in);
         using Val = typename detail::operand_storage_t<Op>::value_type;
-        using ResType = std::conditional_t<std::is_floating_point_v<Val>, Val, double>;
+        using RealVal = typename real_of<Val>::type;
+        using ResType = std::conditional_t<std::is_floating_point_v<RealVal>, RealVal, double>;
         const std::size_t n = op.size();
         if (n == 0) { return ResType{0}; }
 
         ResType a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
         std::size_t i = 0;
         for (; i + 8 <= n; i += 8) {
-            ResType v0 = static_cast<ResType>(op[i + 0]); a0 += v0 * v0;
-            ResType v1 = static_cast<ResType>(op[i + 1]); a1 += v1 * v1;
-            ResType v2 = static_cast<ResType>(op[i + 2]); a2 += v2 * v2;
-            ResType v3 = static_cast<ResType>(op[i + 3]); a3 += v3 * v3;
-            ResType v4 = static_cast<ResType>(op[i + 4]); a4 += v4 * v4;
-            ResType v5 = static_cast<ResType>(op[i + 5]); a5 += v5 * v5;
-            ResType v6 = static_cast<ResType>(op[i + 6]); a6 += v6 * v6;
-            ResType v7 = static_cast<ResType>(op[i + 7]); a7 += v7 * v7;
+            a0 += static_cast<ResType>(detail::mag2(op[i + 0]));
+            a1 += static_cast<ResType>(detail::mag2(op[i + 1]));
+            a2 += static_cast<ResType>(detail::mag2(op[i + 2]));
+            a3 += static_cast<ResType>(detail::mag2(op[i + 3]));
+            a4 += static_cast<ResType>(detail::mag2(op[i + 4]));
+            a5 += static_cast<ResType>(detail::mag2(op[i + 5]));
+            a6 += static_cast<ResType>(detail::mag2(op[i + 6]));
+            a7 += static_cast<ResType>(detail::mag2(op[i + 7]));
         }
         for (; i < n; ++i) {
-            ResType v = static_cast<ResType>(op[i]);
-            a0 += v * v;
+            a0 += static_cast<ResType>(detail::mag2(op[i]));
         }
         return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
     }
@@ -1235,8 +1275,41 @@ namespace vec_math {
     template<VectorOperand Op>
     [[nodiscard]] inline auto norm(const Op &op) {
         using Val = typename detail::operand_storage_t<Op>::value_type;
-        using ResType = std::conditional_t<std::is_floating_point_v<Val>, Val, double>;
+        using RealVal = typename real_of<Val>::type;
+        using ResType = std::conditional_t<std::is_floating_point_v<RealVal>, RealVal, double>;
         return std::sqrt(static_cast<ResType>(norm_sq(op)));
+    }
+
+    // dotc: conjugate inner product for complex vectors (std::conj on lhs)
+    template<VectorOperand Lhs, VectorOperand Rhs>
+    [[nodiscard]] constexpr auto dotc(const Lhs &lhs_in, const Rhs &rhs_in) {
+        if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
+            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: vector size mismatch in dotc");
+        }
+        auto lhs_op = detail::make_operand(lhs_in);
+        auto rhs_op = detail::make_operand(rhs_in);
+        using LhsVal = typename detail::operand_storage_t<Lhs>::value_type;
+        using RhsVal = typename detail::operand_storage_t<Rhs>::value_type;
+        using ResType = std::common_type_t<LhsVal, RhsVal>;
+        const std::size_t n = lhs_in.size();
+        if (n == 0) { return ResType{0}; }
+
+        ResType a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
+        std::size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            a0 += static_cast<ResType>(detail::conj_helper(lhs_op[i + 0])) * static_cast<ResType>(rhs_op[i + 0]);
+            a1 += static_cast<ResType>(detail::conj_helper(lhs_op[i + 1])) * static_cast<ResType>(rhs_op[i + 1]);
+            a2 += static_cast<ResType>(detail::conj_helper(lhs_op[i + 2])) * static_cast<ResType>(rhs_op[i + 2]);
+            a3 += static_cast<ResType>(detail::conj_helper(lhs_op[i + 3])) * static_cast<ResType>(rhs_op[i + 3]);
+            a4 += static_cast<ResType>(detail::conj_helper(lhs_op[i + 4])) * static_cast<ResType>(rhs_op[i + 4]);
+            a5 += static_cast<ResType>(detail::conj_helper(lhs_op[i + 5])) * static_cast<ResType>(rhs_op[i + 5]);
+            a6 += static_cast<ResType>(detail::conj_helper(lhs_op[i + 6])) * static_cast<ResType>(rhs_op[i + 6]);
+            a7 += static_cast<ResType>(detail::conj_helper(lhs_op[i + 7])) * static_cast<ResType>(rhs_op[i + 7]);
+        }
+        for (; i < n; ++i) {
+            a0 += static_cast<ResType>(detail::conj_helper(lhs_op[i])) * static_cast<ResType>(rhs_op[i]);
+        }
+        return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
     }
 
     // ============================================================================
@@ -1368,29 +1441,103 @@ namespace vec_math {
     }
 
     template<typename MatT, typename VecInT, typename VecOutT>
-    VEC_MATH_HD_INLINE void matvec(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
+    VEC_MATH_HOST_DEVICE inline void matvec(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
+        if (rows == 0 || cols == 0) return;
+        const bool aliased = (static_cast<const void*>(x) == static_cast<const void*>(y));
+        constexpr std::size_t STACK_BUF_CAP = 128;
+        if (aliased) {
+            if (rows <= STACK_BUF_CAP) {
+                VecOutT local_buf[STACK_BUF_CAP];
+                matvec(A, x, local_buf, rows, cols);
+                for (std::size_t r = 0; r < rows; ++r) {
+                    y[r] = local_buf[r];
+                }
+                return;
+            }
+#if !defined(__SYCL_DEVICE_ONLY__)
+            else {
+                std::vector<VecOutT> local_buf(rows);
+                matvec(A, x, local_buf.data(), rows, cols);
+                for (std::size_t r = 0; r < rows; ++r) {
+                    y[r] = local_buf[r];
+                }
+                return;
+            }
+#endif
+        }
+
         for (std::size_t r = 0; r < rows; ++r) {
             VecOutT sum{0};
             const MatT* row = A + r * cols;
-            VEC_MATH_PRAGMA_SIMD
-            for (std::size_t c = 0; c < cols; ++c) {
-                sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
+            if (cols <= 36) {
+                std::size_t c = 0;
+                for (; c + 4 <= cols; c += 4) {
+                    sum = sum + static_cast<VecOutT>(row[c + 0]) * static_cast<VecOutT>(x[c + 0])
+                              + static_cast<VecOutT>(row[c + 1]) * static_cast<VecOutT>(x[c + 1])
+                              + static_cast<VecOutT>(row[c + 2]) * static_cast<VecOutT>(x[c + 2])
+                              + static_cast<VecOutT>(row[c + 3]) * static_cast<VecOutT>(x[c + 3]);
+                }
+                for (; c < cols; ++c) {
+                    sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
+                }
+            } else {
+                VEC_MATH_PRAGMA_SIMD
+                for (std::size_t c = 0; c < cols; ++c) {
+                    sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
+                }
             }
             y[r] = sum;
         }
     }
 
     template<typename MatT, typename VecInT, typename VecOutT>
-    VEC_MATH_HD_INLINE void matvec_transposed(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
+    VEC_MATH_HOST_DEVICE inline void matvec_transposed(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
+        if (rows == 0 || cols == 0) return;
+        const bool aliased = (static_cast<const void*>(x) == static_cast<const void*>(y));
+        constexpr std::size_t STACK_BUF_CAP = 128;
+        if (aliased) {
+            if (cols <= STACK_BUF_CAP) {
+                VecOutT local_buf[STACK_BUF_CAP];
+                matvec_transposed(A, x, local_buf, rows, cols);
+                for (std::size_t c = 0; c < cols; ++c) {
+                    y[c] = local_buf[c];
+                }
+                return;
+            }
+#if !defined(__SYCL_DEVICE_ONLY__)
+            else {
+                std::vector<VecOutT> local_buf(cols);
+                matvec_transposed(A, x, local_buf.data(), rows, cols);
+                for (std::size_t c = 0; c < cols; ++c) {
+                    y[c] = local_buf[c];
+                }
+                return;
+            }
+#endif
+        }
+
         for (std::size_t c = 0; c < cols; ++c) {
             y[c] = VecOutT{0};
         }
         for (std::size_t r = 0; r < rows; ++r) {
             const MatT* row = A + r * cols;
             const auto xr = static_cast<VecOutT>(x[r]);
-            VEC_MATH_PRAGMA_SIMD
-            for (std::size_t c = 0; c < cols; ++c) {
-                y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
+            if (cols <= 36) {
+                std::size_t c = 0;
+                for (; c + 4 <= cols; c += 4) {
+                    y[c + 0] = y[c + 0] + static_cast<VecOutT>(row[c + 0]) * xr;
+                    y[c + 1] = y[c + 1] + static_cast<VecOutT>(row[c + 1]) * xr;
+                    y[c + 2] = y[c + 2] + static_cast<VecOutT>(row[c + 2]) * xr;
+                    y[c + 3] = y[c + 3] + static_cast<VecOutT>(row[c + 3]) * xr;
+                }
+                for (; c < cols; ++c) {
+                    y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
+                }
+            } else {
+                VEC_MATH_PRAGMA_SIMD
+                for (std::size_t c = 0; c < cols; ++c) {
+                    y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
+                }
             }
         }
     }

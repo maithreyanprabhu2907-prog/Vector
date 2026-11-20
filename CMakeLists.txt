@@ -53,7 +53,7 @@ if(VEC_MATH_BUILD_TESTS)
     add_executable(vector_math_test tests/vector_math_test.cpp)
     target_link_libraries(vector_math_test PRIVATE vec_math::vec_math)
     if(MSVC)
-        target_compile_options(vector_math_test PRIVATE /W4 /WX)
+        target_compile_options(vector_math_test PRIVATE /W4 /WX /wd4702)
     else()
         target_compile_options(vector_math_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
@@ -61,8 +61,12 @@ if(VEC_MATH_BUILD_TESTS)
 endif()
 
 if(VEC_MATH_BUILD_BENCHMARKS)
+    find_package(OpenMP)
     add_executable(benchmark benchmarks/benchmark.cpp)
     target_link_libraries(benchmark PRIVATE vec_math::vec_math)
+    if(TARGET OpenMP::OpenMP_CXX)
+        target_link_libraries(benchmark PRIVATE OpenMP::OpenMP_CXX)
+    endif()
     if(MSVC)
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:/O2>
@@ -75,6 +79,7 @@ if(VEC_MATH_BUILD_BENCHMARKS)
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:-Ofast>
             -mavx2
+            -mfma
             -fopenmp
             -Wall
             -Wextra
@@ -99,9 +104,9 @@ if(VEC_MATH_BUILD_BENCHMARKS)
         target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:precise> /arch:AVX2 /W4)
         target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:/O1> $<$<CONFIG:Release>:/Os> $<$<CONFIG:Release>:/fp:precise> /arch:AVX2 /W4)
     else()
-        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:-Ofast> -mavx2 -Wall -Wextra)
-        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:-O3> -mavx2 -Wall -Wextra)
-        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:-Os> -mavx2 -Wall -Wextra)
+        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:-Ofast> -mavx2 -mfma -Wall -Wextra)
+        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:-O3> -mavx2 -mfma -Wall -Wextra)
+        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:-Os> -mavx2 -mfma -Wall -Wextra)
     endif()
 endif()
 
