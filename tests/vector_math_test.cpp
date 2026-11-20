@@ -26,7 +26,7 @@
 } while (false)
 
 
-#if defined(__GNUC__) && __GNUC__ >= 11
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ >= 11)
 #pragma GCC diagnostic ignored "-Wmismatched-new-delete"
 #endif
 
