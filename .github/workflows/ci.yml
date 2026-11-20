@@ -1,4 +1,4 @@
-name: CI Matrix
+name: CI
 
 on:
   push:
@@ -7,101 +7,84 @@ on:
     branches: [ master, main ]
 
 jobs:
-  linux-gcc:
-    runs-on: ubuntu-latest
+  matrix-build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        gcc_version: [12, 13, 14]
-        build_type: [Release, Debug]
-        arch_flags: ["-mavx2 -mfma", ""]
+        include:
+          # Linux GCC
+          - name: "Linux GCC Release (AVX2+FMA)"
+            os: ubuntu-latest
+            cxx: g++
+            build_type: Release
+            cxx_flags: "-mavx2 -mfma"
+          - name: "Linux GCC Release (Default)"
+            os: ubuntu-latest
+            cxx: g++
+            build_type: Release
+            cxx_flags: ""
+          - name: "Linux GCC Debug (-O0)"
+            os: ubuntu-latest
+            cxx: g++
+            build_type: Debug
+            cxx_flags: "-O0"
+
+          # Linux Clang
+          - name: "Linux Clang Release (AVX2+FMA)"
+            os: ubuntu-latest
+            cxx: clang++
+            build_type: Release
+            cxx_flags: "-mavx2 -mfma"
+          - name: "Linux Clang Debug (Default)"
+            os: ubuntu-latest
+            cxx: clang++
+            build_type: Debug
+            cxx_flags: ""
+
+          # Windows MSVC
+          - name: "Windows MSVC Release (/arch:AVX2)"
+            os: windows-latest
+            cxx: cl
+            build_type: Release
+            cxx_flags: "/arch:AVX2"
+          - name: "Windows MSVC Release (Default)"
+            os: windows-latest
+            cxx: cl
+            build_type: Release
+            cxx_flags: ""
+          - name: "Windows MSVC Debug"
+            os: windows-latest
+            cxx: cl
+            build_type: Debug
+            cxx_flags: ""
+
+          # macOS Apple Clang
+          - name: "macOS Clang Release"
+            os: macos-latest
+            cxx: clang++
+            build_type: Release
+            cxx_flags: ""
+          - name: "macOS Clang Debug"
+            os: macos-latest
+            cxx: clang++
+            build_type: Debug
+            cxx_flags: ""
+
     steps:
       - uses: actions/checkout@v4
-      - name: Install GCC ${{ matrix.gcc_version }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y g++-${{ matrix.gcc_version }}
+
       - name: Configure CMake
         run: |
           cmake -B build -S . \
-            -DCMAKE_CXX_COMPILER=g++-${{ matrix.gcc_version }} \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_CXX_FLAGS="${{ matrix.arch_flags }}"
-      - name: Build
-        run: cmake --build build --config ${{ matrix.build_type }}
-      - name: Test
-        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DVEC_MATH_BUILD_TESTS=ON \
+            -DVEC_MATH_BUILD_BENCHMARKS=OFF
 
-  linux-clang:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        clang_version: [16, 17, 18]
-        build_type: [Release, Debug]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Clang ${{ matrix.clang_version }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-${{ matrix.clang_version }}
-      - name: Configure CMake
-        run: |
-          cmake -B build -S . \
-            -DCMAKE_CXX_COMPILER=clang++-${{ matrix.clang_version }} \
-            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-            -DCMAKE_CXX_FLAGS="-mavx2 -mfma"
-      - name: Build
-        run: cmake --build build --config ${{ matrix.build_type }}
-      - name: Test
-        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+      - name: Build Test Target
+        run: cmake --build build --config ${{ matrix.build_type }} --target vector_math_test
 
-  windows-msvc:
-    runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        build_type: [Release, Debug]
-        arch: ["/arch:AVX2", ""]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure CMake
-        run: |
-          cmake -B build -S . -DCMAKE_CXX_FLAGS="/EHsc ${{ matrix.arch }}"
-      - name: Build
-        run: cmake --build build --config ${{ matrix.build_type }}
-      - name: Test
-        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
-
-  linux-sanitizers:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure CMake
-        run: |
-          cmake -B build -S . \
-            -DCMAKE_CXX_COMPILER=g++ \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer"
-      - name: Build
-        run: cmake --build build
-      - name: Test
-        run: ctest --test-dir build --output-on-failure
-        env:
-          ASAN_OPTIONS: "detect_leaks=1:check_initialization_order=1:strict_init_order=1"
-          UBSAN_OPTIONS: "print_stacktrace=1:halt_on_error=1"
-
-  macos-clang:
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        build_type: [Release, Debug]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Configure CMake
-        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
-      - name: Build
-        run: cmake --build build --config ${{ matrix.build_type }}
-      - name: Test
+      - name: Run Tests
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure

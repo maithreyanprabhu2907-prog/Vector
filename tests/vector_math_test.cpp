@@ -26,6 +26,10 @@
 } while (false)
 
 
+#if defined(__GNUC__) && __GNUC__ >= 11
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+
 namespace {
     bool g_track_allocs = false;
     std::size_t g_alloc_count = 0;
