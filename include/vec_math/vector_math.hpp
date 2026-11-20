@@ -1574,6 +1574,7 @@ namespace vec_math {
         if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
             VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: vector size mismatch in dot_par");
         }
+#if defined(_OPENMP)
         auto lhs_op = detail::make_operand(lhs_in);
         auto rhs_op = detail::make_operand(rhs_in);
         using ResType = std::common_type_t<
@@ -1583,7 +1584,6 @@ namespace vec_math {
         const std::size_t n = lhs_in.size();
         if (n == 0) { return ResType{0}; }
 
-#if defined(_OPENMP)
         ResType total{0};
         const std::int64_t n_signed = static_cast<std::int64_t>(n);
         #pragma omp parallel for schedule(static) reduction(+:total)
@@ -1599,12 +1599,12 @@ namespace vec_math {
 
     template<VectorOperand Op>
     [[nodiscard]] inline auto sum_par(const Op &op_in) {
+#if defined(_OPENMP)
         auto op = detail::make_operand(op_in);
         using value_type = typename detail::operand_storage_t<Op>::value_type;
         const std::size_t n = op.size();
         if (n == 0) { return value_type{0}; }
 
-#if defined(_OPENMP)
         value_type total{0};
         const std::int64_t n_signed = static_cast<std::int64_t>(n);
         #pragma omp parallel for schedule(static) reduction(+:total)
