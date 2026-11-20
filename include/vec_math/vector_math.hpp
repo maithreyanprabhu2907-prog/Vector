@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <stdlib.h>
 #include <new>
 #include <span>
 #include <stdexcept>
@@ -275,28 +276,23 @@ namespace vec_math {
                 throw std::bad_array_new_length{};
             }
             const std::size_t bytes = n * sizeof(T);
-#if defined(_MSC_VER) || defined(__MINGW32__)
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
             void* ptr = _aligned_malloc(bytes, Alignment);
             if (!ptr) throw std::bad_alloc{};
             return static_cast<T*>(ptr);
-#elif defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200112L
+#else
             void* ptr = nullptr;
             constexpr std::size_t align = Alignment < sizeof(void*) ? sizeof(void*) : Alignment;
             if (posix_memalign(&ptr, align, bytes) != 0 || !ptr) {
                 throw std::bad_alloc{};
             }
             return static_cast<T*>(ptr);
-#else
-            const std::size_t rounded_bytes = ((bytes + Alignment - 1) / Alignment) * Alignment;
-            void* ptr = std::aligned_alloc(Alignment, rounded_bytes);
-            if (!ptr) throw std::bad_alloc{};
-            return static_cast<T*>(ptr);
 #endif
         }
 
         void deallocate(T* p, [[maybe_unused]] std::size_t n) noexcept {
             if (!p) return;
-#if defined(_MSC_VER) || defined(__MINGW32__)
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
             _aligned_free(p);
 #else
             std::free(p);
