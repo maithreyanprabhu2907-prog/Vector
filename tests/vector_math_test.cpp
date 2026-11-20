@@ -503,6 +503,10 @@ int main() {
 
             // clamp with vector bounds
             res_lim <<= clamp(v_lim, vlo, vhi);
+            if (!approx_eq(res_lim[0], -1.0) || !approx_eq(res_lim[3], 5.0)) {
+                std::cerr << "clamp(v_lim, vlo, vhi) FAILED: res_lim = {"
+                          << res_lim[0] << ", " << res_lim[1] << ", " << res_lim[2] << ", " << res_lim[3] << "}\n";
+            }
             assert(approx_eq(res_lim[0], -1.0));
             assert(approx_eq(res_lim[3], 5.0));
 

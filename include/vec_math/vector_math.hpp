@@ -436,7 +436,7 @@ namespace vec_math {
         template<NumericVector Vec>
         struct VecRef {
             using value_type = typename std::remove_cvref_t<Vec>::value_type;
-            const value_type* VEC_MATH_RESTRICT ptr_ = nullptr;
+            const value_type* ptr_ = nullptr;
             std::size_t size_ = 0;
 
             constexpr VecRef() noexcept = default;
@@ -513,11 +513,11 @@ namespace vec_math {
                 std::declval<typename Rhs::value_type>()
             ))>;
 
-            [[no_unique_address]] Op op;
+            Op op;
             Lhs lhs;
             Rhs rhs;
 
-            constexpr BinExpr(Op o, Lhs l, Rhs r) : op(o), lhs(std::move(l)), rhs(std::move(r)) {
+            constexpr BinExpr(Op o, const Lhs& l, const Rhs& r) : op(o), lhs(l), rhs(r) {
                 if constexpr (!is_scalar_val_v<Lhs> && !is_scalar_val_v<Rhs>) {
                     if (lhs.size() != rhs.size()) [[unlikely]] {
                         VEC_MATH_THROW_OR_ABORT(std::invalid_argument,
@@ -559,10 +559,10 @@ namespace vec_math {
         struct UnaryExpr : ExprBase {
             using value_type = decltype(std::declval<Op>()(std::declval<typename Operand::value_type>()));
 
-            [[no_unique_address]] Op op;
+            Op op;
             Operand operand;
 
-            constexpr UnaryExpr(Op o, Operand arg) : op(o), operand(std::move(arg)) {}
+            constexpr UnaryExpr(Op o, const Operand& arg) : op(o), operand(arg) {}
 
             constexpr UnaryExpr(const UnaryExpr&) noexcept = default;
             constexpr UnaryExpr(UnaryExpr&&) noexcept = default;
@@ -599,13 +599,13 @@ namespace vec_math {
                 std::declval<typename C::value_type>()
             ));
 
-            [[no_unique_address]] Op op;
+            Op op;
             A a;
             B b;
             C c;
 
-            constexpr TernaryExpr(Op o, A arg_a, B arg_b, C arg_c)
-                : op(o), a(std::move(arg_a)), b(std::move(arg_b)), c(std::move(arg_c)) {
+            constexpr TernaryExpr(Op o, const A& arg_a, const B& arg_b, const C& arg_c)
+                : op(o), a(arg_a), b(arg_b), c(arg_c) {
                 std::size_t expected_size = 0;
                 bool has_size = false;
                 auto check_size = [&](const auto &operand) {
