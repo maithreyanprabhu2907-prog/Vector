@@ -302,6 +302,20 @@ Building with `-Ofast` (or MSVC `/fp:fast /O2 /openmp /arch:AVX2`) yields critic
 4. **Streaming Stores Bypassing RFO**: `assign_stream` utilizes `_mm256_stream_pd` non-temporal stores to eliminate cache write-allocate reads when vectors exceed CPU L3 cache size (16 MB).
 5. **Selective Domain Parallelism**: Single-threaded default operators eliminate OpenMP thread pool overhead in fine-grained DG element quadrature loops, while `assign_par` accelerates bulk global mesh updates across all CPU cores.
 
+### Discontinuous Galerkin (DG) Math Core Operations
+
+1. **Sub-Range Spans (`std::span`)**: Zero-copy, zero-allocation operations on sub-vectors and element blocks (`elem_u <<= elem_u + dt * elem_k`).
+2. **Fixed-Size State Vectors (`std::array`)**: 4-variable state blocks (e.g. Euler $[\rho, \rho u, \rho v, E]$) processed on the stack with zero heap allocation.
+3. **Dense Matrix-Vector Operations (`matvec`)**: Small dense matvec (`matvec(A, x, y, rows, cols)`) and transposed matvec (`matvec_transposed(...)`) optimized for DG polynomial orders ($N_p = 4 \dots 36$) for volume, surface, and mass-inverse operators.
+4. **Direct Buffer Write (`eval_into`)**: Evaluates expressions directly into raw pointers or device buffers without container allocations (`eval_into(ptr, n, expr)`).
+5. **Deterministic Reduction Mode**: Bit-identical strictly sequential reductions (`sum_deterministic`, `dot_deterministic`) for regression testing.
+6. **Compile-Time Include Optimization**: Defining `VEC_MATH_NO_INTRINSICS` skips `<immintrin.h>`, reducing translation unit compile times by ~800 ms.
+
+## Compiler Flag Recommendations
+
+- **GCC / Clang**: `-std=c++20 -O3 -mavx2 -mfma` (note: `-mfma` is required with `-mavx2` for hardware FMA instructions).
+- **MSVC**: `/std:c++20 /O2 /fp:precise /arch:AVX2 /openmp`.
+
 ## SYCL Compatibility
 
 `vec_math` is engineered for full compatibility with modern heterogeneous C++ frameworks, including SYCL compilers (such as Intel oneAPI DPC++ and AdaptiveCpp):

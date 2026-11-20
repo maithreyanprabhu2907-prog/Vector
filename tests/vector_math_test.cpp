@@ -762,6 +762,14 @@ int main() {
         assert(approx_eq(norm(a + b), std::sqrt(expected_n_sq)));
     }
 
+    // 8. Deterministic reduction mode for bit-identical regression runs
+    {
+        double s_det = sum_deterministic(a);
+        double d_det = dot_deterministic(a, b);
+        assert(approx_eq(s_det, sum(a)));
+        assert(approx_eq(d_det, (a | b)));
+    }
+
     std::vector<std::string> svec = {"hello", "world"};
     assert(svec.size() == 2);
 

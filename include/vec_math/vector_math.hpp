@@ -35,7 +35,7 @@
 #include <malloc.h>
 #endif
 
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#if !defined(VEC_MATH_NO_INTRINSICS) && (defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86))
 #include <immintrin.h>
 #define VEC_MATH_HAS_X86_INTRIN 1
 #endif
@@ -1051,6 +1051,19 @@ namespace vec_math {
     namespace detail {
     }
 
+    // sum_deterministic: bit-identical strictly sequential reduction for regression tests
+    template<VectorOperand Op>
+    [[nodiscard]] constexpr auto sum_deterministic(const Op &op_in) {
+        auto op = detail::make_operand(op_in);
+        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        const std::size_t n = op.size();
+        value_type total{0};
+        for (std::size_t i = 0; i < n; ++i) {
+            total = total + static_cast<value_type>(op[i]);
+        }
+        return total;
+    }
+
     // sum: reduction with 8-way multi-accumulator dependency breaking
     template<VectorOperand Op>
     [[nodiscard]] constexpr auto sum(const Op &op_in) {
@@ -1075,6 +1088,26 @@ namespace vec_math {
             a0 += static_cast<value_type>(op[i]);
         }
         return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
+    }
+
+    // dot_deterministic: bit-identical strictly sequential inner product for regression tests
+    template<VectorOperand Lhs, VectorOperand Rhs>
+    [[nodiscard]] constexpr auto dot_deterministic(const Lhs &lhs_in, const Rhs &rhs_in) {
+        if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
+            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: vector size mismatch in dot_deterministic");
+        }
+        auto lhs_op = detail::make_operand(lhs_in);
+        auto rhs_op = detail::make_operand(rhs_in);
+        using ResType = std::common_type_t<
+            typename detail::operand_storage_t<Lhs>::value_type,
+            typename detail::operand_storage_t<Rhs>::value_type
+        >;
+        const std::size_t n = lhs_in.size();
+        ResType total{0};
+        for (std::size_t i = 0; i < n; ++i) {
+            total = total + static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+        }
+        return total;
     }
 
     // dot: dot product with SIMD intrinsics and 8-way multi-accumulator dependency breaking

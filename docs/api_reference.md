@@ -387,3 +387,53 @@ Multi-core parallel summation reduction using OpenMP parallel reduction.
 | `VEC_MATH_RESTRICT` | Pointer aliasing restrict modifier (`__restrict` on MSVC, `__restrict__` on GCC/Clang). |
 | `VEC_MATH_PRAGMA_SIMD` | Compiler vectorization hint (`__pragma(loop(ivdep))` on MSVC, `#pragma clang loop vectorize(enable)` on Clang, `#pragma GCC ivdep` on GCC, `#pragma omp simd` on OpenMP). |
 | `VEC_MATH_HAS_X86_INTRIN` | Defined automatically on x86/x64 architectures when `<immintrin.h>` is available. |
+| `VEC_MATH_NO_INTRINSICS` | Define before including `vector_math.hpp` to skip `<immintrin.h>`, reducing translation unit compile times by ~800 ms. |
+| `VEC_MATH_HAS_AVX2_FMA` | Defined automatically only when the compiler enables both AVX2 and FMA flags (`-mavx2 -mfma` on GCC/Clang, `/arch:AVX2` on MSVC). |
+
+---
+
+## 8. Discontinuous Galerkin (DG) Math Core & Buffer Evaluation
+
+Header: `<vec_math/vector_math.hpp>`
+
+### Sub-Range Spans (`std::span`)
+`std::span<T>` and `std::span<const T>` participate in all vector operations (`+`, `-`, `*`, `/`, `<<=`, `|`) with zero copy and zero heap allocations.
+```cpp
+std::vector<double> domain(1024, 0.0);
+std::span<double> elem_u(domain.data(), 64);
+std::span<double> elem_k(k1.data(), 64);
+
+elem_u <<= elem_u + dt * elem_k; // Fused element update, zero copy
+```
+
+### Fixed-Size State Vectors (`std::array`)
+`std::array<T, N>` (such as 4-variable conserved states: $[\rho, \rho u, \rho v, E]$) operates with zero heap allocations:
+```cpp
+std::array<double, 4> q = {1.0, 0.0, 0.0, 2.5};
+std::array<double, 4> flux = {0.0, 1.0, 0.0, 3.0};
+std::array<double, 4> out;
+out <<= q + dt * flux; // Evaluated on stack with zero heap malloc
+```
+
+### Dense Matrix-Vector Operations (`matvec`)
+Optimized for DG polynomial orders ($N_p = 4 \dots 36$) for volume, surface, and mass-inverse operators:
+```cpp
+// y = A * x (row-major)
+matvec(A_matrix, x_vector, y_out, rows, cols);
+
+// y = A^T * x (transposed)
+matvec_transposed(A_matrix, x_vector, y_out, rows, cols);
+```
+
+### Raw Buffer Write (`eval_into`)
+Evaluates any expression directly into raw host or device memory without container allocations:
+```cpp
+eval_into(raw_ptr, n, 2.0 * a + b);
+```
+
+### Deterministic Reductions (`dot_deterministic`, `sum_deterministic`)
+Bit-identical strictly sequential reductions for regression runs:
+```cpp
+double s = sum_deterministic(v);
+double d = dot_deterministic(u, v);
+```
