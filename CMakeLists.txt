@@ -80,6 +80,29 @@ if(VEC_MATH_BUILD_BENCHMARKS)
             -Wextra
         )
     endif()
+
+    # Optimization Comparison Benchmarks (-Ofast vs -O3 vs -Os)
+    add_executable(bench_ofast benchmarks/opt_compare.cpp)
+    target_link_libraries(bench_ofast PRIVATE vec_math::vec_math)
+    target_compile_definitions(bench_ofast PRIVATE OPT_OFAST)
+
+    add_executable(bench_o3 benchmarks/opt_compare.cpp)
+    target_link_libraries(bench_o3 PRIVATE vec_math::vec_math)
+    target_compile_definitions(bench_o3 PRIVATE OPT_O3)
+
+    add_executable(bench_os benchmarks/opt_compare.cpp)
+    target_link_libraries(bench_os PRIVATE vec_math::vec_math)
+    target_compile_definitions(bench_os PRIVATE OPT_OS)
+
+    if(MSVC)
+        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:fast> /arch:AVX2 /W4)
+        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:precise> /arch:AVX2 /W4)
+        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:/O1> $<$<CONFIG:Release>:/Os> $<$<CONFIG:Release>:/fp:precise> /arch:AVX2 /W4)
+    else()
+        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:-Ofast> -mavx2 -Wall -Wextra)
+        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:-O3> -mavx2 -Wall -Wextra)
+        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:-Os> -mavx2 -Wall -Wextra)
+    endif()
 endif()
 
 

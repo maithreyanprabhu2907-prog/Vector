@@ -968,7 +968,7 @@ namespace vec_math {
     namespace detail {
     }
 
-    // sum: reduction with SIMD auto-vectorization
+    // sum: reduction with 8-way multi-accumulator dependency breaking
     template<VectorOperand Op>
     [[nodiscard]] constexpr auto sum(const Op &op_in) {
         auto op = detail::make_operand(op_in);
@@ -976,15 +976,25 @@ namespace vec_math {
         const std::size_t n = op.size();
         if (n == 0) { return value_type{0}; }
 
-        value_type total{0};
-        VEC_MATH_PRAGMA_SIMD
-        for (std::size_t i = 0; i < n; ++i) {
-            total = total + static_cast<value_type>(op[i]);
+        value_type a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
+        std::size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            a0 += static_cast<value_type>(op[i + 0]);
+            a1 += static_cast<value_type>(op[i + 1]);
+            a2 += static_cast<value_type>(op[i + 2]);
+            a3 += static_cast<value_type>(op[i + 3]);
+            a4 += static_cast<value_type>(op[i + 4]);
+            a5 += static_cast<value_type>(op[i + 5]);
+            a6 += static_cast<value_type>(op[i + 6]);
+            a7 += static_cast<value_type>(op[i + 7]);
         }
-        return total;
+        for (; i < n; ++i) {
+            a0 += static_cast<value_type>(op[i]);
+        }
+        return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
     }
 
-    // dot: dot product with SIMD auto-vectorization and FMA
+    // dot: dot product with SIMD intrinsics and 8-way multi-accumulator dependency breaking
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] constexpr auto dot(const Lhs &lhs_in, const Rhs &rhs_in) {
         if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
@@ -999,12 +1009,82 @@ namespace vec_math {
         const std::size_t n = lhs_in.size();
         if (n == 0) { return ResType{0}; }
 
-        ResType total{0};
-        VEC_MATH_PRAGMA_SIMD
-        for (std::size_t i = 0; i < n; ++i) {
-            total = total + static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+#if (defined(__AVX2__) || defined(_M_X64) || defined(__AVX__)) && !defined(__SYCL_DEVICE_ONLY__)
+        if constexpr (requires { { lhs_op.data() }; { rhs_op.data() }; } && std::is_same_v<ResType, double>) {
+            const double* VEC_MATH_RESTRICT p1 = lhs_op.data();
+            const double* VEC_MATH_RESTRICT p2 = rhs_op.data();
+            __m256d acc0 = _mm256_setzero_pd();
+            __m256d acc1 = _mm256_setzero_pd();
+            std::size_t i = 0;
+            for (; i + 8 <= n; i += 8) {
+                __m256d l0 = _mm256_loadu_pd(p1 + i);
+                __m256d r0 = _mm256_loadu_pd(p2 + i);
+                acc0 = _mm256_fmadd_pd(l0, r0, acc0);
+
+                __m256d l1 = _mm256_loadu_pd(p1 + i + 4);
+                __m256d r1 = _mm256_loadu_pd(p2 + i + 4);
+                acc1 = _mm256_fmadd_pd(l1, r1, acc1);
+            }
+            acc0 = _mm256_add_pd(acc0, acc1);
+            __m128d lo = _mm256_castpd256_pd128(acc0);
+            __m128d hi = _mm256_extractf128_pd(acc0, 1);
+            __m128d sum128 = _mm_add_pd(lo, hi);
+            __m128d high_half = _mm_unpackhi_pd(sum128, sum128);
+            __m128d scalar_sum = _mm_add_sd(sum128, high_half);
+            double total = _mm_cvtsd_f64(scalar_sum);
+
+            for (; i < n; ++i) {
+                total += p1[i] * p2[i];
+            }
+            return total;
+        } else if constexpr (requires { { lhs_op.data() }; { rhs_op.data() }; } && std::is_same_v<ResType, float>) {
+            const float* VEC_MATH_RESTRICT p1 = lhs_op.data();
+            const float* VEC_MATH_RESTRICT p2 = rhs_op.data();
+            __m256 acc0 = _mm256_setzero_ps();
+            __m256 acc1 = _mm256_setzero_ps();
+            std::size_t i = 0;
+            for (; i + 16 <= n; i += 16) {
+                __m256 l0 = _mm256_loadu_ps(p1 + i);
+                __m256 r0 = _mm256_loadu_ps(p2 + i);
+                acc0 = _mm256_fmadd_ps(l0, r0, acc0);
+
+                __m256 l1 = _mm256_loadu_ps(p1 + i + 8);
+                __m256 r1 = _mm256_loadu_ps(p2 + i + 8);
+                acc1 = _mm256_fmadd_ps(l1, r1, acc1);
+            }
+            acc0 = _mm256_add_ps(acc0, acc1);
+            __m128 lo = _mm256_castps256_ps128(acc0);
+            __m128 hi = _mm256_extractf128_ps(acc0, 1);
+            __m128 sum128 = _mm_add_ps(lo, hi);
+            __m128 shuf = _mm_movehl_ps(sum128, sum128);
+            __m128 sum64 = _mm_add_ps(sum128, shuf);
+            __m128 shuf2 = _mm_shuffle_ps(sum64, sum64, 1);
+            __m128 scalar_sum = _mm_add_ss(sum64, shuf2);
+            float total = _mm_cvtss_f32(scalar_sum);
+
+            for (; i < n; ++i) {
+                total += p1[i] * p2[i];
+            }
+            return total;
         }
-        return total;
+#endif
+
+        ResType a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
+        std::size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            a0 += static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
+            a1 += static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
+            a2 += static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
+            a3 += static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
+            a4 += static_cast<ResType>(lhs_op[i + 4]) * static_cast<ResType>(rhs_op[i + 4]);
+            a5 += static_cast<ResType>(lhs_op[i + 5]) * static_cast<ResType>(rhs_op[i + 5]);
+            a6 += static_cast<ResType>(lhs_op[i + 6]) * static_cast<ResType>(rhs_op[i + 6]);
+            a7 += static_cast<ResType>(lhs_op[i + 7]) * static_cast<ResType>(rhs_op[i + 7]);
+        }
+        for (; i < n; ++i) {
+            a0 += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+        }
+        return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
     }
 
     // norm_sq: squared L2 norm
