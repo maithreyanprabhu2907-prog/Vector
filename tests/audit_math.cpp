@@ -267,28 +267,28 @@ void audit_matvec() {
     {
         constexpr std::size_t M = 4, N = 6;
         double A[M * N], x[N], y[M], y_ref[M];
-        for (int i = 0; i < M * N; ++i) A[i] = i * 0.5 + 1.0;
-        for (int i = 0; i < N; ++i) x[i] = 2.0 - i * 0.1;
-        for (int r = 0; r < M; ++r) {
+        for (std::size_t i = 0; i < M * N; ++i) A[i] = i * 0.5 + 1.0;
+        for (std::size_t i = 0; i < N; ++i) x[i] = 2.0 - i * 0.1;
+        for (std::size_t r = 0; r < M; ++r) {
             double sum = 0;
-            for (int c = 0; c < N; ++c) sum += A[r * N + c] * x[c];
+            for (std::size_t c = 0; c < N; ++c) sum += A[r * N + c] * x[c];
             y_ref[r] = sum;
         }
         matvec_fixed<M, N>(A, x, y);
-        for (int r = 0; r < M; ++r) AUDIT_ASSERT(std::abs(y[r] - y_ref[r]) < 1e-12, "matvec_fixed mismatch");
+        for (std::size_t r = 0; r < M; ++r) AUDIT_ASSERT(std::abs(y[r] - y_ref[r]) < 1e-12, "matvec_fixed mismatch");
 
         // Fixed square aliased
         double Asq[M * M], x_alias[M];
-        for (int i = 0; i < M * M; ++i) Asq[i] = i * 0.25 + 0.5;
-        for (int i = 0; i < M; ++i) x_alias[i] = i + 1.0;
+        for (std::size_t i = 0; i < M * M; ++i) Asq[i] = i * 0.25 + 0.5;
+        for (std::size_t i = 0; i < M; ++i) x_alias[i] = i + 1.0;
         double ref_alias[M];
-        for (int r = 0; r < M; ++r) {
+        for (std::size_t r = 0; r < M; ++r) {
             double sum = 0;
-            for (int c = 0; c < M; ++c) sum += Asq[r * M + c] * x_alias[c];
+            for (std::size_t c = 0; c < M; ++c) sum += Asq[r * M + c] * x_alias[c];
             ref_alias[r] = sum;
         }
         matvec_fixed<M, M>(Asq, x_alias, x_alias);
-        for (int r = 0; r < M; ++r) AUDIT_ASSERT(std::abs(x_alias[r] - ref_alias[r]) < 1e-12, "matvec_fixed aliased mismatch");
+        for (std::size_t r = 0; r < M; ++r) AUDIT_ASSERT(std::abs(x_alias[r] - ref_alias[r]) < 1e-12, "matvec_fixed aliased mismatch");
     }
 
     std::cout << "  -> matvec: PASSED all tests!" << std::endl;
@@ -306,9 +306,9 @@ void audit_solve_4x4() {
     std::vector<const double*> A_ptrs(16);
     std::vector<const double*> b_ptrs(4);
     std::vector<double*> x_ptrs(4);
-    for (int i = 0; i < 16; ++i) A_ptrs[i] = A_soa_storage[i].data();
-    for (int i = 0; i < 4; ++i) b_ptrs[i] = b_soa_storage[i].data();
-    for (int i = 0; i < 4; ++i) x_ptrs[i] = x_soa_storage[i].data();
+    for (std::size_t i = 0; i < 16; ++i) A_ptrs[i] = A_soa_storage[i].data();
+    for (std::size_t i = 0; i < 4; ++i) b_ptrs[i] = b_soa_storage[i].data();
+    for (std::size_t i = 0; i < 4; ++i) x_ptrs[i] = x_soa_storage[i].data();
 
     // Element 0: Standard invertible matrix
     // [4, 1, 0, 0] [x0] = [5]  -> x = [1, 1, 1, 1]
@@ -322,8 +322,8 @@ void audit_solve_4x4() {
         {0, 0, 1, 4}
     };
     double b0[4] = {5, 6, 6, 5};
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) A_soa_storage[r * 4 + c][0] = A0[r][c];
+    for (std::size_t r = 0; r < 4; ++r) {
+        for (std::size_t c = 0; c < 4; ++c) A_soa_storage[r * 4 + c][0] = A0[r][c];
         b_soa_storage[r][0] = b0[r];
     }
 
@@ -339,8 +339,8 @@ void audit_solve_4x4() {
         {1, 2, 3, 0}
     };
     double b1[4] = {3, 4, 1, 6};
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) A_soa_storage[r * 4 + c][1] = A1[r][c];
+    for (std::size_t r = 0; r < 4; ++r) {
+        for (std::size_t c = 0; c < 4; ++c) A_soa_storage[r * 4 + c][1] = A1[r][c];
         b_soa_storage[r][1] = b1[r];
     }
 
@@ -348,8 +348,8 @@ void audit_solve_4x4() {
     // H_ij = 1.0 / (i + j + 1)
     double b2[4] = {0.0, 0.0, 0.0, 0.0};
     double x2_exact[4] = {1.0, 2.0, 3.0, 4.0};
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) {
+    for (std::size_t r = 0; r < 4; ++r) {
+        for (std::size_t c = 0; c < 4; ++c) {
             double h = 1.0 / (r + c + 1);
             A_soa_storage[r * 4 + c][2] = h;
             b2[r] += h * x2_exact[c];
@@ -360,17 +360,17 @@ void audit_solve_4x4() {
     solve_4x4_batched(A_ptrs.data(), b_ptrs.data(), x_ptrs.data(), num_elements);
 
     // Verify Element 0: x = [1, 1, 1, 1]
-    for (int r = 0; r < 4; ++r) {
+    for (std::size_t r = 0; r < 4; ++r) {
         AUDIT_ASSERT(std::abs(x_soa_storage[r][0] - 1.0) < 1e-12, "Element 0 solution incorrect");
     }
 
     // Verify Element 1: x = [1, 1, 1, 1]
-    for (int r = 0; r < 4; ++r) {
+    for (std::size_t r = 0; r < 4; ++r) {
         AUDIT_ASSERT(std::abs(x_soa_storage[r][1] - 1.0) < 1e-12, "Element 1 pivot solution incorrect");
     }
 
     // Verify Element 2: Hilbert 4x4 solution accuracy
-    for (int r = 0; r < 4; ++r) {
+    for (std::size_t r = 0; r < 4; ++r) {
         AUDIT_ASSERT(std::abs(x_soa_storage[r][2] - x2_exact[r]) < 1e-8, "Element 2 Hilbert matrix accuracy failed");
     }
 
@@ -382,9 +382,9 @@ void audit_solve_4x4() {
         std::vector<const double*> Asp(16);
         std::vector<const double*> bsp(4);
         std::vector<double*> xsp(4);
-        for (int i = 0; i < 16; ++i) Asp[i] = As[i].data();
-        for (int i = 0; i < 4; ++i) bsp[i] = bs[i].data();
-        for (int i = 0; i < 4; ++i) xsp[i] = xs[i].data();
+        for (std::size_t i = 0; i < 16; ++i) Asp[i] = As[i].data();
+        for (std::size_t i = 0; i < 4; ++i) bsp[i] = bs[i].data();
+        for (std::size_t i = 0; i < 4; ++i) xsp[i] = xs[i].data();
 
         bool threw = false;
         try {
@@ -565,7 +565,7 @@ void audit_primitives() {
         // span gather
         std::vector<double> dst2(5, 0.0);
         gather(std::span(dst2), std::span<const double>(src), std::span<const int>(indices));
-        for (int i = 0; i < 5; ++i) AUDIT_ASSERT(dst[i] == dst2[i], "span gather mismatch");
+        for (std::size_t i = 0; i < 5; ++i) AUDIT_ASSERT(dst[i] == dst2[i], "span gather mismatch");
     }
 
     // scatter_add

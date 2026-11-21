@@ -115,15 +115,10 @@
 #define VEC_MATH_RESTRICT
 #endif
 
-#if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wpass-failed"
-#endif
-
 #if defined(_MSC_VER) && !defined(__clang__)
 #define VEC_MATH_PRAGMA_SIMD __pragma(loop(ivdep))
 #elif defined(__clang__)
-#define VEC_MATH_PRAGMA_SIMD _Pragma("clang loop vectorize(assume_safety)")
+#define VEC_MATH_PRAGMA_SIMD
 #elif defined(__GNUC__)
 #define VEC_MATH_PRAGMA_SIMD _Pragma("GCC ivdep")
 #elif defined(_OPENMP)
@@ -2689,7 +2684,4 @@ namespace vec_math {
     }
 }
 
-#if defined(__clang__)
-#pragma clang diagnostic pop
-#endif
 

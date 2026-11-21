@@ -1031,11 +1031,11 @@ int main() {
         double x_entries[4][nelem] = {};
 
         const double* A_ptrs[16];
-        for (int i = 0; i < 16; ++i) A_ptrs[i] = A_entries[i];
+        for (std::size_t i = 0; i < 16; ++i) A_ptrs[i] = A_entries[i];
 
         const double* b_ptrs[4];
         double* x_ptrs[4];
-        for (int i = 0; i < 4; ++i) {
+        for (std::size_t i = 0; i < 4; ++i) {
             b_ptrs[i] = b_entries[i];
             x_ptrs[i] = x_entries[i];
         }
@@ -1064,7 +1064,7 @@ int main() {
         assert(approx_eq(soa[3], 6.0)); // v=1, elem=1
 
         transpose_soa_to_aos(soa, aos_back, 2, 4);
-        for (int i = 0; i < 8; ++i) {
+        for (std::size_t i = 0; i < 8; ++i) {
             assert(approx_eq(aos[i], aos_back[i]));
         }
     }
