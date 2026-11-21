@@ -2,6 +2,9 @@
 build/
 cmake-build-*/
 out/
+scratch/
+temp/
+tmp/
 
 # CMake generated files
 CMakeFiles/
@@ -21,10 +24,25 @@ Testing/
 *.dll
 *.dylib
 *.exe
+*.pdb
+*.idb
+*.ilk
+*.exp
+
+# Profiling and trace files/directories
+*.etl
+*.etl.NGENPDB/
+*.NGENPDB/
+profile_detail.txt
+stack_*.txt
+*_decoded.txt
+folded_stacks.txt
+bench_opt_*.txt
 
 # IDE files
 .idea/
 .vscode/
+.vs/
 .vs
 
 # User-specific files
@@ -39,4 +57,3 @@ Thumbs.db
 
 # Generated benchmark output
 benchmark_results.md
-

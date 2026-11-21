@@ -115,6 +115,11 @@
 #define VEC_MATH_RESTRICT
 #endif
 
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wpass-failed"
+#endif
+
 #if defined(_MSC_VER) && !defined(__clang__)
 #define VEC_MATH_PRAGMA_SIMD __pragma(loop(ivdep))
 #elif defined(__clang__)
@@ -691,6 +696,92 @@ namespace vec_math {
             return UnaryExpr<Op, operand_storage_t<Arg>>(op, make_operand(arg));
         }
 
+        inline bool memory_ranges_overlap(const void* a, std::size_t a_bytes, const void* b, std::size_t b_bytes) noexcept {
+            if (!a || !b || a_bytes == 0 || b_bytes == 0) return false;
+            const auto* a_beg = static_cast<const char*>(a);
+            const auto* a_end = a_beg + a_bytes;
+            const auto* b_beg = static_cast<const char*>(b);
+            const auto* b_end = b_beg + b_bytes;
+            return (a_beg < b_end) && (b_beg < a_end);
+        }
+
+        template<typename S>
+        VEC_MATH_HD_INLINE constexpr bool has_partial_overlap(const ScalarVal<S>&, const char*, const char*) noexcept {
+            return false;
+        }
+
+        template<typename Vec>
+        VEC_MATH_HD_INLINE bool has_partial_overlap(const VecRef<Vec>& ref, const char* dst_begin, const char* dst_end) noexcept {
+            if (!ref.data()) return false;
+            const char* p_begin = reinterpret_cast<const char*>(ref.data());
+            const char* p_end = p_begin + ref.size() * sizeof(typename VecRef<Vec>::value_type);
+            return (p_begin < dst_end) && (dst_begin < p_end) && (p_begin != dst_begin);
+        }
+
+        template<typename Op, typename L, typename R>
+        VEC_MATH_HD_INLINE bool has_partial_overlap(const BinExpr<Op, L, R>& expr, const char* dst_begin, const char* dst_end) noexcept {
+            return has_partial_overlap(expr.lhs, dst_begin, dst_end) || has_partial_overlap(expr.rhs, dst_begin, dst_end);
+        }
+
+        template<typename Op, typename Arg>
+        VEC_MATH_HD_INLINE bool has_partial_overlap(const UnaryExpr<Op, Arg>& expr, const char* dst_begin, const char* dst_end) noexcept {
+            return has_partial_overlap(expr.operand, dst_begin, dst_end);
+        }
+
+        template<typename Op, typename A, typename B, typename C>
+        VEC_MATH_HD_INLINE bool has_partial_overlap(const TernaryExpr<Op, A, B, C>& expr, const char* dst_begin, const char* dst_end) noexcept {
+            return has_partial_overlap(expr.a, dst_begin, dst_end) ||
+                   has_partial_overlap(expr.b, dst_begin, dst_end) ||
+                   has_partial_overlap(expr.c, dst_begin, dst_end);
+        }
+    }
+
+    template<typename T, VectorOperand Src>
+    VEC_MATH_HD_INLINE void eval_into(T* dst, std::size_t n, const Src& src) {
+        if (n != src.size()) [[unlikely]] {
+            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: destination size mismatch in eval_into");
+        }
+        if (n == 0) return;
+        auto storage = detail::make_operand(src);
+        const char* dst_begin = reinterpret_cast<const char*>(dst);
+        const char* dst_end = dst_begin + n * sizeof(T);
+        if (detail::has_partial_overlap(storage, dst_begin, dst_end)) {
+            constexpr std::size_t STACK_BUF_CAP = 1024;
+            if (n <= STACK_BUF_CAP) {
+                T local_buf[STACK_BUF_CAP];
+                for (std::size_t i = 0; i < n; ++i) {
+                    local_buf[i] = static_cast<T>(storage[i]);
+                }
+                for (std::size_t i = 0; i < n; ++i) {
+                    dst[i] = local_buf[i];
+                }
+                return;
+            }
+#if defined(VEC_MATH_STRICT_ZERO_MALLOC)
+            else {
+                VEC_MATH_THROW_OR_ABORT(std::bad_alloc, "vec_math: eval_into partial overlap exceeds stack buffer capacity under VEC_MATH_STRICT_ZERO_MALLOC");
+            }
+#elif !defined(__SYCL_DEVICE_ONLY__)
+            else {
+                std::vector<T> local_buf(n);
+                for (std::size_t i = 0; i < n; ++i) {
+                    local_buf[i] = static_cast<T>(storage[i]);
+                }
+                for (std::size_t i = 0; i < n; ++i) {
+                    dst[i] = local_buf[i];
+                }
+                return;
+            }
+#endif
+        }
+
+        VEC_MATH_PRAGMA_SIMD
+        for (std::size_t i = 0; i < n; ++i) {
+            dst[i] = static_cast<T>(storage[i]);
+        }
+    }
+
+    namespace detail {
         // ============================================================================
         // Optimized Compound Application Kernels (8x/4x unrolled with SIMD pragmas)
         // ============================================================================
@@ -763,32 +854,20 @@ namespace vec_math {
                 VEC_MATH_THROW_OR_ABORT(std::length_error,
                                         "vec_math: destination capacity < source size (zero-malloc invariant violated)");
             }
-
             dst.resize(n);
-
-            T * p = dst.data();
-            auto storage = make_operand(src);
-
-            VEC_MATH_PRAGMA_SIMD
-            for (std::size_t i = 0; i < n; ++i) { p[i] = static_cast<T>(storage[i]); }
+            eval_into(dst.data(), n, src);
         }
 
         template<typename T, std::size_t Extent, VectorOperand Src>
         VEC_MATH_FORCE_INLINE void assign_zero_malloc(std::span<T, Extent> dst, const Src &src) {
             VEC_MATH_CHECK_SIZE_EQ(dst.size(), src.size(), "vec_math: span size mismatch in assignment");
-            T * p = dst.data();
-            auto storage = make_operand(src);
-            VEC_MATH_PRAGMA_SIMD
-            for (std::size_t i = 0; i < dst.size(); ++i) { p[i] = static_cast<T>(storage[i]); }
+            eval_into(dst.data(), dst.size(), src);
         }
 
         template<typename T, std::size_t N, VectorOperand Src>
         VEC_MATH_FORCE_INLINE void assign_zero_malloc(std::array<T, N> &dst, const Src &src) {
             VEC_MATH_CHECK_SIZE_EQ(N, src.size(), "vec_math: array size mismatch in assignment");
-            T * p = dst.data();
-            auto storage = make_operand(src);
-            VEC_MATH_PRAGMA_SIMD
-            for (std::size_t i = 0; i < N; ++i) { p[i] = static_cast<T>(storage[i]); }
+            eval_into(dst.data(), N, src);
         }
     }
 
@@ -1241,6 +1320,25 @@ namespace vec_math {
     }
 
     namespace detail {
+        template<typename ValueT, typename Accessor>
+        constexpr ValueT pairwise_tree_sum(Accessor&& acc, std::size_t start, std::size_t count) {
+            if (count == 0) return ValueT{0};
+            if (count == 1) return static_cast<ValueT>(acc(start));
+            if (count == 2) return static_cast<ValueT>(acc(start)) + static_cast<ValueT>(acc(start + 1));
+            const std::size_t mid = count / 2;
+            return pairwise_tree_sum<ValueT>(acc, start, mid) +
+                   pairwise_tree_sum<ValueT>(acc, start + mid, count - mid);
+        }
+
+        template<typename ValueT, typename BlockFunc>
+        constexpr ValueT pairwise_tree_blocks(BlockFunc&& block_fn, std::size_t b_start, std::size_t b_count) {
+            if (b_count == 0) return ValueT{0};
+            if (b_count == 1) return block_fn(b_start);
+            if (b_count == 2) return block_fn(b_start) + block_fn(b_start + 1);
+            const std::size_t mid = b_count / 2;
+            return pairwise_tree_blocks<ValueT>(block_fn, b_start, mid) +
+                   pairwise_tree_blocks<ValueT>(block_fn, b_start + mid, b_count - mid);
+        }
     }
 
     enum class ReductionPolicy {
@@ -1258,17 +1356,16 @@ namespace vec_math {
 
         constexpr std::size_t BLOCK_SIZE = 512;
         const std::size_t num_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        value_type total{0};
-        for (std::size_t b = 0; b < num_blocks; ++b) {
+
+        auto block_fn = [&](std::size_t b) -> value_type {
             const std::size_t start = b * BLOCK_SIZE;
-            const std::size_t end = (start + BLOCK_SIZE < n) ? (start + BLOCK_SIZE) : n;
-            value_type block_sum{0};
-            for (std::size_t i = start; i < end; ++i) {
-                block_sum = block_sum + static_cast<value_type>(op[i]);
-            }
-            total = total + block_sum;
-        }
-        return total;
+            const std::size_t count = (start + BLOCK_SIZE < n) ? BLOCK_SIZE : (n - start);
+            return detail::pairwise_tree_sum<value_type>([&](std::size_t idx) {
+                return op[idx];
+            }, start, count);
+        };
+
+        return detail::pairwise_tree_blocks<value_type>(block_fn, 0, num_blocks);
     }
 
     // sum_deterministic: bit-identical strictly sequential reduction for regression tests
@@ -1286,7 +1383,10 @@ namespace vec_math {
 
     // sum: reduction with 8-way multi-accumulator dependency breaking
     template<VectorOperand Op>
-    [[nodiscard]] constexpr auto sum(const Op &op_in) {
+    [[nodiscard]] constexpr auto sum(const Op &op_in, ReductionPolicy policy = ReductionPolicy::FAST) {
+        if (policy == ReductionPolicy::REPRO) {
+            return sum_repro(op_in);
+        }
         auto op = detail::make_operand(op_in);
         using value_type = typename detail::operand_storage_t<Op>::value_type;
         const std::size_t n = op.size();
@@ -1325,17 +1425,16 @@ namespace vec_math {
 
         constexpr std::size_t BLOCK_SIZE = 512;
         const std::size_t num_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
-        ResType total{0};
-        for (std::size_t b = 0; b < num_blocks; ++b) {
+
+        auto block_fn = [&](std::size_t b) -> ResType {
             const std::size_t start = b * BLOCK_SIZE;
-            const std::size_t end = (start + BLOCK_SIZE < n) ? (start + BLOCK_SIZE) : n;
-            ResType block_sum{0};
-            for (std::size_t i = start; i < end; ++i) {
-                block_sum = block_sum + static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
-            }
-            total = total + block_sum;
-        }
-        return total;
+            const std::size_t count = (start + BLOCK_SIZE < n) ? BLOCK_SIZE : (n - start);
+            return detail::pairwise_tree_sum<ResType>([&](std::size_t idx) {
+                return static_cast<ResType>(lhs_op[idx]) * static_cast<ResType>(rhs_op[idx]);
+            }, start, count);
+        };
+
+        return detail::pairwise_tree_blocks<ResType>(block_fn, 0, num_blocks);
     }
 
     // dot_deterministic: bit-identical strictly sequential inner product for regression tests
@@ -1358,7 +1457,10 @@ namespace vec_math {
 
     // dot: dot product with SIMD intrinsics and 8-way multi-accumulator dependency breaking
     template<VectorOperand Lhs, VectorOperand Rhs>
-    [[nodiscard]] constexpr auto dot(const Lhs &lhs_in, const Rhs &rhs_in) {
+    [[nodiscard]] constexpr auto dot(const Lhs &lhs_in, const Rhs &rhs_in, ReductionPolicy policy = ReductionPolicy::FAST) {
+        if (policy == ReductionPolicy::REPRO) {
+            return dot_repro(lhs_in, rhs_in);
+        }
         VEC_MATH_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "vec_math: vector size mismatch in dot product");
         auto lhs_op = detail::make_operand(lhs_in);
         auto rhs_op = detail::make_operand(rhs_in);
@@ -1633,22 +1735,10 @@ namespace vec_math {
     // Direct Device / Buffer Evaluation & Matrix-Vector Operations
     // ============================================================================
 
-    template<typename T, VectorOperand Src>
-    VEC_MATH_HD_INLINE void eval_into(T* dst, std::size_t n, const Src& src) {
-        if (n != src.size()) [[unlikely]] {
-            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: destination size mismatch in eval_into");
-        }
-        auto storage = detail::make_operand(src);
-        VEC_MATH_PRAGMA_SIMD
-        for (std::size_t i = 0; i < n; ++i) {
-            dst[i] = static_cast<T>(storage[i]);
-        }
-    }
-
     template<typename MatT, typename VecInT, typename VecOutT>
     VEC_MATH_HOST_DEVICE inline void matvec(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
         if (rows == 0 || cols == 0) return;
-        const bool aliased = (static_cast<const void*>(x) == static_cast<const void*>(y));
+        const bool aliased = detail::memory_ranges_overlap(x, cols * sizeof(VecInT), y, rows * sizeof(VecOutT));
         constexpr std::size_t STACK_BUF_CAP = 128;
         if (aliased) {
             if (rows <= STACK_BUF_CAP) {
@@ -1659,7 +1749,11 @@ namespace vec_math {
                 }
                 return;
             }
-#if !defined(__SYCL_DEVICE_ONLY__)
+#if defined(VEC_MATH_STRICT_ZERO_MALLOC)
+            else {
+                VEC_MATH_THROW_OR_ABORT(std::bad_alloc, "vec_math: matvec aliasing exceeds stack buffer capacity under VEC_MATH_STRICT_ZERO_MALLOC");
+            }
+#elif !defined(__SYCL_DEVICE_ONLY__)
             else {
                 std::vector<VecOutT> local_buf(rows);
                 matvec(A, x, local_buf.data(), rows, cols);
@@ -1700,7 +1794,7 @@ namespace vec_math {
     template<typename MatT, typename VecInT, typename VecOutT>
     VEC_MATH_HOST_DEVICE inline void matvec_transposed(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
         if (rows == 0 || cols == 0) return;
-        const bool aliased = (static_cast<const void*>(x) == static_cast<const void*>(y));
+        const bool aliased = detail::memory_ranges_overlap(x, rows * sizeof(VecInT), y, cols * sizeof(VecOutT));
         constexpr std::size_t STACK_BUF_CAP = 128;
         if (aliased) {
             if (cols <= STACK_BUF_CAP) {
@@ -1711,7 +1805,11 @@ namespace vec_math {
                 }
                 return;
             }
-#if !defined(__SYCL_DEVICE_ONLY__)
+#if defined(VEC_MATH_STRICT_ZERO_MALLOC)
+            else {
+                VEC_MATH_THROW_OR_ABORT(std::bad_alloc, "vec_math: matvec_transposed aliasing exceeds stack buffer capacity under VEC_MATH_STRICT_ZERO_MALLOC");
+            }
+#elif !defined(__SYCL_DEVICE_ONLY__)
             else {
                 std::vector<VecOutT> local_buf(cols);
                 matvec_transposed(A, x, local_buf.data(), rows, cols);
@@ -1753,7 +1851,7 @@ namespace vec_math {
     template<std::size_t Rows, std::size_t Cols, typename MatT, typename VecInT, typename VecOutT>
     VEC_MATH_HOST_DEVICE inline void matvec_fixed(const MatT* A, const VecInT* x, VecOutT* y) {
         if constexpr (Rows == 0 || Cols == 0) return;
-        const bool aliased = (static_cast<const void*>(x) == static_cast<const void*>(y));
+        const bool aliased = detail::memory_ranges_overlap(x, Cols * sizeof(VecInT), y, Rows * sizeof(VecOutT));
         if (aliased) {
             VecOutT local_buf[Rows];
             matvec_fixed<Rows, Cols>(A, x, local_buf);
@@ -1784,7 +1882,7 @@ namespace vec_math {
     template<std::size_t Rows, std::size_t Cols, typename MatT, typename VecInT, typename VecOutT>
     VEC_MATH_HOST_DEVICE inline void matvec_transposed_fixed(const MatT* A, const VecInT* x, VecOutT* y) {
         if constexpr (Rows == 0 || Cols == 0) return;
-        const bool aliased = (static_cast<const void*>(x) == static_cast<const void*>(y));
+        const bool aliased = detail::memory_ranges_overlap(x, Rows * sizeof(VecInT), y, Cols * sizeof(VecOutT));
         if (aliased) {
             VecOutT local_buf[Cols];
             matvec_transposed_fixed<Rows, Cols>(A, x, local_buf);
@@ -1931,10 +2029,13 @@ namespace vec_math {
         }
     }
 
-    template<typename T, std::size_t DstExt, std::size_t SrcExt, typename IndexT, std::size_t IdxExt>
-    VEC_MATH_HOST_DEVICE inline void gather(std::span<T, DstExt> dst, std::span<const T, SrcExt> src, std::span<const IndexT, IdxExt> indices) {
+    template<typename T, std::size_t DstExt, typename SrcT, std::size_t SrcExt, typename IndexT, std::size_t IdxExt>
+    VEC_MATH_HOST_DEVICE inline void gather(std::span<T, DstExt> dst, std::span<SrcT, SrcExt> src, std::span<IndexT, IdxExt> indices) {
+        static_assert(std::is_convertible_v<SrcT, T>, "vec_math: source element type must be convertible to destination type in gather");
         VEC_MATH_CHECK_SIZE_EQ(dst.size(), indices.size(), "vec_math: size mismatch in gather");
-        gather(dst.data(), src.data(), indices.data(), indices.size());
+        for (std::size_t i = 0; i < indices.size(); ++i) {
+            dst[i] = static_cast<T>(src[indices[i]]);
+        }
     }
 
     template<typename T, typename IndexT>
@@ -1944,10 +2045,13 @@ namespace vec_math {
         }
     }
 
-    template<typename T, std::size_t DstExt, typename IndexT, std::size_t IdxExt, std::size_t SrcExt>
-    VEC_MATH_HOST_DEVICE inline void scatter_add(std::span<T, DstExt> dst, std::span<const IndexT, IdxExt> indices, std::span<const T, SrcExt> src) {
+    template<typename T, std::size_t DstExt, typename IndexT, std::size_t IdxExt, typename SrcT, std::size_t SrcExt>
+    VEC_MATH_HOST_DEVICE inline void scatter_add(std::span<T, DstExt> dst, std::span<IndexT, IdxExt> indices, std::span<SrcT, SrcExt> src) {
+        static_assert(std::is_convertible_v<SrcT, T>, "vec_math: source element type must be convertible to destination type in scatter_add");
         VEC_MATH_CHECK_SIZE_EQ(indices.size(), src.size(), "vec_math: size mismatch in scatter_add");
-        scatter_add(dst.data(), indices.data(), src.data(), src.size());
+        for (std::size_t i = 0; i < src.size(); ++i) {
+            dst[indices[i]] += static_cast<T>(src[i]);
+        }
     }
 
     // Point-implicit 4x4 linear solve in SoA layout across elements: A_soa x_soa = b_soa
@@ -2084,10 +2188,10 @@ namespace vec_math {
             VEC_MATH_DEVICE_ASSERT(nz == N, "vec_math: nz must match N for Axis 2 contraction");
         }
 
-        const bool aliased = (static_cast<const void*>(in) == static_cast<const void*>(out));
+        const std::size_t total = nx * ny * nz;
+        const bool aliased = detail::memory_ranges_overlap(in, total * sizeof(T), out, total * sizeof(T));
         if (aliased) {
             constexpr std::size_t STACK_TOTAL_CAP = 1024;
-            const std::size_t total = nx * ny * nz;
             if (total <= STACK_TOTAL_CAP) {
                 T local_buf[STACK_TOTAL_CAP];
                 contract_axis<AxisParam, N>(D, in, local_buf, nx, ny, nz);
@@ -2096,7 +2200,11 @@ namespace vec_math {
                 }
                 return;
             }
-#if !defined(__SYCL_DEVICE_ONLY__)
+#if defined(VEC_MATH_STRICT_ZERO_MALLOC)
+            else {
+                VEC_MATH_THROW_OR_ABORT(std::bad_alloc, "vec_math: contract_axis aliased buffer exceeds stack capacity under VEC_MATH_STRICT_ZERO_MALLOC");
+            }
+#elif !defined(__SYCL_DEVICE_ONLY__)
             else {
                 std::vector<T> local_buf(total);
                 contract_axis<AxisParam, N>(D, in, local_buf.data(), nx, ny, nz);
@@ -2278,12 +2386,45 @@ namespace vec_math {
         const std::size_t n = lhs_in.size();
         if (n == 0) { return ResType{0}; }
 
+        // Eliminate false sharing on 64-byte cache lines by isolating thread accumulators
+        constexpr int MAX_OMP_THREADS = 128;
+        struct alignas(64) PaddedAcc {
+            ResType value{0};
+        };
+        alignas(64) PaddedAcc partial_sums[MAX_OMP_THREADS];
+
+        int actual_threads = 1;
+        #pragma omp parallel
+        {
+            int tid = omp_get_thread_num();
+            int nthreads = omp_get_num_threads();
+            if (tid == 0) {
+                actual_threads = nthreads;
+            }
+            if (tid < MAX_OMP_THREADS) {
+                std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
+                std::size_t start = static_cast<std::size_t>(tid) * chunk;
+                std::size_t end = (start + chunk < n) ? (start + chunk) : n;
+                ResType local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
+                std::size_t i = start;
+                for (; i + 4 <= end; i += 4) {
+                    local_acc0 += static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
+                    local_acc1 += static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
+                    local_acc2 += static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
+                    local_acc3 += static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
+                }
+                ResType local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
+                for (; i < end; ++i) {
+                    local_sum += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+                }
+                partial_sums[tid].value = local_sum;
+            }
+        }
+
+        if (actual_threads > MAX_OMP_THREADS) actual_threads = MAX_OMP_THREADS;
         ResType total{0};
-        const std::int64_t n_signed = static_cast<std::int64_t>(n);
-        #pragma omp parallel for schedule(static) reduction(+:total)
-        for (std::int64_t i = 0; i < n_signed; ++i) {
-            total += static_cast<ResType>(lhs_op[static_cast<std::size_t>(i)]) *
-                     static_cast<ResType>(rhs_op[static_cast<std::size_t>(i)]);
+        for (int t = 0; t < actual_threads; ++t) {
+            total += partial_sums[t].value;
         }
         return total;
 #else
@@ -2299,11 +2440,45 @@ namespace vec_math {
         const std::size_t n = op.size();
         if (n == 0) { return value_type{0}; }
 
+        // Eliminate false sharing on 64-byte cache lines by isolating thread accumulators
+        constexpr int MAX_OMP_THREADS = 128;
+        struct alignas(64) PaddedAcc {
+            value_type value{0};
+        };
+        alignas(64) PaddedAcc partial_sums[MAX_OMP_THREADS];
+
+        int actual_threads = 1;
+        #pragma omp parallel
+        {
+            int tid = omp_get_thread_num();
+            int nthreads = omp_get_num_threads();
+            if (tid == 0) {
+                actual_threads = nthreads;
+            }
+            if (tid < MAX_OMP_THREADS) {
+                std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
+                std::size_t start = static_cast<std::size_t>(tid) * chunk;
+                std::size_t end = (start + chunk < n) ? (start + chunk) : n;
+                value_type local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
+                std::size_t i = start;
+                for (; i + 4 <= end; i += 4) {
+                    local_acc0 += static_cast<value_type>(op[i + 0]);
+                    local_acc1 += static_cast<value_type>(op[i + 1]);
+                    local_acc2 += static_cast<value_type>(op[i + 2]);
+                    local_acc3 += static_cast<value_type>(op[i + 3]);
+                }
+                value_type local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
+                for (; i < end; ++i) {
+                    local_sum += static_cast<value_type>(op[i]);
+                }
+                partial_sums[tid].value = local_sum;
+            }
+        }
+
+        if (actual_threads > MAX_OMP_THREADS) actual_threads = MAX_OMP_THREADS;
         value_type total{0};
-        const std::int64_t n_signed = static_cast<std::int64_t>(n);
-        #pragma omp parallel for schedule(static) reduction(+:total)
-        for (std::int64_t i = 0; i < n_signed; ++i) {
-            total += static_cast<value_type>(op[static_cast<std::size_t>(i)]);
+        for (int t = 0; t < actual_threads; ++t) {
+            total += partial_sums[t].value;
         }
         return total;
 #else
@@ -2474,3 +2649,8 @@ namespace vec_math {
         return detail::make_bin_expr(detail::OpPow{}, base, exp);
     }
 }
+
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+

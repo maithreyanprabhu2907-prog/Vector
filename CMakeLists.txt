@@ -63,6 +63,20 @@ if(VEC_MATH_BUILD_TESTS)
         endif()
     endif()
     add_test(NAME vector_math_test COMMAND vector_math_test)
+
+    add_executable(audit_math tests/audit_math.cpp)
+    target_link_libraries(audit_math PRIVATE vec_math::vec_math)
+    if(MSVC)
+        target_compile_options(audit_math PRIVATE /W4 /WX /wd4702 /EHsc)
+    else()
+        target_compile_options(audit_math PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 11)
+            target_compile_options(audit_math PRIVATE -Wno-mismatched-new-delete)
+        elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_compile_options(audit_math PRIVATE -Wno-pass-failed)
+        endif()
+    endif()
+    add_test(NAME audit_math COMMAND audit_math)
 endif()
 
 if(VEC_MATH_BUILD_BENCHMARKS)
@@ -72,19 +86,28 @@ if(VEC_MATH_BUILD_BENCHMARKS)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(benchmark PRIVATE OpenMP::OpenMP_CXX)
     endif()
+
+    set(VEC_MATH_ARCH_FLAGS "")
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64|AMD64")
+        if(MSVC)
+            set(VEC_MATH_ARCH_FLAGS "/arch:AVX2")
+        else()
+            set(VEC_MATH_ARCH_FLAGS "-mavx2" "-mfma")
+        endif()
+    endif()
+
     if(MSVC)
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:/O2>
             $<$<CONFIG:Release>:/fp:fast>
             $<$<CONFIG:Release>:/openmp>
-            /arch:AVX2
+            ${VEC_MATH_ARCH_FLAGS}
             /W4
         )
     else()
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:-Ofast>
-            -mavx2
-            -mfma
+            ${VEC_MATH_ARCH_FLAGS}
             -fopenmp
             -Wall
             -Wextra
@@ -105,13 +128,13 @@ if(VEC_MATH_BUILD_BENCHMARKS)
     target_compile_definitions(bench_os PRIVATE OPT_OS)
 
     if(MSVC)
-        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:fast> /arch:AVX2 /W4)
-        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:precise> /arch:AVX2 /W4)
-        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:/O1> $<$<CONFIG:Release>:/Os> $<$<CONFIG:Release>:/fp:precise> /arch:AVX2 /W4)
+        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:fast> ${VEC_MATH_ARCH_FLAGS} /W4)
+        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:precise> ${VEC_MATH_ARCH_FLAGS} /W4)
+        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:/O1> $<$<CONFIG:Release>:/Os> $<$<CONFIG:Release>:/fp:precise> ${VEC_MATH_ARCH_FLAGS} /W4)
     else()
-        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:-Ofast> -mavx2 -mfma -Wall -Wextra)
-        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:-O3> -mavx2 -mfma -Wall -Wextra)
-        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:-Os> -mavx2 -mfma -Wall -Wextra)
+        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:-Ofast> ${VEC_MATH_ARCH_FLAGS} -Wall -Wextra)
+        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:-O3> ${VEC_MATH_ARCH_FLAGS} -Wall -Wextra)
+        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:-Os> ${VEC_MATH_ARCH_FLAGS} -Wall -Wextra)
     endif()
 endif()
 
@@ -139,17 +162,9 @@ install(
 
 
 
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/vec_mathConfig.cmake.in"
-
-        "@PACKAGE_INIT@\ninclude(\"\${CMAKE_CURRENT_LIST_DIR}/vec_mathTargets.cmake\")\ncheck_required_components(vec_math)\n"
-
-)
-
-
-
 configure_package_config_file(
 
-        "${CMAKE_CURRENT_BINARY_DIR}/vec_mathConfig.cmake.in"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vec_mathConfig.cmake.in"
 
         "${CMAKE_CURRENT_BINARY_DIR}/vec_mathConfig.cmake"
 

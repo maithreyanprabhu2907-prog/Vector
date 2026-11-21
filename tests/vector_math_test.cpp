@@ -1296,6 +1296,374 @@ int main() {
         }
     }
 
+    // ========================================================================
+    // Hard Gate G3: REPRO Reductions (sum, dot, sum_repro, dot_repro)
+    // ========================================================================
+    {
+        std::cout << "[TEST] Hard Gate G3: REPRO Policy Overloads & Blocked Pairwise Tree..." << std::endl;
+        const std::vector<std::size_t> test_sizes = {1, 7, 32, 511, 512, 513, 1024, 1500, 2048};
+
+        for (std::size_t n : test_sizes) {
+            std::vector<double> v_d(n);
+            std::vector<double> u_d(n);
+            std::vector<float> v_f(n);
+            std::vector<float> u_f(n);
+
+            for (std::size_t i = 0; i < n; ++i) {
+                v_d[i] = static_cast<double>(i + 1) * 0.125;
+                u_d[i] = 1.0 + static_cast<double>(i % 7) * 0.25;
+                v_f[i] = static_cast<float>(i + 1) * 0.125f;
+                u_f[i] = 1.0f + static_cast<float>(i % 7) * 0.25f;
+            }
+
+            // FP64 sum tests
+            double sum_fast_d = sum(v_d, ReductionPolicy::FAST);
+            double sum_default_d = sum(v_d);
+            double sum_repro_d = sum(v_d, ReductionPolicy::REPRO);
+            double sum_direct_repro_d = sum_repro(v_d);
+
+            assert(approx_eq(sum_fast_d, sum_default_d, 1e-12));
+            assert(sum_repro_d == sum_direct_repro_d); // Strict bit-identical
+            assert(approx_eq(sum_repro_d, sum_fast_d, 1e-9));
+
+            // FP32 sum tests
+            float sum_fast_f = sum(v_f, ReductionPolicy::FAST);
+            float sum_default_f = sum(v_f);
+            float sum_repro_f = sum(v_f, ReductionPolicy::REPRO);
+            float sum_direct_repro_f = sum_repro(v_f);
+
+            assert(std::abs(sum_fast_f - sum_default_f) <= 1e-5f);
+            assert(sum_repro_f == sum_direct_repro_f); // Strict bit-identical
+
+            // FP64 dot tests
+            double dot_fast_d = dot(v_d, u_d, ReductionPolicy::FAST);
+            double dot_default_d = dot(v_d, u_d);
+            double dot_repro_d = dot(v_d, u_d, ReductionPolicy::REPRO);
+            double dot_direct_repro_d = dot_repro(v_d, u_d);
+
+            assert(approx_eq(dot_fast_d, dot_default_d, 1e-12));
+            assert(dot_repro_d == dot_direct_repro_d); // Strict bit-identical
+            assert(approx_eq(dot_repro_d, dot_fast_d, 1e-9));
+
+            // FP32 dot tests
+            float dot_fast_f = dot(v_f, u_f, ReductionPolicy::FAST);
+            float dot_default_f = dot(v_f, u_f);
+            float dot_repro_f = dot(v_f, u_f, ReductionPolicy::REPRO);
+            float dot_direct_repro_f = dot_repro(v_f, u_f);
+
+            assert(std::abs(dot_fast_f - dot_default_f) <= 1e-4f);
+            assert(dot_repro_f == dot_direct_repro_f); // Strict bit-identical
+        }
+
+        // Bounded FP32 error test with ill-conditioned sequence
+        {
+            const std::size_t N = 10000;
+            std::vector<float> ill_f(N);
+            for (std::size_t i = 0; i < N; ++i) {
+                ill_f[i] = (i % 2 == 0) ? 1.0e4f : -1.0e4f + 0.001f;
+            }
+            float repro_s = sum(ill_f, ReductionPolicy::REPRO);
+            float expected_pairwise = 4.8828125f;
+            assert(std::abs(repro_s - expected_pairwise) < 1e-4f);
+        }
+    }
+
+    // ========================================================================
+    // Hard Gate G5: Aliasing Matrix (dst == src, dst == src + 1, dst == src - 1)
+    // ========================================================================
+    {
+        std::cout << "[TEST] Hard Gate G5: Aliasing Matrix Execution Safety..." << std::endl;
+
+        // 1. eval_into Aliasing Matrix
+        {
+            constexpr std::size_t N = 128;
+            double storage[N + 2];
+            for (std::size_t i = 0; i < N + 2; ++i) {
+                storage[i] = static_cast<double>(i) * 1.5 + 2.0;
+            }
+
+            // (a) dst == src (In-place self-aliasing)
+            {
+                double expected[N];
+                for (std::size_t i = 0; i < N; ++i) expected[i] = storage[i];
+                eval_into(storage, N, std::span<const double>(storage, N));
+                for (std::size_t i = 0; i < N; ++i) {
+                    assert(approx_eq(storage[i], expected[i], 1e-12));
+                }
+            }
+
+            // (b) dst == src + 1 (Overlapping shift right)
+            {
+                for (std::size_t i = 0; i < N + 2; ++i) storage[i] = static_cast<double>(i) * 2.0 + 1.0;
+                double expected[N];
+                for (std::size_t i = 0; i < N; ++i) expected[i] = storage[i];
+
+                eval_into(storage + 1, N, std::span<const double>(storage, N));
+                for (std::size_t i = 0; i < N; ++i) {
+                    assert(approx_eq(storage[i + 1], expected[i], 1e-12));
+                }
+            }
+
+            // (c) dst == src - 1 (Overlapping shift left)
+            {
+                for (std::size_t i = 0; i < N + 2; ++i) storage[i] = static_cast<double>(i) * 3.0 + 0.5;
+                double expected[N];
+                for (std::size_t i = 0; i < N; ++i) expected[i] = storage[i + 1];
+
+                eval_into(storage, N, std::span<const double>(storage + 1, N));
+                for (std::size_t i = 0; i < N; ++i) {
+                    assert(approx_eq(storage[i], expected[i], 1e-12));
+                }
+            }
+
+            // (d) Expression via operator<<= with shift
+            {
+                for (std::size_t i = 0; i < N + 2; ++i) storage[i] = static_cast<double>(i + 1);
+                double expected[N];
+                for (std::size_t i = 0; i < N; ++i) expected[i] = storage[i] * 2.5 + 3.0;
+
+                std::span<double> dst_span(storage + 1, N);
+                std::span<const double> src_span(storage, N);
+                dst_span <<= src_span * 2.5 + 3.0;
+                for (std::size_t i = 0; i < N; ++i) {
+                    assert(approx_eq(storage[i + 1], expected[i], 1e-12));
+                }
+            }
+        }
+
+        // 2. matvec Aliasing Matrix
+        {
+            constexpr std::size_t M = 4;
+            double A[M * M] = {
+                2.0, -1.0, 0.5, 0.0,
+                0.5,  3.0, 1.0, -0.5,
+                1.0,  0.0, 2.5, 1.5,
+                -0.5, 1.0, 0.0, 2.0
+            };
+            double raw_buf[M + 2];
+            for (std::size_t i = 0; i < M + 2; ++i) raw_buf[i] = static_cast<double>(i) + 1.0;
+
+            // Reference computation
+            auto compute_ref = [&](const double* in_vec, double* out_ref) {
+                for (std::size_t r = 0; r < M; ++r) {
+                    double s = 0.0;
+                    for (std::size_t c = 0; c < M; ++c) {
+                        s += A[r * M + c] * in_vec[c];
+                    }
+                    out_ref[r] = s;
+                }
+            };
+
+            // (a) matvec dst == src
+            {
+                double x_aliased[M] = {1.0, 2.0, 3.0, 4.0};
+                double y_ref[M];
+                compute_ref(x_aliased, y_ref);
+                matvec(A, x_aliased, x_aliased, M, M);
+                for (std::size_t r = 0; r < M; ++r) {
+                    assert(approx_eq(x_aliased[r], y_ref[r], 1e-12));
+                }
+            }
+
+            // (b) matvec dst == src + 1
+            {
+                for (std::size_t i = 0; i < M + 2; ++i) raw_buf[i] = static_cast<double>(i) * 1.2 + 0.8;
+                double y_ref[M];
+                compute_ref(raw_buf, y_ref);
+                matvec(A, raw_buf, raw_buf + 1, M, M);
+                for (std::size_t r = 0; r < M; ++r) {
+                    assert(approx_eq(raw_buf[r + 1], y_ref[r], 1e-12));
+                }
+            }
+
+            // (c) matvec dst == src - 1
+            {
+                for (std::size_t i = 0; i < M + 2; ++i) raw_buf[i] = static_cast<double>(i) * 0.7 + 1.5;
+                double y_ref[M];
+                compute_ref(raw_buf + 1, y_ref);
+                matvec(A, raw_buf + 1, raw_buf, M, M);
+                for (std::size_t r = 0; r < M; ++r) {
+                    assert(approx_eq(raw_buf[r], y_ref[r], 1e-12));
+                }
+            }
+        }
+
+        // 3. matvec_fixed Aliasing Matrix
+        {
+            constexpr std::size_t M = 4;
+            double A[M * M] = {
+                1.5, -0.5, 0.2, 0.1,
+                0.3,  2.0, -0.4, 0.5,
+                -0.2, 0.1, 1.8, -0.3,
+                0.5, -0.2, 0.3, 1.1
+            };
+            double raw_buf[M + 2];
+
+            auto compute_ref = [&](const double* in_vec, double* out_ref) {
+                for (std::size_t r = 0; r < M; ++r) {
+                    double s = 0.0;
+                    for (std::size_t c = 0; c < M; ++c) {
+                        s += A[r * M + c] * in_vec[c];
+                    }
+                    out_ref[r] = s;
+                }
+            };
+
+            // (a) matvec_fixed dst == src
+            {
+                double x_fixed[M] = {2.5, -1.2, 0.8, 3.1};
+                double y_ref[M];
+                compute_ref(x_fixed, y_ref);
+                matvec_fixed<M, M>(A, x_fixed, x_fixed);
+                for (std::size_t r = 0; r < M; ++r) {
+                    assert(approx_eq(x_fixed[r], y_ref[r], 1e-12));
+                }
+            }
+
+            // (b) matvec_fixed dst == src + 1
+            {
+                for (std::size_t i = 0; i < M + 2; ++i) raw_buf[i] = static_cast<double>(i) * 0.9 + 0.4;
+                double y_ref[M];
+                compute_ref(raw_buf, y_ref);
+                matvec_fixed<M, M>(A, raw_buf, raw_buf + 1);
+                for (std::size_t r = 0; r < M; ++r) {
+                    assert(approx_eq(raw_buf[r + 1], y_ref[r], 1e-12));
+                }
+            }
+
+            // (c) matvec_fixed dst == src - 1
+            {
+                for (std::size_t i = 0; i < M + 2; ++i) raw_buf[i] = static_cast<double>(i) * 1.1 - 0.3;
+                double y_ref[M];
+                compute_ref(raw_buf + 1, y_ref);
+                matvec_fixed<M, M>(A, raw_buf + 1, raw_buf);
+                for (std::size_t r = 0; r < M; ++r) {
+                    assert(approx_eq(raw_buf[r], y_ref[r], 1e-12));
+                }
+            }
+        }
+
+        // 4. contract_axis Aliasing Matrix
+        {
+            constexpr std::size_t nx = 3, ny = 4, nz = 2;
+            constexpr std::size_t total = nx * ny * nz; // 24
+            double D0[nx * nx] = {
+                1.0, 0.2, -0.1,
+                0.3, 1.5,  0.4,
+                -0.2, 0.1, 1.2
+            };
+            double tensor_buf[total + 2];
+
+            // Reference function for Axis 0
+            auto compute_ref_axis0 = [&](const double* in_tensor, double* out_ref) {
+                const std::size_t n_pencils = ny * nz;
+                for (std::size_t p = 0; p < n_pencils; ++p) {
+                    const double* p_in = in_tensor + p * nx;
+                    double* p_out = out_ref + p * nx;
+                    for (std::size_t i = 0; i < nx; ++i) {
+                        double s = 0.0;
+                        for (std::size_t j = 0; j < nx; ++j) {
+                            s += D0[i * nx + j] * p_in[j];
+                        }
+                        p_out[i] = s;
+                    }
+                }
+            };
+
+            // (a) contract_axis dst == src
+            {
+                for (std::size_t i = 0; i < total; ++i) tensor_buf[i] = static_cast<double>(i) * 0.25 - 1.0;
+                double ref[total];
+                compute_ref_axis0(tensor_buf, ref);
+                contract_axis<0>(D0, tensor_buf, tensor_buf, nx, ny, nz);
+                for (std::size_t i = 0; i < total; ++i) {
+                    assert(approx_eq(tensor_buf[i], ref[i], 1e-12));
+                }
+            }
+
+            // (b) contract_axis dst == src + 1
+            {
+                for (std::size_t i = 0; i < total + 2; ++i) tensor_buf[i] = static_cast<double>(i) * 0.3 - 0.5;
+                double ref[total];
+                compute_ref_axis0(tensor_buf, ref);
+                contract_axis<0>(D0, tensor_buf, tensor_buf + 1, nx, ny, nz);
+                for (std::size_t i = 0; i < total; ++i) {
+                    assert(approx_eq(tensor_buf[i + 1], ref[i], 1e-12));
+                }
+            }
+
+            // (c) contract_axis dst == src - 1
+            {
+                for (std::size_t i = 0; i < total + 2; ++i) tensor_buf[i] = static_cast<double>(i) * 0.4 + 0.2;
+                double ref[total];
+                compute_ref_axis0(tensor_buf + 1, ref);
+                contract_axis<0>(D0, tensor_buf + 1, tensor_buf, nx, ny, nz);
+                for (std::size_t i = 0; i < total; ++i) {
+                    assert(approx_eq(tensor_buf[i], ref[i], 1e-12));
+                }
+            }
+        }
+    }
+
+    // ========================================================================
+    // Property C1 & C4: DG Fit & Ergonomics (gather and scatter_add with non-const spans)
+    // ========================================================================
+    {
+        std::cout << "[TEST] Property C1 & C4: Non-const span gather & scatter_add deduction..." << std::endl;
+
+        std::vector<double> src_data = {100.0, 200.0, 300.0, 400.0, 500.0};
+        std::vector<int> idx_data = {4, 2, 0, 1};
+        std::vector<double> dst_data(4, 0.0);
+
+        // Non-const std::span passed directly to gather (CTAD without template argument failure)
+        std::span<double> dst_span(dst_data);
+        std::span<double> src_span(src_data);
+        std::span<int> idx_span(idx_data);
+
+        gather(dst_span, src_span, idx_span);
+        assert(approx_eq(dst_data[0], 500.0, 1e-12));
+        assert(approx_eq(dst_data[1], 300.0, 1e-12));
+        assert(approx_eq(dst_data[2], 100.0, 1e-12));
+        assert(approx_eq(dst_data[3], 200.0, 1e-12));
+
+        // Non-const std::span passed directly to scatter_add
+        std::vector<double> accum(5, 10.0);
+        std::vector<double> add_vals = {1.0, 2.0, 3.0, 4.0};
+        std::span<double> accum_span(accum);
+        std::span<double> add_span(add_vals);
+
+        scatter_add(accum_span, idx_span, add_span);
+        // idx_data = {4, 2, 0, 1}
+        // accum[4] += 1.0 -> 11.0
+        // accum[2] += 2.0 -> 12.0
+        // accum[0] += 3.0 -> 13.0
+        // accum[1] += 4.0 -> 14.0
+        // accum[3] unchanged -> 10.0
+        assert(approx_eq(accum[0], 13.0, 1e-12));
+        assert(approx_eq(accum[1], 14.0, 1e-12));
+        assert(approx_eq(accum[2], 12.0, 1e-12));
+        assert(approx_eq(accum[3], 10.0, 1e-12));
+        assert(approx_eq(accum[4], 11.0, 1e-12));
+    }
+
+    // ========================================================================
+    // Property B2, B3, B4: Parallel Reductions & Zero False Sharing
+    // ========================================================================
+    {
+        std::cout << "[TEST] Property B2, B3, B4: OpenMP reductions & Zero False Sharing..." << std::endl;
+        constexpr std::size_t N = 4096;
+        std::vector<double> vx(N, 1.5);
+        std::vector<double> vy(N, 2.0);
+
+        double par_dot = dot_par(vx, vy);
+        double fast_dot = dot(vx, vy);
+        assert(approx_eq(par_dot, fast_dot, 1e-12));
+
+        double par_sum = sum_par(vx);
+        double fast_sum = sum(vx);
+        assert(approx_eq(par_sum, fast_sum, 1e-12));
+    }
+
     std::vector<std::string> svec = {"hello", "world"};
     assert(svec.size() == 2);
 

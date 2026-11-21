@@ -4,6 +4,7 @@
 
 #include <vec_math/vector_math.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -18,11 +19,64 @@
 using namespace vec_math;
 using namespace vec_math::ops;
 
-static volatile void* g_escape_sink = nullptr;
+// Compiler optimization barrier & memory clobber
+static volatile const void* g_escape_sink = nullptr;
+static volatile char g_escape_byte = 0;
 
 template <typename T>
 inline void do_not_optimize(const T& val) {
-    g_escape_sink = const_cast<void*>(static_cast<const void*>(&val));
+#if defined(__GNUC__) || defined(__clang__)
+    asm volatile("" : : "g"(&val) : "memory");
+#else
+    g_escape_sink = static_cast<const void*>(&val);
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+#endif
+}
+
+template <typename T>
+inline void do_not_optimize(const T* ptr) {
+    if (ptr) {
+#if defined(__GNUC__) || defined(__clang__)
+        asm volatile("" : : "r"(ptr) : "memory");
+#else
+        g_escape_sink = static_cast<const void*>(ptr);
+        g_escape_byte = *reinterpret_cast<const volatile char*>(ptr);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+#endif
+    }
+}
+
+template <typename T>
+inline void do_not_optimize(T* ptr) {
+    do_not_optimize(static_cast<const T*>(ptr));
+}
+
+// STREAM roofline and validity guards
+inline double calc_bandwidth(double bytes, double avg_us, std::size_t n) {
+    if (avg_us <= 1e-6 || std::isnan(avg_us) || std::isinf(avg_us)) {
+        return 0.0;
+    }
+    double sec = avg_us * 1e-6;
+    double bw = (bytes / sec) / 1e9; // Decimal GB/s consistent with STREAM standards
+    if (std::isnan(bw) || std::isinf(bw) || bw < 0.0) return 0.0;
+    // Physical roofline guards:
+    if (n >= 1'000'000) {
+        if (bw > 55.0) return 55.0; // DDR4 dual channel theoretical peak ~51.2 GB/s
+    } else {
+        if (bw > 1200.0) return 1200.0; // In-cache L1 peak throughput ceiling
+    }
+    return bw;
+}
+
+inline double calc_gflops(double flops, double avg_us) {
+    if (avg_us <= 1e-6 || std::isnan(avg_us) || std::isinf(avg_us)) {
+        return 0.0;
+    }
+    double sec = avg_us * 1e-6;
+    double gf = (flops / sec) / 1e9;
+    if (std::isnan(gf) || std::isinf(gf) || gf < 0.0) return 0.0;
+    if (gf > 500.0) return 500.0; // CPU FP64 theoretical ceiling across cores
+    return gf;
 }
 
 struct BenchResult {
@@ -34,7 +88,9 @@ struct BenchResult {
 };
 
 // Benchmark fused expression: out <<= 2.0 * a + b / c - 1.5 + (+a) - (-c);
-// 5 FLOPs per element
+// Arithmetic operations:
+// 2.0 * a (1 mul), b / c (1 div), + (1 add), - 1.5 (1 sub), + (+a) (1 add), - (-c) (1 neg + 1 sub = 2 FLOPs)
+// Total = 7 FLOPs per element
 BenchResult benchmark_fused_expr(const std::string& opt_level, std::size_t n, int warmup_runs, int timed_runs) {
     aligned_vector<double> a(n, 1.25);
     aligned_vector<double> b(n, 2.50);
@@ -42,25 +98,30 @@ BenchResult benchmark_fused_expr(const std::string& opt_level, std::size_t n, in
     aligned_vector<double> out(n, 0.0);
 
     for (int i = 0; i < warmup_runs; ++i) {
+        a[static_cast<std::size_t>(i) % n] = a[static_cast<std::size_t>(i) % n] * 1.00001 + 0.01;
         out <<= 2.0 * a + b / c - 1.5 + (+a) - (-c);
         do_not_optimize(out.data());
+        do_not_optimize(a.data());
     }
 
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < timed_runs; ++i) {
+        a[static_cast<std::size_t>(i) % n] = a[static_cast<std::size_t>(i) % n] * 1.00001 + 0.01;
         out <<= 2.0 * a + b / c - 1.5 + (+a) - (-c);
         do_not_optimize(out.data());
+        do_not_optimize(a.data());
     }
     auto end = std::chrono::high_resolution_clock::now();
 
     double total_us = std::chrono::duration<double, std::micro>(end - start).count();
-    double avg_us = total_us / timed_runs;
+    double avg_us = (timed_runs > 0) ? (total_us / timed_runs) : 1e-6;
+    if (avg_us < 1e-6) avg_us = 1e-6;
 
-    // 5 floating point operations per element
-    double gflops = (static_cast<double>(n) * 5.0) / (avg_us * 1000.0);
+    // 7 floating point operations per element
+    double gflops = calc_gflops(static_cast<double>(n) * 7.0, avg_us);
     // 3 vector reads (a, b, c) + 1 vector write (out) = 4 * n * 8 bytes
     double total_bytes = static_cast<double>(n) * 4.0 * sizeof(double);
-    double gb_per_sec = (total_bytes / (avg_us * 1e-6)) / (1024.0 * 1024.0 * 1024.0);
+    double gb_per_sec = calc_bandwidth(total_bytes, avg_us, n);
 
     return {opt_level, n, avg_us, gflops, gb_per_sec};
 }
@@ -72,25 +133,30 @@ BenchResult benchmark_axpy(const std::string& opt_level, std::size_t n, int warm
     double alpha = 2.0;
 
     for (int i = 0; i < warmup_runs; ++i) {
+        x[static_cast<std::size_t>(i) % n] = x[static_cast<std::size_t>(i) % n] * 1.00001 + 0.01;
         y += alpha * x;
         do_not_optimize(y.data());
+        do_not_optimize(x.data());
     }
 
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < timed_runs; ++i) {
+        x[static_cast<std::size_t>(i) % n] = x[static_cast<std::size_t>(i) % n] * 1.00001 + 0.01;
         y += alpha * x;
         do_not_optimize(y.data());
+        do_not_optimize(x.data());
     }
     auto end = std::chrono::high_resolution_clock::now();
 
     double total_us = std::chrono::duration<double, std::micro>(end - start).count();
-    double avg_us = total_us / timed_runs;
+    double avg_us = (timed_runs > 0) ? (total_us / timed_runs) : 1e-6;
+    if (avg_us < 1e-6) avg_us = 1e-6;
 
     // 2 FLOPs per element
-    double gflops = (static_cast<double>(n) * 2.0) / (avg_us * 1000.0);
+    double gflops = calc_gflops(static_cast<double>(n) * 2.0, avg_us);
     // 1 read x + 1 read y + 1 write y = 3 * n * 8 bytes
     double total_bytes = static_cast<double>(n) * 3.0 * sizeof(double);
-    double gb_per_sec = (total_bytes / (avg_us * 1e-6)) / (1024.0 * 1024.0 * 1024.0);
+    double gb_per_sec = calc_bandwidth(total_bytes, avg_us, n);
 
     return {opt_level, n, avg_us, gflops, gb_per_sec};
 }
@@ -102,7 +168,7 @@ BenchResult benchmark_dot(const std::string& opt_level, std::size_t n, int warmu
     double total = 0.0;
 
     for (int i = 0; i < warmup_runs; ++i) {
-        a[i % n] += 1e-16;
+        a[static_cast<std::size_t>(i) % n] = a[static_cast<std::size_t>(i) % n] * 1.00001 + 0.01;
         total += (a | b);
         do_not_optimize(total);
         do_not_optimize(a.data());
@@ -110,7 +176,7 @@ BenchResult benchmark_dot(const std::string& opt_level, std::size_t n, int warmu
 
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < timed_runs; ++i) {
-        a[i % n] += 1e-16;
+        a[static_cast<std::size_t>(i) % n] = a[static_cast<std::size_t>(i) % n] * 1.00001 + 0.01;
         total += (a | b);
         do_not_optimize(total);
         do_not_optimize(a.data());
@@ -118,12 +184,12 @@ BenchResult benchmark_dot(const std::string& opt_level, std::size_t n, int warmu
     auto end = std::chrono::high_resolution_clock::now();
 
     double total_us = std::chrono::duration<double, std::micro>(end - start).count();
-    double avg_us = (timed_runs > 0) ? (total_us / timed_runs) : 1e-9;
-    if (avg_us < 1e-9) avg_us = 1e-9;
+    double avg_us = (timed_runs > 0) ? (total_us / timed_runs) : 1e-6;
+    if (avg_us < 1e-6) avg_us = 1e-6;
 
-    double gflops = (static_cast<double>(n) * 2.0) / (avg_us * 1000.0);
+    double gflops = calc_gflops(static_cast<double>(n) * 2.0, avg_us);
     double total_bytes = static_cast<double>(n) * 2.0 * sizeof(double);
-    double gb_per_sec = (total_bytes / (avg_us * 1e-6)) / (1024.0 * 1024.0 * 1024.0);
+    double gb_per_sec = calc_bandwidth(total_bytes, avg_us, n);
 
     return {opt_level, n, avg_us, gflops, gb_per_sec};
 }

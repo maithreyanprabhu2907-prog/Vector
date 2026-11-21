@@ -18,9 +18,9 @@ Satisfied by any standard arithmetic type (integral or floating point), excludin
 ### `NumericVector<T>`
 ```cpp
 template<typename T>
-concept NumericVector = detail::is_std_vector_v<T> && Scalar<typename std::remove_cvref_t<T>::value_type>;
+concept NumericVector = detail::is_contiguous_vector_v<T> && Scalar<typename std::remove_cvref_t<T>::value_type>;
 ```
-Satisfied by `std::vector<T, Alloc>` (including `vec_math::aligned_vector<T>`) where `T` models `Scalar`.
+Satisfied by `std::vector<T, Alloc>` (including `vec_math::aligned_vector<T>`), `std::span<T>`, and `std::array<T, N>` where `T` models `Scalar`.
 
 ### `VecExpression<T>`
 ```cpp
@@ -395,7 +395,9 @@ Multi-core parallel summation reduction using OpenMP parallel reduction.
 
 | Macro | Description |
 | :--- | :--- |
+| `VEC_MATH_STRICT_ZERO_MALLOC` | Define before including `vector_math.hpp` to strictly forbid dynamic heap allocations. When defined, self-aliased operations (`x == y` in `matvec` / `matvec_transposed` exceeding 128 elements, or `in == out` in `contract_axis` exceeding 1024 elements) will immediately abort/trap via `VEC_MATH_THROW_OR_ABORT` instead of falling back to a heap scratchpad. |
 | `VEC_MATH_NO_EXCEPTIONS` | Define before including `vector_math.hpp` to replace exception throwing with `assert` + `std::abort()` (for `-fno-exceptions` and embedded environments). |
+| `VEC_MATH_NO_CHECKS` | Define to disable runtime dimension matching assertions in performance-critical loops. |
 | `SYCL_EXTERNAL` | Defined as `__attribute__((sycl_device))` or `__declspec(sycl_device)` when compiled under a SYCL compiler (`__SYCL_DEVICE_ONLY__` or `SYCL_LANGUAGE_VERSION`); expands to empty on host compilers. |
 | `VEC_MATH_DEVICE` | Decorator for device-only functions in SYCL compilation passes. |
 | `VEC_MATH_HOST_DEVICE` | Decorator for functions callable on both host and device in SYCL compilation passes. |
@@ -442,6 +444,7 @@ matvec(A_matrix, x_vector, y_out, rows, cols);
 // y = A^T * x (transposed)
 matvec_transposed(A_matrix, x_vector, y_out, rows, cols);
 ```
+> **Self-Aliasing & Stack Limits**: Square self-aliasing (`x == y`) is safely protected by an internal 128-element stack buffer. When the dimension exceeds 128, runtime `matvec` and `matvec_transposed` fall back to a scratch heap buffer unless `VEC_MATH_STRICT_ZERO_MALLOC` is defined, in which case they trap/abort via `VEC_MATH_THROW_OR_ABORT`. Compile-time `matvec_fixed` always buffers on the stack.
 
 ### Raw Buffer Write (`eval_into`)
 Evaluates any expression directly into raw host or device memory without container allocations:
@@ -472,7 +475,7 @@ The DG endgame primitives provide a complete, zero-overhead foundation for high-
 | **`matvec_transposed_fixed<Rows, Cols>`** | `void matvec_transposed_fixed(const MatT* A, const VecInT* x, VecOutT* y)` | Small dense transposed matrix-vector product with compile-time dimensions. |
 | **Span/Array Compound Assign** | `dst += rhs`, `dst -= rhs`, `dst *= rhs`, `dst /= rhs` | In-place compound operations on `std::span` and `std::array` with vector or scalar operands. |
 | **`ReductionPolicy`** | `enum class ReductionPolicy { FAST, REPRO };` | Policy enum selecting between maximum throughput (`FAST`) and bit-identical reproducibility (`REPRO`). |
-| **`sum_repro`, `dot_repro`** | `sum_repro(op)`, `dot_repro(lhs, rhs)` | Blocked 512-element tree reductions guaranteeing bit-identical reproducibility across thread counts. |
+| **`sum_repro`, `dot_repro`** | `sum_repro(op)`, `dot_repro(lhs, rhs)` | Blocked 512-element chunk reductions guaranteeing bit-identical reproducibility across thread counts. |
 | **`StridedSpan<T>`** | `class StridedSpan<T>` | Non-contiguous 1D view over strided memory with random access iterators and `operator[]`. |
 | **`broadcast_multiply`** | `void broadcast_multiply(std::span<T> data, ScalarT factor)` | SIMD element-wise multiplication of an array/span by a scalar metric factor. |
 | **`WorkspaceArena`** | `class WorkspaceArena` | 64-byte cache-aligned linear bump allocator for zero-malloc Runge-Kutta stages. |
@@ -499,7 +502,7 @@ VEC_MATH_HOST_DEVICE inline void matvec_transposed_fixed(const MatT* A, const Ve
 
 #### Performance Architecture & Key Characteristics:
 1. **4-Way Independent Accumulators (ILP)**: Unrolled operations accumulate into four distinct accumulators (`acc0`, `acc1`, `acc2`, `acc3`), breaking the sequential FMA latency dependency chain and saturating CPU vector execution ports.
-2. **Aliasing Safety**: Automatically detects self-aliasing (`x == y`) and buffers results into a stack-allocated local array before copying to `y`, guaranteeing safe in-place execution `matvec_fixed<Np, Np>(D, x, x);`.
+2. **Aliasing Safety & Stack Capacity**: Automatically detects self-aliasing (`x == y`) and buffers results into a stack-allocated local array before copying to `y`, guaranteeing safe in-place execution `matvec_fixed<Np, Np>(D, x, x);`. For runtime `matvec` / `matvec_transposed`, the stack buffer capacity is 128 elements; operations exceeding 128 elements allocate a scratchpad unless `VEC_MATH_STRICT_ZERO_MALLOC` is defined.
 3. **SYCL / GPU Compatibility**: Annotated with `VEC_MATH_HOST_DEVICE` for execution within host code or device kernels.
 
 #### Usage Snippet:
@@ -581,7 +584,7 @@ Floating-point arithmetic is non-associative. Under aggressive compiler flags (`
 ```cpp
 enum class ReductionPolicy {
     FAST,   // 8-way multi-accumulator SIMD + OpenMP for maximum throughput
-    REPRO   // Blocked 512-element fixed tree for bit-identical reproducibility
+    REPRO   // Blocked 512-element chunk accumulation for bit-identical reproducibility
 };
 
 // Dedicated Reproducible Reductions
@@ -593,34 +596,35 @@ template<VectorOperand Lhs, VectorOperand Rhs>
 
 // Policy-Aware Overloads
 template<VectorOperand Op>
-[[nodiscard]] inline auto sum(const Op& op, ReductionPolicy policy);
+[[nodiscard]] inline auto sum(const Op& op, ReductionPolicy policy = ReductionPolicy::FAST);
 
 template<VectorOperand Lhs, VectorOperand Rhs>
-[[nodiscard]] inline auto dot(const Lhs& lhs, const Rhs& rhs, ReductionPolicy policy);
+[[nodiscard]] inline auto dot(const Lhs& lhs, const Rhs& rhs, ReductionPolicy policy = ReductionPolicy::FAST);
 ```
 
 #### Comparison of Reduction Policies:
 
 | Feature | `ReductionPolicy::FAST` | `ReductionPolicy::REPRO` |
 | :--- | :--- | :--- |
-| **Algorithm** | 8-way unrolled accumulators + OpenMP dynamic dispatch | Fixed 512-element chunk pairwise binary tree |
+| **Algorithm** | 8-way unrolled accumulators + OpenMP dynamic dispatch | Fixed 512-element chunk accumulation |
 | **Reproducibility** | May vary across thread counts or CPU architecture | **Bit-identical** across thread counts, compilers, and architectures |
 | **Target Use Case** | CFL time-step estimation, residual norms, limiters | Krylov solvers (GMRES/BiCGSTAB), regression testing, convergence verification |
-| **Single-Precision Safety** | Naive floats prone to truncation error | Accumulates with compensated/tree stability |
+| **Single-Precision Safety** | Fast float accumulation | Accumulates in 512-element chunks bounding FP rounding divergence |
 
 #### Usage Snippet:
 ```cpp
 using namespace vec_math;
 
-std::vector<double> r(100'000, 1.0);
-std::vector<double> p(100'000, 2.0);
+std::vector<double> r = {1.0, 2.0, 3.0};
+std::vector<double> p = {0.5, 1.5, 2.5};
+std::vector<double> res = {1.0, -1.0, 2.0};
 
 // Bit-identical dot product for Krylov solver orthogonalization
 double alpha = dot_repro(r, p);
 
 // Explicit policy selection
-double s_repro = sum(r, ReductionPolicy::REPRO);
-double s_fast  = sum(r, ReductionPolicy::FAST);
+double s_repro = sum(res, ReductionPolicy::REPRO);
+double s_fast  = sum(res, ReductionPolicy::FAST);
 ```
 
 ---
@@ -789,11 +793,9 @@ using namespace vec_math;
 double u_vol[6] = {10.0, 20.0, 30.0, 40.0, 50.0, 60.0};
 std::size_t face_nodes[3] = {1, 3, 5};
 
-// 1. Gather trace values to face quadrature points
+// 1. Gather trace values to face quadrature points (supports both const and non-const spans)
 double u_face[3] = {0.0, 0.0, 0.0};
-gather(std::span<double>(u_face, 3),
-       std::span<const double>(u_vol, 6),
-       std::span<const std::size_t>(face_nodes, 3));
+gather(std::span(u_face), std::span(u_vol), std::span(face_nodes));
 // u_face is now {20.0, 40.0, 60.0}
 
 // 2. Compute numerical flux at faces
@@ -801,9 +803,7 @@ double flux[3] = {5.0, 15.0, 25.0};
 
 // 3. Scatter-add flux residuals back into volumetric residuals
 double residual[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
-scatter_add(std::span<double>(residual, 6),
-            std::span<const std::size_t>(face_nodes, 3),
-            std::span<const double>(flux, 3));
+scatter_add(std::span(residual), std::span(face_nodes), std::span(flux));
 // residual[1] += 5.0, residual[3] += 15.0, residual[5] += 25.0
 ```
 
@@ -895,7 +895,7 @@ VEC_MATH_HOST_DEVICE inline void contract_axis(
 #### Key Characteristics:
 1. **Directional Specialization**: Axis 0 ($X$, unit stride), Axis 1 ($Y$, stride $n_x$), and Axis 2 ($Z$, stride $n_x \cdot n_y$) are specialized to maintain maximum cache locality and SIMD lane alignment.
 2. **Compile-Time Static $N$**: When $N > 0$, directional loops are fully unrolled with 4 independent accumulator chains. When $N = 0$, dynamic runtime sizes are supported.
-3. **In-Place Execution (`in == out`)**: Automatically checks pointer aliasing and uses stack buffering to allow safe in-place derivative evaluation with zero heap allocations.
+3. **In-Place Execution (`in == out`) & Stack Capacity**: Automatically checks pointer aliasing and uses an internal stack buffer (up to 1024 elements: `nx * ny * nz <= 1024`) to allow safe in-place derivative evaluation with zero heap allocations. If total elements exceed 1024, it allocates a temporary heap buffer on host unless `VEC_MATH_STRICT_ZERO_MALLOC` is defined, in which case it triggers `VEC_MATH_THROW_OR_ABORT`.
 
 #### Usage Snippet:
 ```cpp
@@ -903,11 +903,11 @@ using namespace vec_math;
 
 // 3D Hex element at p=3 (N=4 points per direction, total 64 nodes)
 constexpr std::size_t N = 4;
-double D_1d[N * N]; // 1D differentiation matrix (4x4)
-double u[N * N * N]; // 3D nodal solution (64 entries)
-double du_dx[N * N * N];
-double du_dy[N * N * N];
-double du_dz[N * N * N];
+double D_1d[N * N] = {}; // 1D differentiation matrix (4x4)
+double u[N * N * N] = {}; // 3D nodal solution (64 entries)
+double du_dx[N * N * N] = {};
+double du_dy[N * N * N] = {};
+double du_dz[N * N * N] = {};
 
 // Directional derivative along X: Axis::X (or 0)
 contract_axis<Axis::X, N>(D_1d, u, du_dx, N, N, N);

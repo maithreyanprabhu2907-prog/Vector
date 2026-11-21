@@ -91,7 +91,7 @@ int main() {
     out *= 0.5;
 
     // Zero-malloc rvalue buffer recycling
-    auto res = 3.0 * std::move(a) + b;
+    std::vector<double> res = 3.0 * std::move(a) + b;
 }
 ```
 
@@ -179,11 +179,14 @@ vec_math::matvec_fixed<10, 10>(Dr, u, dudr);
 // Safe self-aliased in-place execution:
 vec_math::matvec_fixed<10, 10>(Dr, u, u);
 ```
+> **Self-Aliasing & Stack Limits**: Fixed-dimension `matvec_fixed` always buffers in-place on the stack. For runtime-sized `matvec` and `matvec_transposed`, self-aliasing (`x == y`) uses a 128-element stack buffer; operations exceeding 128 elements fall back to dynamic allocation unless `VEC_MATH_STRICT_ZERO_MALLOC` is defined.
 
 #### 2. Full In-Place Compound Assignment on `std::span` and `std::array`
 Perform zero-allocation in-place arithmetic (`+=`, `-=`, `*=`, `/=`) directly on slices or stack arrays:
 ```cpp
 // std::span slice accumulation
+std::vector<double> domain(128, 0.0);
+std::vector<double> fluxes(64, 1.0);
 std::span<double> elem_u(domain.data(), 64);
 std::span<const double> elem_flux(fluxes.data(), 64);
 elem_u += elem_flux;
@@ -191,12 +194,17 @@ elem_u *= 0.5;
 
 // std::array state update (e.g. Nvar=4 state vectors)
 std::array<double, 4> state = {1.0, 2.0, 0.0, 2.5};
+std::array<double, 4> dstate = {0.1, 0.2, 0.0, 0.25};
 state += dstate;
 ```
 
 #### 3. Bit-Identical Reproducible Reductions (`sum_repro`, `dot_repro`, `ReductionPolicy`)
-Guarantees bit-identical reductions across thread counts and compilers via blocked 512-element tree accumulation:
+Guarantees bit-identical reductions across thread counts and compilers via blocked 512-element chunk accumulation:
 ```cpp
+std::vector<double> r = {1.0, 2.0, 3.0};
+std::vector<double> p = {0.5, 1.5, 2.5};
+std::vector<double> res = {1.0, -1.0, 2.0};
+
 // Reproducible dot product for Krylov solvers (GMRES / BiCGSTAB)
 double d = vec_math::dot_repro(r, p);
 
@@ -209,6 +217,8 @@ double s2 = vec_math::sum(res, vec_math::ReductionPolicy::FAST);  // Max through
 Zero-copy 1D random-access views over non-contiguous multi-variable or interleaved arrays:
 ```cpp
 // Slicing y-coordinates from interleaved [x0, y0, z0, x1, y1, z1, ...]
+double coords[6] = {1.0, 10.0, 100.0, 2.0, 20.0, 200.0};
+std::size_t num_nodes = 2;
 vec_math::StridedSpan<double> y_coords(coords + 1, num_nodes, 3);
 double y1 = y_coords[1];
 ```
@@ -216,6 +226,8 @@ double y1 = y_coords[1];
 #### 5. Elemental Metric Scaling (`broadcast_multiply`)
 Scales quadrature node arrays by elemental Jacobians $J_e$ or face metric determinants with SIMD vectorization:
 ```cpp
+double quad_weights[8] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+double J_elem = 0.125;
 vec_math::broadcast_multiply(std::span<double>(quad_weights, 8), J_elem);
 ```
 
@@ -224,6 +236,7 @@ vec_math::broadcast_multiply(std::span<double>(quad_weights, 8), J_elem);
 ```cpp
 vec_math::WorkspaceArena arena(16 * 1024 * 1024); // 16 MB pre-allocated
 arena.reset();
+std::size_t num_dofs = 1024;
 auto k1 = arena.allocate<double>(num_dofs);
 auto k2 = arena.allocate<double>(num_dofs);
 ```
@@ -231,7 +244,13 @@ auto k2 = arena.allocate<double>(num_dofs);
 #### 7. Surface Riemann Flux Exchange (`gather` and `scatter_add`)
 Extracts traces from element volume nodes onto faces and scatters flux residuals back:
 ```cpp
-// Gather trace values onto face quadrature nodes
+double u_vol[6] = {10.0, 20.0, 30.0, 40.0, 50.0, 60.0};
+std::size_t face_node_map[3] = {1, 3, 5};
+double u_face[3] = {0.0, 0.0, 0.0};
+double flux[3] = {5.0, 15.0, 25.0};
+double residual[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+
+// Gather trace values onto face quadrature nodes (supports both const and non-const spans)
 vec_math::gather(std::span(u_face), std::span(u_vol), std::span(face_node_map));
 
 // Scatter-add numerical fluxes to volume residual
@@ -241,26 +260,47 @@ vec_math::scatter_add(std::span(residual), std::span(face_node_map), std::span(f
 #### 8. Point-Implicit IMEX Solve (`solve_4x4_batched`) & Layout Transpositions
 Solves decoupled $4 \times 4$ linear systems across all elements simultaneously in SoA layout with partial pivoting:
 ```cpp
+constexpr std::size_t num_elements = 1000;
+const double* A_ptrs[16] = {};
+const double* b_ptrs[4] = {};
+double* x_ptrs[4] = {};
+
 // Solves A_soa * x_soa = b_soa across 1000 elements concurrently
-vec_math::solve_4x4_batched(A_ptrs, b_ptrs, x_ptrs, 1000);
+vec_math::solve_4x4_batched(A_ptrs, b_ptrs, x_ptrs, num_elements);
 
 // AoS <-> SoA layout conversions
-vec_math::transpose_aos_to_soa(aos_data, soa_data, num_elements, 4);
-vec_math::transpose_soa_to_aos(soa_data, aos_data, num_elements, 4);
+std::vector<double> aos_data(num_elements * 4, 0.0);
+std::vector<double> soa_data(num_elements * 4, 0.0);
+vec_math::transpose_aos_to_soa(aos_data.data(), soa_data.data(), num_elements, 4);
+vec_math::transpose_soa_to_aos(soa_data.data(), aos_data.data(), num_elements, 4);
 ```
 
 #### 9. Sum-Factorization Directional Tensor Contractions (`contract_axis`)
 Applies 1D directional differentiation operators across multi-dimensional tensor-product quad/hex elements in $\mathcal{O}(d \cdot N^{d+1})$ operations instead of dense $\mathcal{O}(N^{2d})$:
 ```cpp
 // 3D Hex element with N=4 (64 nodes): directional derivative along X, Y, and Z
-vec_math::contract_axis<vec_math::Axis::X, 4>(D_1d, u, du_dx, 4, 4, 4);
-vec_math::contract_axis<vec_math::Axis::Y, 4>(D_1d, u, du_dy, 4, 4, 4);
-vec_math::contract_axis<vec_math::Axis::Z, 4>(D_1d, u, du_dz, 4, 4, 4);
+constexpr std::size_t N = 4;
+double D_1d[N * N] = {}; // 1D differentiation matrix (4x4)
+double u[N * N * N] = {}; // 3D nodal solution (64 entries)
+double du_dx[N * N * N] = {};
+double du_dy[N * N * N] = {};
+double du_dz[N * N * N] = {};
+
+vec_math::contract_axis<vec_math::Axis::X, N>(D_1d, u, du_dx, N, N, N);
+vec_math::contract_axis<vec_math::Axis::Y, N>(D_1d, u, du_dy, N, N, N);
+vec_math::contract_axis<vec_math::Axis::Z, N>(D_1d, u, du_dz, N, N, N);
+
+// Safe self-aliased in-place execution:
+vec_math::contract_axis<vec_math::Axis::X, N>(D_1d, u, u, N, N, N);
 ```
+> **Self-Aliasing & Stack Limits**: `contract_axis` protects self-aliased evaluations (`in == out`) using an internal stack buffer of up to 1024 elements (`nx * ny * nz <= 1024`). When the total element count exceeds 1024, it allocates a temporary heap buffer unless `VEC_MATH_STRICT_ZERO_MALLOC` is defined, in which case it triggers `VEC_MATH_THROW_OR_ABORT`.
 
 ## Compile-Time Options
 
+* **`VEC_MATH_STRICT_ZERO_MALLOC`**: When defined, guarantees strictly zero heap allocations by replacing dynamic fallbacks in self-aliased operations (`x == y` in `matvec`/`matvec_transposed` beyond 128 elements, or `in == out` in `contract_axis` beyond 1024 elements) with a trap/abort via `VEC_MATH_THROW_OR_ABORT`.
 * **`VEC_MATH_NO_EXCEPTIONS`**: Define before including `vector_math.hpp` when building with `-fno-exceptions` to use `assert` + `std::abort()` on dimension/capacity errors instead of throwing.
+* **`VEC_MATH_NO_INTRINSICS`**: Define before including `vector_math.hpp` to skip `<immintrin.h>`, reducing translation unit compile times by ~800 ms.
+* **`VEC_MATH_NO_CHECKS`**: Define to disable runtime dimension matching assertions in performance-critical loops.
 
 
 <!-- BEGIN_BENCHMARK_SECTION -->
@@ -281,10 +321,10 @@ Benchmark configuration & hardware environment:
 xychart-beta
     title "Compute Throughput (GFLOPS) across Vector Sizes"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "GFLOPS (Higher is better)" 0 --> 52
-    line [2.14, 0.36, 0.48, 0.51, 0.52]
-    line [44.95, 19.53, 16.41, 4.80, 3.42]
-    line [42.35, 19.40, 16.77, 4.81, 3.41]
+    y-axis "GFLOPS (Higher is better)" 0 --> 50
+    line [1.90, 0.31, 0.39, 0.51, 0.44]
+    line [43.12, 19.74, 16.13, 2.97, 2.84]
+    line [11.80, 12.24, 12.67, 3.59, 2.91]
 ```
 
 > **Chart Legend (Throughput)**: Line 1 = Naive `std::vector` (temporary heap mallocs) | Line 2 = Hand-written Scalar Loop | Line 3 = `vec_math` Expression Templates (zero mallocs)
@@ -293,9 +333,9 @@ xychart-beta
 xychart-beta
     title "Speedup Factor Relative to Naive std::vector (x-fold)"
     x-axis ["1K", "10K", "100K", "1M", "5M"]
-    y-axis "Speedup Factor (x)" 0 --> 63
-    line [21.04, 53.95, 34.34, 9.42, 6.54]
-    line [19.82, 53.57, 35.11, 9.45, 6.52]
+    y-axis "Speedup Factor (x)" 0 --> 73
+    line [22.71, 63.00, 41.86, 5.82, 6.42]
+    line [6.21, 39.06, 32.88, 7.03, 6.56]
 ```
 
 > **Chart Legend (Speedup vs Naive)**: Line 1 = Hand-written Scalar Loop | Line 2 = `vec_math` Expression Templates (zero mallocs)
@@ -306,41 +346,41 @@ xychart-beta
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 2.34 µs | **1.00x** | 5 allocs (39.3 KB) | 2.14 GFLOPS | 13.67 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 0.11 µs | **21.04x** | `0 allocs (0 B)` | 44.95 GFLOPS | 287.67 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 0.12 µs | **19.82x** | `0 allocs (0 B)` | 42.35 GFLOPS | 271.05 GB/s | `███████████████████░` |
+| **Naive std::vector** | 2.63 µs | **1.00x** | 5 allocs (39.3 KB) | 1.90 GFLOPS | 12.15 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 0.12 µs | **22.71x** | `0 allocs (0 B)` | 43.12 GFLOPS | 275.96 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 0.42 µs | **6.21x** | `0 allocs (0 B)` | 11.80 GFLOPS | 75.53 GB/s | `█████░░░░░░░░░░░░░░░` |
 
 #### Vector Size: 10K (10000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 138.10 µs | **1.00x** | 5 allocs (390.8 KB) | 0.36 GFLOPS | 2.32 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 2.56 µs | **53.95x** | `0 allocs (0 B)` | 19.53 GFLOPS | 125.00 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 2.58 µs | **53.57x** | `0 allocs (0 B)` | 19.40 GFLOPS | 124.14 GB/s | `████████████████████` |
+| **Naive std::vector** | 159.59 µs | **1.00x** | 5 allocs (390.8 KB) | 0.31 GFLOPS | 2.01 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 2.53 µs | **63.00x** | `0 allocs (0 B)` | 19.74 GFLOPS | 126.33 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 4.09 µs | **39.06x** | `0 allocs (0 B)` | 12.24 GFLOPS | 78.32 GB/s | `████████████░░░░░░░░` |
 
 #### Vector Size: 100K (100000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 1.05 ms | **1.00x** | 5 allocs (3.8 MB) | 0.48 GFLOPS | 3.06 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 30.47 µs | **34.34x** | `0 allocs (0 B)` | 16.41 GFLOPS | 105.02 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 29.81 µs | **35.11x** | `0 allocs (0 B)` | 16.77 GFLOPS | 107.35 GB/s | `████████████████████` |
+| **Naive std::vector** | 1.30 ms | **1.00x** | 5 allocs (3.8 MB) | 0.39 GFLOPS | 2.47 GB/s | `█░░░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 31.00 µs | **41.86x** | `0 allocs (0 B)` | 16.13 GFLOPS | 103.21 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 39.48 µs | **32.88x** | `0 allocs (0 B)` | 12.67 GFLOPS | 81.06 GB/s | `████████████████░░░░` |
 
 #### Vector Size: 1M (1000000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 9.83 ms | **1.00x** | 5 allocs (38.1 MB) | 0.51 GFLOPS | 3.26 GB/s | `██░░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 1.04 ms | **9.42x** | `0 allocs (0 B)` | 4.80 GFLOPS | 30.69 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 1.04 ms | **9.45x** | `0 allocs (0 B)` | 4.81 GFLOPS | 30.78 GB/s | `████████████████████` |
+| **Naive std::vector** | 9.80 ms | **1.00x** | 5 allocs (38.1 MB) | 0.51 GFLOPS | 3.27 GB/s | `███░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 1.68 ms | **5.82x** | `0 allocs (0 B)` | 2.97 GFLOPS | 19.02 GB/s | `█████████████████░░░` |
+| **vec_math (Expr Template)** | 1.39 ms | **7.03x** | `0 allocs (0 B)` | 3.59 GFLOPS | 22.95 GB/s | `████████████████████` |
 
 #### Vector Size: 5M (5000000 elements)
 
 | Implementation | Latency / op | Speedup | Heap Allocs | Throughput | Bandwidth | Visual Speedup Bar |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector** | 47.75 ms | **1.00x** | 5 allocs (190.7 MB) | 0.52 GFLOPS | 3.35 GB/s | `███░░░░░░░░░░░░░░░░░` |
-| **Scalar Loop** | 7.30 ms | **6.54x** | `0 allocs (0 B)` | 3.42 GFLOPS | 21.90 GB/s | `████████████████████` |
-| **vec_math (Expr Template)** | 7.32 ms | **6.52x** | `0 allocs (0 B)` | 3.41 GFLOPS | 21.85 GB/s | `████████████████████` |
+| **Naive std::vector** | 56.45 ms | **1.00x** | 5 allocs (190.7 MB) | 0.44 GFLOPS | 2.83 GB/s | `███░░░░░░░░░░░░░░░░░` |
+| **Scalar Loop** | 8.79 ms | **6.42x** | `0 allocs (0 B)` | 2.84 GFLOPS | 18.21 GB/s | `████████████████████` |
+| **vec_math (Expr Template)** | 8.60 ms | **6.56x** | `0 allocs (0 B)` | 2.91 GFLOPS | 18.60 GB/s | `████████████████████` |
 
 ### Discontinuous Galerkin Runge-Kutta Time Step Update (1M Elements)
 
@@ -348,10 +388,10 @@ Workload: High-order DG stage accumulation `y = 0.75 * x + 0.25 * y` (AXPBY oper
 
 | Implementation | Latency / op | Speedup vs Naive | Heap Allocs | Compute Throughput | Memory Bandwidth |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Naive std::vector (3 mallocs/step)** | 6.44 ms | **1.00x** | 3 allocs | 0.47 GFLOPS | 3.73 GB/s |
-| **Manual Scalar Loop** | 633.56 µs | **10.16x** | `0 allocs (0 B)` | 4.74 GFLOPS | 37.88 GB/s |
-| **vec_math Operator `y <<= a*x + b*y`** | 797.57 µs | **8.07x** | `0 allocs (0 B)` | 3.76 GFLOPS | 30.09 GB/s |
-| **vec_math `aligned_vector` (64-byte)** | 868.12 µs | **7.42x** | `0 allocs (0 B)` | 3.46 GFLOPS | 27.65 GB/s |
+| **Naive std::vector (3 mallocs/step)** | 5.32 ms | **1.00x** | 3 allocs | 0.56 GFLOPS | 4.52 GB/s |
+| **Manual Scalar Loop** | 667.95 µs | **7.96x** | `0 allocs (0 B)` | 4.49 GFLOPS | 35.93 GB/s |
+| **vec_math Operator `y <<= a*x + b*y`** | 856.92 µs | **6.20x** | `0 allocs (0 B)` | 3.50 GFLOPS | 28.01 GB/s |
+| **vec_math `aligned_vector` (64-byte)** | 984.42 µs | **5.40x** | `0 allocs (0 B)` | 3.05 GFLOPS | 24.38 GB/s |
 
 ### Non-Temporal Streaming Stores (`assign_stream` vs Cache-Allocating Stores)
 
@@ -359,8 +399,8 @@ Evaluates non-temporal streaming stores (`_mm256_stream_pd`) that bypass Read-Fo
 
 | Vector Size | Normal Assign (`<<=`) | Streaming (`assign_stream`) | Normal Bandwidth | Stream Bandwidth | Streaming Speedup |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **1M Elements (8 MB)** | 21.60 ms | **8.70 ms** | 14.81 GB/s | **36.80 GB/s** | **2.48x** |
-| **5M Elements (40 MB)** | 67.49 ms | **43.43 ms** | 8.89 GB/s | **13.82 GB/s** | **1.55x** |
+| **1M Elements (8 MB)** | 34.82 ms | **16.72 ms** | 18.38 GB/s | **38.28 GB/s** | **2.08x** |
+| **5M Elements (40 MB)** | 90.83 ms | **47.67 ms** | 13.21 GB/s | **25.17 GB/s** | **1.91x** |
 
 ### Multi-Core Parallel Scaling Across Ryzen 5 5500 Cores (`assign_par`)
 
@@ -368,22 +408,22 @@ Evaluates explicit OpenMP domain-parallel evaluation (`assign_par`) across 12 ha
 
 | Vector Scale | Single-Threaded Time | Parallel Time (`assign_par`) | Single GFLOPS | Parallel GFLOPS | Parallel Speedup |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **100K (100000 elem)** | 14.02 ms | **2.42 ms** | 6.42 GF | **37.12 GF** | **5.78x** |
-| **1M (1000000 elem)** | 36.19 ms | **24.83 ms** | 3.32 GF | **4.83 GF** | **1.46x** |
-| **5M (5000000 elem)** | 84.70 ms | **90.23 ms** | 2.66 GF | **2.49 GF** | **0.94x** |
+| **100K (100000 elem)** | 14.30 ms | **7.03 ms** | 6.29 GF | **12.80 GF** | **2.03x** |
+| **1M (1000000 elem)** | 37.65 ms | **23.10 ms** | 3.19 GF | **5.20 GF** | **1.63x** |
+| **5M (5000000 elem)** | 90.98 ms | **78.39 ms** | 2.47 GF | **2.87 GF** | **1.16x** |
 
 ### Reductions & Extended DG Math Kit (1M Elements)
 
 | Operation | Baseline | `vec_math` Implementation | Baseline Time | `vec_math` Time | Speedup | Throughput |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Dot Product (a | b)** | std::inner_product | **vec_math `a | b` (8x SIMD)** | 31.02 ms | **22.79 ms** | **1.36x** | 4.39 GFLOPS |
-| **Parallel Dot Product** | vec_math::dot (Single) | **vec_math::dot_par (OpenMP)** | 14.03 ms | **3.64 ms** | **3.86x** | 27.48 GFLOPS |
-| **Sum Reduction (sum)** | std::accumulate | **vec_math::sum (8x tree)** | 4.76 ms | **6.99 ms** | **0.68x** | 7.15 GFLOPS |
-| **Parallel Sum (sum_par)** | vec_math::sum (Single) | **vec_math::sum_par (OpenMP)** | 4.50 ms | **1.46 ms** | **3.09x** | 34.27 GFLOPS |
-| **L_inf Norm (norm_inf)** | Scalar std::abs + max | **vec_math::norm_inf** | 4.62 ms | **4.26 ms** | **1.09x** | 23.49 GFLOPS |
-| **Min Element (min_val)** | std::min_element | **vec_math::min_val** | 13.09 ms | **5.44 ms** | **2.41x** | 9.20 GFLOPS |
-| **Fused Multiply-Add (fma)** | Scalar a*b + c | **vec_math::fma (Ternary)** | 39.86 ms | **59.17 ms** | **0.67x** | 1.69 GFLOPS |
-| **WENO Limiter (clamp)** | Scalar std::clamp | **vec_math::clamp (Ternary)** | 44.95 ms | **29.10 ms** | **1.54x** | 3.44 GFLOPS |
+| **Dot Product (a | b)** | std::inner_product | **vec_math `a | b` (8x SIMD)** | 17.97 ms | **19.55 ms** | **0.92x** | 5.11 GFLOPS |
+| **Parallel Dot Product** | vec_math::dot (Single) | **vec_math::dot_par (OpenMP)** | 18.39 ms | **4.85 ms** | **3.79x** | 20.64 GFLOPS |
+| **Sum Reduction (sum)** | std::accumulate | **vec_math::sum (8x tree)** | 7.82 ms | **10.06 ms** | **0.78x** | 4.97 GFLOPS |
+| **Parallel Sum (sum_par)** | vec_math::sum (Single) | **vec_math::sum_par (OpenMP)** | 8.53 ms | **4.38 ms** | **1.95x** | 11.43 GFLOPS |
+| **L_inf Norm (norm_inf)** | Scalar std::abs + max | **vec_math::norm_inf** | 4.39 ms | **4.46 ms** | **0.98x** | 22.44 GFLOPS |
+| **Min Element (min_val)** | std::min_element | **vec_math::min_val** | 7.72 ms | **4.64 ms** | **1.66x** | 10.78 GFLOPS |
+| **Fused Multiply-Add (fma)** | Scalar a*b + c | **vec_math::fma (Ternary)** | 38.12 ms | **40.16 ms** | **0.95x** | 2.49 GFLOPS |
+| **WENO Limiter (clamp)** | Scalar std::clamp | **vec_math::clamp (Ternary)** | 42.90 ms | **22.16 ms** | **1.94x** | 4.51 GFLOPS |
 
 ### `-Ofast` Microarchitectural Optimization Analysis
 
@@ -394,39 +434,6 @@ Building with `-Ofast` (or MSVC `/fp:fast /O2 /openmp /arch:AVX2`) yields critic
 3. **64-Byte Cache Alignment**: `aligned_vector<T>` ensures zero split-cache-line loads and unaligned penalties across AVX2 256-bit registers.
 4. **Streaming Stores Bypassing RFO**: `assign_stream` utilizes `_mm256_stream_pd` non-temporal stores to eliminate cache write-allocate reads when vectors exceed CPU L3 cache size (16 MB).
 5. **Selective Domain Parallelism**: Single-threaded default operators eliminate OpenMP thread pool overhead in fine-grained DG element quadrature loops, while `assign_par` accelerates bulk global mesh updates across all CPU cores.
-
-### Discontinuous Galerkin (DG) Math Core & Endgame Primitives
-
-`vec_math` provides an endgame mathematical foundation tailored for high-order Discontinuous Galerkin solvers:
-
-| Primitive | Category | Key Characteristics | DG Solver Application |
-| :--- | :--- | :--- | :--- |
-| **`matvec_fixed<Rows, Cols>`** | Kernel | Static dimensions, 4-way ILP unrolling, self-aliasing safe | DG volume/surface numerical differentiation ($N_p \le 36$) |
-| **`matvec_transposed_fixed<Rows, Cols>`** | Kernel | Static dimensions, register-pinned transposed matvec | Mass matrix inverse application, adjoint operators |
-| **Span/Array In-Place Assign** | Syntax | `+=`, `-=`, `*=`, `/=` for `std::span` and `std::array` | Sub-element state and local flux accumulation |
-| **`ReductionPolicy` (`FAST`, `REPRO`)** | Reductions | Blocked 512-element tree vs 8-way multi-accumulator SIMD | Bit-identical Krylov solvers vs high-speed CFL reductions |
-| **`sum_repro`, `dot_repro`** | Reductions | Guaranteed bit-identical results across thread counts | Orthogonalization in GMRES / BiCGSTAB, regression tests |
-| **`StridedSpan<T>`** | View | 1D non-contiguous view with stride and random-access iterator | Slicing multi-variable fields in interleaved AoS/SoA data |
-| **`broadcast_multiply`** | Metric | Vectorized scaling of spans/pointers by scalar factors | Scaling quadrature nodes by elemental Jacobians $J_e$ |
-| **`WorkspaceArena`** | Memory | 64-byte aligned linear bump allocator with instant reset | Zero-malloc Runge-Kutta stages ($k_1 \dots k_s$) & scratch pads |
-| **`gather`** | Surface | SIMD indirect gather from nodal to face quadrature points | Extracting trace values $Q^-, Q^+$ at element interfaces |
-| **`scatter_add`** | Surface | SIMD indirect scatter-addition into residual vectors | Accumulating Riemann numerical fluxes into element residuals |
-| **`solve_4x4_batched`** | Linear Solve | Batched $4 \times 4$ LU solve with partial pivoting in SoA | Point-implicit IMEX relaxation for stiff acoustic modes |
-| **`transpose_aos_to_soa` / `transpose_soa_to_aos`** | Layout | High-throughput AoS $\leftrightarrow$ SoA multi-variable array conversions | Interfacing nodal quadrature loops with batched SIMD solves |
-| **`contract_axis<Axis, N>`** | Tensor / SF | Directional 1D tensor contraction along $X, Y, Z$ with unrolling | 2D/3D Quad/Hex sum-factorization in $\mathcal{O}(d \cdot N^{d+1})$ operations |
-
-1. **Sub-Range Spans (`std::span`)**: Zero-copy, zero-allocation operations on sub-vectors and element blocks (`elem_u <<= elem_u + dt * elem_k`, `elem_u += elem_flux`).
-2. **Fixed-Size State Vectors (`std::array`)**: 4-variable state blocks (e.g. Euler $[\rho, \rho u, \rho v, E]$) processed on the stack with zero heap allocation.
-3. **Dense Matrix-Vector Operations (`matvec` & `matvec_fixed`)**: Small dense matvec with runtime dimensions or compile-time unrolling (`matvec_fixed<Rows, Cols>`) optimized for DG polynomial orders ($N_p = 4 \dots 36$) for volume, surface, and mass-inverse operators.
-4. **Reproducible Reductions (`sum_repro`, `dot_repro`)**: Invariant 512-element chunk tree accumulation ensuring bit-identical results regardless of OpenMP thread count or compiler optimizations.
-5. **Direct Buffer Write (`eval_into`)**: Evaluates expressions directly into raw pointers or device buffers without container allocations (`eval_into(ptr, n, expr)`).
-6. **Compile-Time Include Optimization**: Defining `VEC_MATH_NO_INTRINSICS` skips `<immintrin.h>`, reducing translation unit compile times by ~800 ms.
-7. **Directional Sum-Factorization (`contract_axis`)**: Directional tensor contractions along axes 0, 1, and 2 for fast spectral element/DG operator evaluation.
-
-## Compiler Flag Recommendations
-
-- **GCC / Clang**: `-std=c++20 -O3 -mavx2 -mfma` (note: `-mfma` is required with `-mavx2` for hardware FMA instructions).
-- **MSVC**: `/std:c++20 /O2 /fp:precise /arch:AVX2 /openmp`.
 
 ## SYCL Compatibility
 

@@ -95,7 +95,7 @@ jobs:
           fi
 
       - name: Build Test Target
-        run: cmake --build build --config ${{ matrix.build_type }} --target vector_math_test
+        run: cmake --build build --config ${{ matrix.build_type }}
 
       - name: Run Tests
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure

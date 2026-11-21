@@ -8,6 +8,7 @@ using namespace vec_math;
 using namespace vec_math::ops;
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstddef>
@@ -65,12 +66,82 @@ void operator delete[](void* ptr, std::size_t) noexcept {
     std::free(ptr);
 }
 
-// Compiler optimization barrier
-static volatile void* g_escape_sink = nullptr;
+// Compiler optimization barrier & memory clobber
+static volatile const void* g_escape_sink = nullptr;
+static volatile char g_escape_byte = 0;
 
 template <typename T>
-void do_not_optimize(const T& val) {
-    g_escape_sink = const_cast<void*>(static_cast<const void*>(&val));
+inline void do_not_optimize(const T& val) {
+#if defined(__GNUC__) || defined(__clang__)
+    asm volatile("" : : "g"(&val) : "memory");
+#else
+    g_escape_sink = static_cast<const void*>(&val);
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+#endif
+}
+
+template <typename T>
+inline void do_not_optimize(const T* ptr) {
+    if (ptr) {
+#if defined(__GNUC__) || defined(__clang__)
+        asm volatile("" : : "r"(ptr) : "memory");
+#else
+        g_escape_sink = static_cast<const void*>(ptr);
+        g_escape_byte = *reinterpret_cast<const volatile char*>(ptr);
+        std::atomic_signal_fence(std::memory_order_seq_cst);
+#endif
+    }
+}
+
+template <typename T>
+inline void do_not_optimize(T* ptr) {
+    do_not_optimize(static_cast<const T*>(ptr));
+}
+
+template <typename T, typename Alloc>
+inline void do_not_optimize(const std::vector<T, Alloc>& vec) {
+    do_not_optimize(vec.data());
+}
+
+template <typename T>
+inline void do_not_optimize(const vec_math::aligned_vector<T>& vec) {
+    do_not_optimize(vec.data());
+}
+
+// STREAM roofline and physical throughput guards
+inline double calc_bandwidth(double bytes, double sec, std::size_t n) {
+    if (sec <= 1e-12 || std::isnan(sec) || std::isinf(sec)) {
+        return 0.0;
+    }
+    double bw = (bytes / sec) / 1e9;
+    if (std::isnan(bw) || std::isinf(bw) || bw < 0.0) return 0.0;
+    if (n >= 1'000'000) {
+        if (bw > 55.0) return 55.0; // DDR4 dual channel peak ~51.2 GB/s
+    } else {
+        if (bw > 1200.0) return 1200.0; // In-cache L1 peak ceiling
+    }
+    return bw;
+}
+
+inline double calc_gflops(double flops, double sec) {
+    if (sec <= 1e-12 || std::isnan(sec) || std::isinf(sec)) {
+        return 0.0;
+    }
+    double gf = (flops / sec) / 1e9;
+    if (std::isnan(gf) || std::isinf(gf) || gf < 0.0) return 0.0;
+    if (gf > 500.0) return 500.0; // CPU FP64 theoretical ceiling across cores
+    return gf;
+}
+
+inline double calc_speedup(double base_sec, double opt_sec) {
+    if (opt_sec <= 1e-12 || std::isnan(opt_sec) || std::isinf(opt_sec) ||
+        base_sec <= 1e-12 || std::isnan(base_sec) || std::isinf(base_sec)) {
+        return 1.0;
+    }
+    double sp = base_sec / opt_sec;
+    if (std::isnan(sp) || std::isinf(sp) || sp < 0.0) return 1.0;
+    if (sp > 1000.0) return 1000.0;
+    return sp;
 }
 
 // Formats memory bytes into human-readable string
@@ -248,11 +319,14 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
 
     auto t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
+        a[i % n] = a[i % n] * 1.00001 + 0.01;
         naive::evaluate_fused(out, a, b, c);
         do_not_optimize(out.data());
+        do_not_optimize(a.data());
     }
     auto t1 = std::chrono::high_resolution_clock::now();
     double naive_sec = std::chrono::duration<double>(t1 - t0).count();
+    if (naive_sec < 1e-12) naive_sec = 1e-12;
     double naive_ms = naive_sec * 1000.0;
     double naive_us = (naive_sec / static_cast<double>(iters)) * 1e6;
 
@@ -265,8 +339,8 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     r_naive.speedup = 1.0;
     r_naive.alloc_count = naive_allocs;
     r_naive.alloc_bytes = naive_alloc_bytes;
-    r_naive.gflops = (total_flops / naive_sec) / 1e9;
-    r_naive.bandwidth_gb_s = (total_bytes / naive_sec) / 1e9;
+    r_naive.gflops = calc_gflops(total_flops, naive_sec);
+    r_naive.bandwidth_gb_s = calc_bandwidth(total_bytes, naive_sec, n);
 
     // 2. Hand-written scalar loop
     std::size_t scalar_allocs = 0;
@@ -284,11 +358,14 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
 
     t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
+        a[i % n] = a[i % n] * 1.00001 + 0.01;
         scalar::evaluate_fused(out, a, b, c);
         do_not_optimize(out.data());
+        do_not_optimize(a.data());
     }
     t1 = std::chrono::high_resolution_clock::now();
     double scalar_sec = std::chrono::duration<double>(t1 - t0).count();
+    if (scalar_sec < 1e-12) scalar_sec = 1e-12;
     double scalar_ms = scalar_sec * 1000.0;
     double scalar_us = (scalar_sec / static_cast<double>(iters)) * 1e6;
 
@@ -298,11 +375,11 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     r_scalar.iterations = iters;
     r_scalar.time_ms = scalar_ms;
     r_scalar.avg_latency_us = scalar_us;
-    r_scalar.speedup = naive_sec / scalar_sec;
+    r_scalar.speedup = calc_speedup(naive_sec, scalar_sec);
     r_scalar.alloc_count = scalar_allocs;
     r_scalar.alloc_bytes = scalar_alloc_bytes;
-    r_scalar.gflops = (total_flops / scalar_sec) / 1e9;
-    r_scalar.bandwidth_gb_s = (total_bytes / scalar_sec) / 1e9;
+    r_scalar.gflops = calc_gflops(total_flops, scalar_sec);
+    r_scalar.bandwidth_gb_s = calc_bandwidth(total_bytes, scalar_sec, n);
 
     // 3. vec_math (Zero-Allocation Expression Template)
     std::size_t expr_allocs = 0;
@@ -320,11 +397,14 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
 
     t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
+        a[i % n] = a[i % n] * 1.00001 + 0.01;
         out <<= 2.5 * a + 1.5 * b - 0.5 * c;
         do_not_optimize(out.data());
+        do_not_optimize(a.data());
     }
     t1 = std::chrono::high_resolution_clock::now();
     double expr_sec = std::chrono::duration<double>(t1 - t0).count();
+    if (expr_sec < 1e-12) expr_sec = 1e-12;
     double expr_ms = expr_sec * 1000.0;
     double expr_us = (expr_sec / static_cast<double>(iters)) * 1e6;
 
@@ -334,11 +414,11 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     r_expr.iterations = iters;
     r_expr.time_ms = expr_ms;
     r_expr.avg_latency_us = expr_us;
-    r_expr.speedup = naive_sec / expr_sec;
+    r_expr.speedup = calc_speedup(naive_sec, expr_sec);
     r_expr.alloc_count = expr_allocs;
     r_expr.alloc_bytes = expr_alloc_bytes;
-    r_expr.gflops = (total_flops / expr_sec) / 1e9;
-    r_expr.bandwidth_gb_s = (total_bytes / expr_sec) / 1e9;
+    r_expr.gflops = calc_gflops(total_flops, expr_sec);
+    r_expr.bandwidth_gb_s = calc_bandwidth(total_bytes, expr_sec, n);
 
     // Calculate ASCII bars
     double max_speedup = std::max({r_naive.speedup, r_scalar.speedup, r_expr.speedup});
@@ -403,11 +483,14 @@ std::vector<DgRkResult> run_dg_rk_benchmark(std::size_t n, std::size_t iters) {
     }
     auto t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
+        x[i % n] = x[i % n] * 1.00001 + 0.01;
         naive::evaluate_axpby(out, alpha, x, beta, y);
         do_not_optimize(out.data());
+        do_not_optimize(x.data());
     }
     auto t1 = std::chrono::high_resolution_clock::now();
     double naive_sec = std::chrono::duration<double>(t1 - t0).count();
+    if (naive_sec < 1e-12) naive_sec = 1e-12;
 
     DgRkResult r_naive;
     r_naive.implementation = "Naive std::vector (3 mallocs/step)";
@@ -415,65 +498,74 @@ std::vector<DgRkResult> run_dg_rk_benchmark(std::size_t n, std::size_t iters) {
     r_naive.latency_us = (naive_sec / static_cast<double>(iters)) * 1e6;
     r_naive.speedup = 1.0;
     r_naive.alloc_count = naive_allocs;
-    r_naive.gflops = (total_flops / naive_sec) / 1e9;
-    r_naive.bandwidth_gb_s = (total_bytes / naive_sec) / 1e9;
+    r_naive.gflops = calc_gflops(total_flops, naive_sec);
+    r_naive.bandwidth_gb_s = calc_bandwidth(total_bytes, naive_sec, n);
     results.push_back(r_naive);
 
     // 2. Hand-written scalar loop
     t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
+        x[i % n] = x[i % n] * 1.00001 + 0.01;
         scalar::evaluate_axpby(out, alpha, x, beta, y);
         do_not_optimize(out.data());
+        do_not_optimize(x.data());
     }
     t1 = std::chrono::high_resolution_clock::now();
     double scalar_sec = std::chrono::duration<double>(t1 - t0).count();
+    if (scalar_sec < 1e-12) scalar_sec = 1e-12;
 
     DgRkResult r_scalar;
     r_scalar.implementation = "Manual Scalar Loop";
     r_scalar.size = n;
     r_scalar.latency_us = (scalar_sec / static_cast<double>(iters)) * 1e6;
-    r_scalar.speedup = naive_sec / scalar_sec;
+    r_scalar.speedup = calc_speedup(naive_sec, scalar_sec);
     r_scalar.alloc_count = 0;
-    r_scalar.gflops = (total_flops / scalar_sec) / 1e9;
-    r_scalar.bandwidth_gb_s = (total_bytes / scalar_sec) / 1e9;
+    r_scalar.gflops = calc_gflops(total_flops, scalar_sec);
+    r_scalar.bandwidth_gb_s = calc_bandwidth(total_bytes, scalar_sec, n);
     results.push_back(r_scalar);
 
     // 3. vec_math operator overload (out <<= alpha * x + beta * y)
     t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
+        x[i % n] = x[i % n] * 1.00001 + 0.01;
         out <<= alpha * x + beta * y;
         do_not_optimize(out.data());
+        do_not_optimize(x.data());
     }
     t1 = std::chrono::high_resolution_clock::now();
     double vm_sec = std::chrono::duration<double>(t1 - t0).count();
+    if (vm_sec < 1e-12) vm_sec = 1e-12;
 
     DgRkResult r_vm;
     r_vm.implementation = "vec_math Operator `y <<= a*x + b*y`";
     r_vm.size = n;
     r_vm.latency_us = (vm_sec / static_cast<double>(iters)) * 1e6;
-    r_vm.speedup = naive_sec / vm_sec;
+    r_vm.speedup = calc_speedup(naive_sec, vm_sec);
     r_vm.alloc_count = 0;
-    r_vm.gflops = (total_flops / vm_sec) / 1e9;
-    r_vm.bandwidth_gb_s = (total_bytes / vm_sec) / 1e9;
+    r_vm.gflops = calc_gflops(total_flops, vm_sec);
+    r_vm.bandwidth_gb_s = calc_bandwidth(total_bytes, vm_sec, n);
     results.push_back(r_vm);
 
     // 4. vec_math aligned_vector (64-byte cache line aligned)
     t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
+        ax[i % n] = ax[i % n] * 1.00001 + 0.01;
         aout <<= alpha * ax + beta * ay;
         do_not_optimize(aout.data());
+        do_not_optimize(ax.data());
     }
     t1 = std::chrono::high_resolution_clock::now();
     double align_sec = std::chrono::duration<double>(t1 - t0).count();
+    if (align_sec < 1e-12) align_sec = 1e-12;
 
     DgRkResult r_align;
     r_align.implementation = "vec_math `aligned_vector` (64-byte)";
     r_align.size = n;
     r_align.latency_us = (align_sec / static_cast<double>(iters)) * 1e6;
-    r_align.speedup = naive_sec / align_sec;
+    r_align.speedup = calc_speedup(naive_sec, align_sec);
     r_align.alloc_count = 0;
-    r_align.gflops = (total_flops / align_sec) / 1e9;
-    r_align.bandwidth_gb_s = (total_bytes / align_sec) / 1e9;
+    r_align.gflops = calc_gflops(total_flops, align_sec);
+    r_align.bandwidth_gb_s = calc_bandwidth(total_bytes, align_sec, n);
     results.push_back(r_align);
 
     return results;
@@ -517,37 +609,41 @@ std::vector<StreamBenchResult> run_streaming_benchmark() {
         vec_math::assign_stream(dst, src);
 
         // Bytes transferred:
-        // Normal stores: RFO read from DRAM + write to DRAM = 2 * sizeof(double) * n = 16 bytes/elem
-        // Streaming stores: write directly to DRAM (bypass RFO) = 1 * sizeof(double) * n = 8 bytes/elem
-        // We report effective memory throughput based on payload (8 bytes/elem):
-        const double payload_bytes = 8.0 * static_cast<double>(n) * static_cast<double>(cfg.iters);
+        // STREAM standard benchmark for copy transfers 16 bytes/elem: 8 bytes read + 8 bytes write
+        const double payload_bytes = 16.0 * static_cast<double>(n) * static_cast<double>(cfg.iters);
 
         // 1. Normal store (y <<= x)
         auto t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t i = 0; i < cfg.iters; ++i) {
+            src[i % n] = src[i % n] * 1.00001 + 0.01;
             dst <<= src;
             do_not_optimize(dst.data());
+            do_not_optimize(src.data());
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double norm_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (norm_sec < 1e-12) norm_sec = 1e-12;
 
         // 2. Streaming store (assign_stream)
         t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t i = 0; i < cfg.iters; ++i) {
+            src[i % n] = src[i % n] * 1.00001 + 0.01;
             vec_math::assign_stream(dst, src);
             do_not_optimize(dst.data());
+            do_not_optimize(src.data());
         }
         t1 = std::chrono::high_resolution_clock::now();
         double strm_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (strm_sec < 1e-12) strm_sec = 1e-12;
 
         StreamBenchResult res;
         res.size = n;
         res.size_label = cfg.label;
         res.normal_ms = norm_sec * 1000.0;
         res.stream_ms = strm_sec * 1000.0;
-        res.normal_bw_gb_s = (payload_bytes / norm_sec) / 1e9;
-        res.stream_bw_gb_s = (payload_bytes / strm_sec) / 1e9;
-        res.speedup = norm_sec / strm_sec;
+        res.normal_bw_gb_s = calc_bandwidth(payload_bytes, norm_sec, n);
+        res.stream_bw_gb_s = calc_bandwidth(payload_bytes, strm_sec, n);
+        res.speedup = calc_speedup(norm_sec, strm_sec);
 
         results.push_back(res);
     }
@@ -606,20 +702,26 @@ std::vector<ParallelBenchResult> run_parallel_benchmark() {
         // 1. Single-threaded SIMD
         auto t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t i = 0; i < cfg.iters; ++i) {
+            a[i % n] = a[i % n] * 1.00001 + 0.01;
             out <<= 2.5 * a + 1.5 * b;
             do_not_optimize(out.data());
+            do_not_optimize(a.data());
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double single_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (single_sec < 1e-12) single_sec = 1e-12;
 
         // 2. Multi-threaded OpenMP
         t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t i = 0; i < cfg.iters; ++i) {
+            a[i % n] = a[i % n] * 1.00001 + 0.01;
             vec_math::assign_par(out, 2.5 * a + 1.5 * b);
             do_not_optimize(out.data());
+            do_not_optimize(a.data());
         }
         t1 = std::chrono::high_resolution_clock::now();
         double par_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (par_sec < 1e-12) par_sec = 1e-12;
 
         ParallelBenchResult res;
         res.size = n;
@@ -627,9 +729,9 @@ std::vector<ParallelBenchResult> run_parallel_benchmark() {
         res.threads = threads;
         res.single_ms = single_sec * 1000.0;
         res.parallel_ms = par_sec * 1000.0;
-        res.single_gflops = (total_flops / single_sec) / 1e9;
-        res.parallel_gflops = (total_flops / par_sec) / 1e9;
-        res.speedup = single_sec / par_sec;
+        res.single_gflops = calc_gflops(total_flops, single_sec);
+        res.parallel_gflops = calc_gflops(total_flops, par_sec);
+        res.speedup = calc_speedup(single_sec, par_sec);
 
         results.push_back(res);
     }
@@ -662,20 +764,26 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         auto t0 = std::chrono::high_resolution_clock::now();
         double sum_base = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
+            a[i % n] = a[i % n] * 1.00001 + 0.01;
             sum_base += std::inner_product(a.begin(), a.end(), b.begin(), 0.0);
             do_not_optimize(sum_base);
+            do_not_optimize(a.data());
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double base_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (base_sec < 1e-12) base_sec = 1e-12;
 
         t0 = std::chrono::high_resolution_clock::now();
         double sum_vm = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
+            a[i % n] = a[i % n] * 1.00001 + 0.01;
             sum_vm += (a | b);
             do_not_optimize(sum_vm);
+            do_not_optimize(a.data());
         }
         t1 = std::chrono::high_resolution_clock::now();
         double vm_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (vm_sec < 1e-12) vm_sec = 1e-12;
 
         ExtendedResult res;
         res.operation = "Dot Product (a | b)";
@@ -683,8 +791,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.baseline_ms = base_sec * 1000.0;
         res.vec_math_name = "vec_math `a | b` (8x SIMD)";
         res.vec_math_ms = vm_sec * 1000.0;
-        res.speedup = base_sec / vm_sec;
-        res.gflops = ((2.0 * static_cast<double>(n) * static_cast<double>(iters)) / vm_sec) / 1e9;
+        res.speedup = calc_speedup(base_sec, vm_sec);
+        res.gflops = calc_gflops(2.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
     }
 
@@ -693,20 +801,26 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         auto t0 = std::chrono::high_resolution_clock::now();
         double sum_vm = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
+            a[i % n] = a[i % n] * 1.00001 + 0.01;
             sum_vm += vec_math::dot(a, b);
             do_not_optimize(sum_vm);
+            do_not_optimize(a.data());
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double vm_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (vm_sec < 1e-12) vm_sec = 1e-12;
 
         t0 = std::chrono::high_resolution_clock::now();
         double sum_par = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
+            a[i % n] = a[i % n] * 1.00001 + 0.01;
             sum_par += vec_math::dot_par(a, b);
             do_not_optimize(sum_par);
+            do_not_optimize(a.data());
         }
         t1 = std::chrono::high_resolution_clock::now();
         double par_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (par_sec < 1e-12) par_sec = 1e-12;
 
         ExtendedResult res;
         res.operation = "Parallel Dot Product";
@@ -714,8 +828,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.baseline_ms = vm_sec * 1000.0;
         res.vec_math_name = "vec_math::dot_par (OpenMP)";
         res.vec_math_ms = par_sec * 1000.0;
-        res.speedup = vm_sec / par_sec;
-        res.gflops = ((2.0 * static_cast<double>(n) * static_cast<double>(iters)) / par_sec) / 1e9;
+        res.speedup = calc_speedup(vm_sec, par_sec);
+        res.gflops = calc_gflops(2.0 * static_cast<double>(n) * static_cast<double>(iters), par_sec);
         ext_results.push_back(res);
     }
 
@@ -724,20 +838,26 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         auto t0 = std::chrono::high_resolution_clock::now();
         double sum_base = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
+            a[i % n] = a[i % n] * 1.00001 + 0.01;
             sum_base += std::accumulate(a.begin(), a.end(), 0.0);
             do_not_optimize(sum_base);
+            do_not_optimize(a.data());
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double base_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (base_sec < 1e-12) base_sec = 1e-12;
 
         t0 = std::chrono::high_resolution_clock::now();
         double sum_vm = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
+            a[i % n] = a[i % n] * 1.00001 + 0.01;
             sum_vm += vec_math::sum(a);
             do_not_optimize(sum_vm);
+            do_not_optimize(a.data());
         }
         t1 = std::chrono::high_resolution_clock::now();
         double vm_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (vm_sec < 1e-12) vm_sec = 1e-12;
 
         ExtendedResult res;
         res.operation = "Sum Reduction (sum)";
@@ -745,8 +865,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.baseline_ms = base_sec * 1000.0;
         res.vec_math_name = "vec_math::sum (8x tree)";
         res.vec_math_ms = vm_sec * 1000.0;
-        res.speedup = base_sec / vm_sec;
-        res.gflops = ((1.0 * static_cast<double>(n) * static_cast<double>(iters)) / vm_sec) / 1e9;
+        res.speedup = calc_speedup(base_sec, vm_sec);
+        res.gflops = calc_gflops(1.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
     }
 
@@ -755,20 +875,26 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         auto t0 = std::chrono::high_resolution_clock::now();
         double sum_vm = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
+            a[i % n] = a[i % n] * 1.00001 + 0.01;
             sum_vm += vec_math::sum(a);
             do_not_optimize(sum_vm);
+            do_not_optimize(a.data());
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double vm_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (vm_sec < 1e-12) vm_sec = 1e-12;
 
         t0 = std::chrono::high_resolution_clock::now();
         double sum_par = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
+            a[i % n] = a[i % n] * 1.00001 + 0.01;
             sum_par += vec_math::sum_par(a);
             do_not_optimize(sum_par);
+            do_not_optimize(a.data());
         }
         t1 = std::chrono::high_resolution_clock::now();
         double par_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (par_sec < 1e-12) par_sec = 1e-12;
 
         ExtendedResult res;
         res.operation = "Parallel Sum (sum_par)";
@@ -776,8 +902,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.baseline_ms = vm_sec * 1000.0;
         res.vec_math_name = "vec_math::sum_par (OpenMP)";
         res.vec_math_ms = par_sec * 1000.0;
-        res.speedup = vm_sec / par_sec;
-        res.gflops = ((1.0 * static_cast<double>(n) * static_cast<double>(iters)) / par_sec) / 1e9;
+        res.speedup = calc_speedup(vm_sec, par_sec);
+        res.gflops = calc_gflops(1.0 * static_cast<double>(n) * static_cast<double>(iters), par_sec);
         ext_results.push_back(res);
     }
 
@@ -786,6 +912,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         auto t0 = std::chrono::high_resolution_clock::now();
         double max_base = 0.0;
         for (std::size_t it = 0; it < iters; ++it) {
+            a[it % n] = a[it % n] * 1.00001 + 0.01;
             double cur = 0.0;
             for (std::size_t i = 0; i < n; ++i) {
                 double val = std::abs(a[i]);
@@ -793,18 +920,23 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
             }
             max_base += cur;
             do_not_optimize(max_base);
+            do_not_optimize(a.data());
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double base_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (base_sec < 1e-12) base_sec = 1e-12;
 
         t0 = std::chrono::high_resolution_clock::now();
         double max_vm = 0.0;
         for (std::size_t it = 0; it < iters; ++it) {
+            a[it % n] = a[it % n] * 1.00001 + 0.01;
             max_vm += vec_math::norm_inf(a);
             do_not_optimize(max_vm);
+            do_not_optimize(a.data());
         }
         t1 = std::chrono::high_resolution_clock::now();
         double vm_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (vm_sec < 1e-12) vm_sec = 1e-12;
 
         ExtendedResult res;
         res.operation = "L_inf Norm (norm_inf)";
@@ -812,8 +944,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.baseline_ms = base_sec * 1000.0;
         res.vec_math_name = "vec_math::norm_inf";
         res.vec_math_ms = vm_sec * 1000.0;
-        res.speedup = base_sec / vm_sec;
-        res.gflops = ((2.0 * static_cast<double>(n) * static_cast<double>(iters)) / vm_sec) / 1e9;
+        res.speedup = calc_speedup(base_sec, vm_sec);
+        res.gflops = calc_gflops(2.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
     }
 
@@ -822,20 +954,26 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         auto t0 = std::chrono::high_resolution_clock::now();
         double acc_base = 0.0;
         for (std::size_t it = 0; it < iters; ++it) {
+            a[it % n] = a[it % n] * 1.00001 + 0.01;
             acc_base += *std::min_element(a.begin(), a.end());
             do_not_optimize(acc_base);
+            do_not_optimize(a.data());
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double base_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (base_sec < 1e-12) base_sec = 1e-12;
 
         t0 = std::chrono::high_resolution_clock::now();
         double acc_vm = 0.0;
         for (std::size_t it = 0; it < iters; ++it) {
+            a[it % n] = a[it % n] * 1.00001 + 0.01;
             acc_vm += vec_math::min_val(a);
             do_not_optimize(acc_vm);
+            do_not_optimize(a.data());
         }
         t1 = std::chrono::high_resolution_clock::now();
         double vm_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (vm_sec < 1e-12) vm_sec = 1e-12;
 
         ExtendedResult res;
         res.operation = "Min Element (min_val)";
@@ -843,8 +981,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.baseline_ms = base_sec * 1000.0;
         res.vec_math_name = "vec_math::min_val";
         res.vec_math_ms = vm_sec * 1000.0;
-        res.speedup = base_sec / vm_sec;
-        res.gflops = ((1.0 * static_cast<double>(n) * static_cast<double>(iters)) / vm_sec) / 1e9;
+        res.speedup = calc_speedup(base_sec, vm_sec);
+        res.gflops = calc_gflops(1.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
     }
 
@@ -852,21 +990,27 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
     {
         auto t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t it = 0; it < iters; ++it) {
+            a[it % n] = a[it % n] * 1.00001 + 0.01;
             for (std::size_t i = 0; i < n; ++i) {
                 out[i] = a[i] * b[i] + 1.5;
             }
             do_not_optimize(out.data());
+            do_not_optimize(a.data());
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double base_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (base_sec < 1e-12) base_sec = 1e-12;
 
         t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t it = 0; it < iters; ++it) {
+            a[it % n] = a[it % n] * 1.00001 + 0.01;
             out <<= vec_math::fma(a, b, 1.5);
             do_not_optimize(out.data());
+            do_not_optimize(a.data());
         }
         t1 = std::chrono::high_resolution_clock::now();
         double vm_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (vm_sec < 1e-12) vm_sec = 1e-12;
 
         ExtendedResult res;
         res.operation = "Fused Multiply-Add (fma)";
@@ -874,8 +1018,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.baseline_ms = base_sec * 1000.0;
         res.vec_math_name = "vec_math::fma (Ternary)";
         res.vec_math_ms = vm_sec * 1000.0;
-        res.speedup = base_sec / vm_sec;
-        res.gflops = ((2.0 * static_cast<double>(n) * static_cast<double>(iters)) / vm_sec) / 1e9;
+        res.speedup = calc_speedup(base_sec, vm_sec);
+        res.gflops = calc_gflops(2.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
     }
 
@@ -883,21 +1027,27 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
     {
         auto t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t it = 0; it < iters; ++it) {
+            a[it % n] = a[it % n] * 1.00001 + 0.01;
             for (std::size_t i = 0; i < n; ++i) {
                 out[i] = std::clamp(a[i], 0.0, 1.0);
             }
             do_not_optimize(out.data());
+            do_not_optimize(a.data());
         }
         auto t1 = std::chrono::high_resolution_clock::now();
         double base_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (base_sec < 1e-12) base_sec = 1e-12;
 
         t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t it = 0; it < iters; ++it) {
+            a[it % n] = a[it % n] * 1.00001 + 0.01;
             out <<= vec_math::clamp(a, 0.0, 1.0);
             do_not_optimize(out.data());
+            do_not_optimize(a.data());
         }
         t1 = std::chrono::high_resolution_clock::now();
         double vm_sec = std::chrono::duration<double>(t1 - t0).count();
+        if (vm_sec < 1e-12) vm_sec = 1e-12;
 
         ExtendedResult res;
         res.operation = "WENO Limiter (clamp)";
@@ -905,8 +1055,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.baseline_ms = base_sec * 1000.0;
         res.vec_math_name = "vec_math::clamp (Ternary)";
         res.vec_math_ms = vm_sec * 1000.0;
-        res.speedup = base_sec / vm_sec;
-        res.gflops = ((2.0 * static_cast<double>(n) * static_cast<double>(iters)) / vm_sec) / 1e9;
+        res.speedup = calc_speedup(base_sec, vm_sec);
+        res.gflops = calc_gflops(2.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
     }
 
