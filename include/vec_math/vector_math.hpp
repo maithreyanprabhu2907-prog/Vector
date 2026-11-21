@@ -1338,6 +1338,15 @@ namespace vec_math {
         );
     }
 
+    enum class ReductionPolicy {
+        FAST,
+        REPRO
+    };
+
+    // sum: reduction with 8-way multi-accumulator dependency breaking
+    template<VectorOperand Op>
+    [[nodiscard]] constexpr auto sum(const Op &op_in, ReductionPolicy policy = ReductionPolicy::FAST);
+
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC push_options
 #pragma GCC optimize("no-fast-math", "no-associative-math")
@@ -1364,11 +1373,6 @@ namespace vec_math {
                    pairwise_tree_blocks<ValueT>(block_fn, b_start + mid, b_count - mid);
         }
     }
-
-    enum class ReductionPolicy {
-        FAST,
-        REPRO
-    };
 
     // sum_repro: Blocked tree reduction guaranteeing bit-identical results across thread counts and bounded FP32 error
     template<VectorOperand Op>
@@ -1403,35 +1407,6 @@ namespace vec_math {
             total = total + static_cast<value_type>(op[i]);
         }
         return total;
-    }
-
-    // sum: reduction with 8-way multi-accumulator dependency breaking
-    template<VectorOperand Op>
-    [[nodiscard]] constexpr auto sum(const Op &op_in, ReductionPolicy policy = ReductionPolicy::FAST) {
-        if (policy == ReductionPolicy::REPRO) {
-            return sum_repro(op_in);
-        }
-        auto op = detail::make_operand(op_in);
-        using value_type = typename detail::operand_storage_t<Op>::value_type;
-        const std::size_t n = op.size();
-        if (n == 0) { return value_type{0}; }
-
-        value_type a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
-        std::size_t i = 0;
-        for (; i + 8 <= n; i += 8) {
-            a0 += static_cast<value_type>(op[i + 0]);
-            a1 += static_cast<value_type>(op[i + 1]);
-            a2 += static_cast<value_type>(op[i + 2]);
-            a3 += static_cast<value_type>(op[i + 3]);
-            a4 += static_cast<value_type>(op[i + 4]);
-            a5 += static_cast<value_type>(op[i + 5]);
-            a6 += static_cast<value_type>(op[i + 6]);
-            a7 += static_cast<value_type>(op[i + 7]);
-        }
-        for (; i < n; ++i) {
-            a0 += static_cast<value_type>(op[i]);
-        }
-        return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
     }
 
     // dot_repro: Blocked tree inner product guaranteeing bit-identical results across thread counts and bounded FP32 error
@@ -1482,6 +1457,35 @@ namespace vec_math {
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC pop_options
 #endif
+
+    // sum: reduction with 8-way multi-accumulator dependency breaking
+    template<VectorOperand Op>
+    [[nodiscard]] constexpr auto sum(const Op &op_in, ReductionPolicy policy) {
+        if (policy == ReductionPolicy::REPRO) {
+            return sum_repro(op_in);
+        }
+        auto op = detail::make_operand(op_in);
+        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        const std::size_t n = op.size();
+        if (n == 0) { return value_type{0}; }
+
+        value_type a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
+        std::size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            a0 += static_cast<value_type>(op[i + 0]);
+            a1 += static_cast<value_type>(op[i + 1]);
+            a2 += static_cast<value_type>(op[i + 2]);
+            a3 += static_cast<value_type>(op[i + 3]);
+            a4 += static_cast<value_type>(op[i + 4]);
+            a5 += static_cast<value_type>(op[i + 5]);
+            a6 += static_cast<value_type>(op[i + 6]);
+            a7 += static_cast<value_type>(op[i + 7]);
+        }
+        for (; i < n; ++i) {
+            a0 += static_cast<value_type>(op[i]);
+        }
+        return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
+    }
 
     // dot: dot product with SIMD intrinsics and 8-way multi-accumulator dependency breaking
     template<VectorOperand Lhs, VectorOperand Rhs>
@@ -1793,29 +1797,15 @@ namespace vec_math {
 #endif
         }
 
+        const MatT* VEC_MATH_RESTRICT rA = A;
+        const VecInT* VEC_MATH_RESTRICT rx = x;
+        VecOutT* VEC_MATH_RESTRICT ry = y;
+
         for (std::size_t r = 0; r < rows; ++r) {
-            VecOutT sum{0};
-            const MatT* row = A + r * cols;
-            if (cols <= 36) {
-                std::size_t c = 0;
-                VecOutT acc0{0}, acc1{0}, acc2{0}, acc3{0};
-                for (; c + 4 <= cols; c += 4) {
-                    acc0 = acc0 + static_cast<VecOutT>(row[c + 0]) * static_cast<VecOutT>(x[c + 0]);
-                    acc1 = acc1 + static_cast<VecOutT>(row[c + 1]) * static_cast<VecOutT>(x[c + 1]);
-                    acc2 = acc2 + static_cast<VecOutT>(row[c + 2]) * static_cast<VecOutT>(x[c + 2]);
-                    acc3 = acc3 + static_cast<VecOutT>(row[c + 3]) * static_cast<VecOutT>(x[c + 3]);
-                }
-                sum = (acc0 + acc1) + (acc2 + acc3);
-                for (; c < cols; ++c) {
-                    sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
-                }
-            } else {
-                VEC_MATH_PRAGMA_SIMD
-                for (std::size_t c = 0; c < cols; ++c) {
-                    sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
-                }
-            }
-            y[r] = sum;
+            ry[r] = dot(
+                std::span<const MatT>(rA + r * cols, cols),
+                std::span<const VecInT>(rx, cols)
+            );
         }
     }
 
@@ -1849,28 +1839,19 @@ namespace vec_math {
 #endif
         }
 
+        const MatT* VEC_MATH_RESTRICT rA = A;
+        const VecInT* VEC_MATH_RESTRICT rx = x;
+        VecOutT* VEC_MATH_RESTRICT ry = y;
+
         for (std::size_t c = 0; c < cols; ++c) {
-            y[c] = VecOutT{0};
+            ry[c] = VecOutT{0};
         }
         for (std::size_t r = 0; r < rows; ++r) {
-            const MatT* row = A + r * cols;
-            const auto xr = static_cast<VecOutT>(x[r]);
-            if (cols <= 36) {
-                std::size_t c = 0;
-                for (; c + 4 <= cols; c += 4) {
-                    y[c + 0] = y[c + 0] + static_cast<VecOutT>(row[c + 0]) * xr;
-                    y[c + 1] = y[c + 1] + static_cast<VecOutT>(row[c + 1]) * xr;
-                    y[c + 2] = y[c + 2] + static_cast<VecOutT>(row[c + 2]) * xr;
-                    y[c + 3] = y[c + 3] + static_cast<VecOutT>(row[c + 3]) * xr;
-                }
-                for (; c < cols; ++c) {
-                    y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
-                }
-            } else {
-                VEC_MATH_PRAGMA_SIMD
-                for (std::size_t c = 0; c < cols; ++c) {
-                    y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
-                }
+            const MatT* VEC_MATH_RESTRICT row = rA + r * cols;
+            const auto xr = static_cast<VecOutT>(rx[r]);
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t c = 0; c < cols; ++c) {
+                ry[c] = ry[c] + static_cast<VecOutT>(row[c]) * xr;
             }
         }
     }
@@ -1889,21 +1870,15 @@ namespace vec_math {
             return;
         }
 
+        const MatT* VEC_MATH_RESTRICT rA = A;
+        const VecInT* VEC_MATH_RESTRICT rx = x;
+        VecOutT* VEC_MATH_RESTRICT ry = y;
+
         for (std::size_t r = 0; r < Rows; ++r) {
-            const MatT* row = A + r * Cols;
-            std::size_t c = 0;
-            VecOutT acc0{0}, acc1{0}, acc2{0}, acc3{0};
-            for (; c + 4 <= Cols; c += 4) {
-                acc0 = acc0 + static_cast<VecOutT>(row[c + 0]) * static_cast<VecOutT>(x[c + 0]);
-                acc1 = acc1 + static_cast<VecOutT>(row[c + 1]) * static_cast<VecOutT>(x[c + 1]);
-                acc2 = acc2 + static_cast<VecOutT>(row[c + 2]) * static_cast<VecOutT>(x[c + 2]);
-                acc3 = acc3 + static_cast<VecOutT>(row[c + 3]) * static_cast<VecOutT>(x[c + 3]);
-            }
-            VecOutT sum = (acc0 + acc1) + (acc2 + acc3);
-            for (; c < Cols; ++c) {
-                sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
-            }
-            y[r] = sum;
+            ry[r] = dot(
+                std::span<const MatT, Cols>(rA + r * Cols, Cols),
+                std::span<const VecInT, Cols>(rx, Cols)
+            );
         }
     }
 
@@ -1920,21 +1895,19 @@ namespace vec_math {
             return;
         }
 
+        const MatT* VEC_MATH_RESTRICT rA = A;
+        const VecInT* VEC_MATH_RESTRICT rx = x;
+        VecOutT* VEC_MATH_RESTRICT ry = y;
+
         for (std::size_t c = 0; c < Cols; ++c) {
-            y[c] = VecOutT{0};
+            ry[c] = VecOutT{0};
         }
         for (std::size_t r = 0; r < Rows; ++r) {
-            const MatT* row = A + r * Cols;
-            const auto xr = static_cast<VecOutT>(x[r]);
-            std::size_t c = 0;
-            for (; c + 4 <= Cols; c += 4) {
-                y[c + 0] = y[c + 0] + static_cast<VecOutT>(row[c + 0]) * xr;
-                y[c + 1] = y[c + 1] + static_cast<VecOutT>(row[c + 1]) * xr;
-                y[c + 2] = y[c + 2] + static_cast<VecOutT>(row[c + 2]) * xr;
-                y[c + 3] = y[c + 3] + static_cast<VecOutT>(row[c + 3]) * xr;
-            }
-            for (; c < Cols; ++c) {
-                y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
+            const MatT* VEC_MATH_RESTRICT row = rA + r * Cols;
+            const auto xr = static_cast<VecOutT>(rx[r]);
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t c = 0; c < Cols; ++c) {
+                ry[c] = ry[c] + static_cast<VecOutT>(row[c]) * xr;
             }
         }
     }
@@ -2257,19 +2230,10 @@ namespace vec_math {
                     const T* VEC_MATH_RESTRICT in_ptr = in + p * N;
                     T* VEC_MATH_RESTRICT out_ptr = out + p * N;
                     for (std::size_t i = 0; i < N; ++i) {
-                        const MatT* VEC_MATH_RESTRICT row = D + i * N;
-                        T sum{0};
-                        std::size_t j = 0;
-                        for (; j + 4 <= N; j += 4) {
-                            sum = sum + static_cast<T>(row[j + 0]) * in_ptr[j + 0]
-                                      + static_cast<T>(row[j + 1]) * in_ptr[j + 1]
-                                      + static_cast<T>(row[j + 2]) * in_ptr[j + 2]
-                                      + static_cast<T>(row[j + 3]) * in_ptr[j + 3];
-                        }
-                        for (; j < N; ++j) {
-                            sum = sum + static_cast<T>(row[j]) * in_ptr[j];
-                        }
-                        out_ptr[i] = sum;
+                        out_ptr[i] = dot(
+                            std::span<const MatT, N>(D + i * N, N),
+                            std::span<const T, N>(in_ptr, N)
+                        );
                     }
                 }
             } else {
@@ -2277,20 +2241,10 @@ namespace vec_math {
                     const T* VEC_MATH_RESTRICT in_ptr = in + p * nx;
                     T* VEC_MATH_RESTRICT out_ptr = out + p * nx;
                     for (std::size_t i = 0; i < nx; ++i) {
-                        const MatT* VEC_MATH_RESTRICT row = D + i * nx;
-                        T acc0{0}, acc1{0}, acc2{0}, acc3{0};
-                        std::size_t j = 0;
-                        for (; j + 4 <= nx; j += 4) {
-                            acc0 = acc0 + static_cast<T>(row[j + 0]) * in_ptr[j + 0];
-                            acc1 = acc1 + static_cast<T>(row[j + 1]) * in_ptr[j + 1];
-                            acc2 = acc2 + static_cast<T>(row[j + 2]) * in_ptr[j + 2];
-                            acc3 = acc3 + static_cast<T>(row[j + 3]) * in_ptr[j + 3];
-                        }
-                        T sum = (acc0 + acc1) + (acc2 + acc3);
-                        for (; j < nx; ++j) {
-                            sum = sum + static_cast<T>(row[j]) * in_ptr[j];
-                        }
-                        out_ptr[i] = sum;
+                        out_ptr[i] = dot(
+                            std::span<const MatT>(D + i * nx, nx),
+                            std::span<const T>(in_ptr, nx)
+                        );
                     }
                 }
             }
@@ -2302,13 +2256,14 @@ namespace vec_math {
                     for (std::size_t j = 0; j < N; ++j) {
                         T* VEC_MATH_RESTRICT out_row = out_k + j * nx;
                         const MatT* VEC_MATH_RESTRICT row = D + j * N;
-                        VEC_MATH_PRAGMA_SIMD
-                        for (std::size_t i = 0; i < nx; ++i) {
-                            T sum{0};
-                            for (std::size_t q = 0; q < N; ++q) {
-                                sum = sum + static_cast<T>(row[q]) * in_k[q * nx + i];
+                        for (std::size_t i = 0; i < nx; ++i) out_row[i] = T{0};
+                        for (std::size_t q = 0; q < N; ++q) {
+                            const T rq = static_cast<T>(row[q]);
+                            const T* VEC_MATH_RESTRICT in_q = in_k + q * nx;
+                            VEC_MATH_PRAGMA_SIMD
+                            for (std::size_t i = 0; i < nx; ++i) {
+                                out_row[i] += rq * in_q[i];
                             }
-                            out_row[i] = sum;
                         }
                     }
                 }
@@ -2319,13 +2274,14 @@ namespace vec_math {
                     for (std::size_t j = 0; j < ny; ++j) {
                         T* VEC_MATH_RESTRICT out_row = out_k + j * nx;
                         const MatT* VEC_MATH_RESTRICT row = D + j * ny;
-                        VEC_MATH_PRAGMA_SIMD
-                        for (std::size_t i = 0; i < nx; ++i) {
-                            T sum{0};
-                            for (std::size_t q = 0; q < ny; ++q) {
-                                sum = sum + static_cast<T>(row[q]) * in_k[q * nx + i];
+                        for (std::size_t i = 0; i < nx; ++i) out_row[i] = T{0};
+                        for (std::size_t q = 0; q < ny; ++q) {
+                            const T rq = static_cast<T>(row[q]);
+                            const T* VEC_MATH_RESTRICT in_q = in_k + q * nx;
+                            VEC_MATH_PRAGMA_SIMD
+                            for (std::size_t i = 0; i < nx; ++i) {
+                                out_row[i] += rq * in_q[i];
                             }
-                            out_row[i] = sum;
                         }
                     }
                 }
@@ -2336,26 +2292,28 @@ namespace vec_math {
                 for (std::size_t k = 0; k < N; ++k) {
                     T* VEC_MATH_RESTRICT out_plane = out + k * nxy;
                     const MatT* VEC_MATH_RESTRICT row = D + k * N;
-                    VEC_MATH_PRAGMA_SIMD
-                    for (std::size_t p = 0; p < nxy; ++p) {
-                        T sum{0};
-                        for (std::size_t r = 0; r < N; ++r) {
-                            sum = sum + static_cast<T>(row[r]) * in[r * nxy + p];
+                    for (std::size_t p = 0; p < nxy; ++p) out_plane[p] = T{0};
+                    for (std::size_t r = 0; r < N; ++r) {
+                        const T rr = static_cast<T>(row[r]);
+                        const T* VEC_MATH_RESTRICT in_r = in + r * nxy;
+                        VEC_MATH_PRAGMA_SIMD
+                        for (std::size_t p = 0; p < nxy; ++p) {
+                            out_plane[p] += rr * in_r[p];
                         }
-                        out_plane[p] = sum;
                     }
                 }
             } else {
                 for (std::size_t k = 0; k < nz; ++k) {
                     T* VEC_MATH_RESTRICT out_plane = out + k * nxy;
                     const MatT* VEC_MATH_RESTRICT row = D + k * nz;
-                    VEC_MATH_PRAGMA_SIMD
-                    for (std::size_t p = 0; p < nxy; ++p) {
-                        T sum{0};
-                        for (std::size_t r = 0; r < nz; ++r) {
-                            sum = sum + static_cast<T>(row[r]) * in[r * nxy + p];
+                    for (std::size_t p = 0; p < nxy; ++p) out_plane[p] = T{0};
+                    for (std::size_t r = 0; r < nz; ++r) {
+                        const T rr = static_cast<T>(row[r]);
+                        const T* VEC_MATH_RESTRICT in_r = in + r * nxy;
+                        VEC_MATH_PRAGMA_SIMD
+                        for (std::size_t p = 0; p < nxy; ++p) {
+                            out_plane[p] += rr * in_r[p];
                         }
-                        out_plane[p] = sum;
                     }
                 }
             }
@@ -2438,20 +2396,30 @@ namespace vec_math {
             if (tid < MAX_OMP_THREADS) {
                 std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
                 std::size_t start = static_cast<std::size_t>(tid) * chunk;
-                std::size_t end = (start + chunk < n) ? (start + chunk) : n;
-                ResType local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
-                std::size_t i = start;
-                for (; i + 4 <= end; i += 4) {
-                    local_acc0 += static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
-                    local_acc1 += static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
-                    local_acc2 += static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
-                    local_acc3 += static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
+                if (start < n) {
+                    std::size_t count = (start + chunk <= n) ? chunk : (n - start);
+                    if constexpr (requires { { lhs_op.data() }; { rhs_op.data() }; }) {
+                        partial_sums[tid].value = dot(
+                            std::span(lhs_op.data() + start, count),
+                            std::span(rhs_op.data() + start, count)
+                        );
+                    } else {
+                        ResType local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
+                        std::size_t i = start;
+                        std::size_t end = start + count;
+                        for (; i + 4 <= end; i += 4) {
+                            local_acc0 += static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
+                            local_acc1 += static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
+                            local_acc2 += static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
+                            local_acc3 += static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
+                        }
+                        ResType local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
+                        for (; i < end; ++i) {
+                            local_sum += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+                        }
+                        partial_sums[tid].value = local_sum;
+                    }
                 }
-                ResType local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
-                for (; i < end; ++i) {
-                    local_sum += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
-                }
-                partial_sums[tid].value = local_sum;
             }
         }
 
@@ -2492,20 +2460,27 @@ namespace vec_math {
             if (tid < MAX_OMP_THREADS) {
                 std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
                 std::size_t start = static_cast<std::size_t>(tid) * chunk;
-                std::size_t end = (start + chunk < n) ? (start + chunk) : n;
-                value_type local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
-                std::size_t i = start;
-                for (; i + 4 <= end; i += 4) {
-                    local_acc0 += static_cast<value_type>(op[i + 0]);
-                    local_acc1 += static_cast<value_type>(op[i + 1]);
-                    local_acc2 += static_cast<value_type>(op[i + 2]);
-                    local_acc3 += static_cast<value_type>(op[i + 3]);
+                if (start < n) {
+                    std::size_t count = (start + chunk <= n) ? chunk : (n - start);
+                    if constexpr (requires { { op.data() }; }) {
+                        partial_sums[tid].value = sum(std::span(op.data() + start, count));
+                    } else {
+                        value_type local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
+                        std::size_t i = start;
+                        std::size_t end = start + count;
+                        for (; i + 4 <= end; i += 4) {
+                            local_acc0 += static_cast<value_type>(op[i + 0]);
+                            local_acc1 += static_cast<value_type>(op[i + 1]);
+                            local_acc2 += static_cast<value_type>(op[i + 2]);
+                            local_acc3 += static_cast<value_type>(op[i + 3]);
+                        }
+                        value_type local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
+                        for (; i < end; ++i) {
+                            local_sum += static_cast<value_type>(op[i]);
+                        }
+                        partial_sums[tid].value = local_sum;
+                    }
                 }
-                value_type local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
-                for (; i < end; ++i) {
-                    local_sum += static_cast<value_type>(op[i]);
-                }
-                partial_sums[tid].value = local_sum;
             }
         }
 

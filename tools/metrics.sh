@@ -13,7 +13,8 @@
 set -o pipefail
 
 TIER=1
-QUICK=0
+QUICK=-1
+FULL=0
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UPSTREAM="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO="$UPSTREAM"
@@ -31,6 +32,11 @@ while [[ $# -gt 0 ]]; do
             ;;
         --quick)
             QUICK=1
+            shift 1
+            ;;
+        --full)
+            FULL=1
+            QUICK=0
             shift 1
             ;;
         --upstream)
@@ -51,6 +57,14 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ $QUICK -eq -1 ]]; then
+    if [[ $TIER -le 1 && $FULL -eq 0 ]]; then
+        QUICK=1
+    else
+        QUICK=0
+    fi
+fi
 
 if [[ -z "$OUTDIR" ]]; then
     OUTDIR="${REPO}/docs/metrics"
@@ -126,10 +140,17 @@ elif command -v sysctl &>/dev/null; then
 fi
 
 CORES=1
-if command -v nproc &>/dev/null; then
-    CORES="$(nproc)"
+if [[ -f /proc/cpuinfo ]]; then
+    PHYS_CORES="$(grep "core id" /proc/cpuinfo | sort -u | wc -l)"
+    if [[ "$PHYS_CORES" -gt 0 ]]; then
+        CORES="$PHYS_CORES"
+    elif command -v nproc &>/dev/null; then
+        CORES="$(nproc)"
+    fi
 elif command -v sysctl &>/dev/null; then
-    CORES="$(sysctl -n hw.ncpu 2>/dev/null || echo 1)"
+    CORES="$(sysctl -n hw.physicalcpu 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 1)"
+elif command -v nproc &>/dev/null; then
+    CORES="$(nproc)"
 fi
 
 CXX_VER="$($CXX --version 2>/dev/null | head -n 1 || echo "not found")"

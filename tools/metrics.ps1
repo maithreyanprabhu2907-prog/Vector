@@ -1,4 +1,4 @@
-# tools/metrics.ps1 — run the per-commit measurement protocol against a vec_math checkout
+﻿# tools/metrics.ps1 — run the per-commit measurement protocol against a vec_math checkout
 #
 #   .\tools\metrics.ps1                 # Tier 1 (default, ~8 min)
 #   .\tools\metrics.ps1 -Tier 0         # Tier 0  (~2 min, per commit)
@@ -16,7 +16,8 @@ param(
     [string]$Repo     = "C:\dev\Vector",
     [ValidateSet(0, 1, 2)][int]$Tier = 1,
     [string]$OutDir   = "",
-    [switch]$Quick
+    [switch]$Quick,
+    [switch]$Full
 )
 
 $ErrorActionPreference = "Continue"
@@ -296,7 +297,8 @@ $benchExe = Build-Bench "-O3" "dgbench_o3.exe"
 if (-not (Test-Path $benchExe)) {
     Add-Result "bench" "compile" "bench.cpp did not compile" "FAIL"
 } else {
-    $quickArg = if ($Quick) { @("--quick") } else { @() }
+    $isQuick = $Quick -or ($Tier -le 1 -and -not $Full)
+    $quickArg = if ($isQuick) { @("--quick") } else { @() }
     $r = Invoke-Native $benchExe $quickArg
     $script:Bench = Parse-KeyValues $r.Output
     $script:BenchLog = $r.Output
@@ -340,7 +342,7 @@ if ($Tier -ge 1 -and (Test-Path (Join-Path $Tmp "dgbench_o3.exe"))) {
     Write-Host "`n9. codegen sensitivity (-O2 vs -O3)" -ForegroundColor Yellow
     $o2 = Build-Bench "-O2" "dgbench_o2.exe"
     if (Test-Path $o2) {
-        $r2 = Invoke-Native $o2 $(if ($Quick) { @("--quick") } else { @() })
+        $r2 = Invoke-Native $o2 $quickArg
         $script:BenchO2 = Parse-KeyValues $r2.Output
         $unstable = @()
         foreach ($k in @('MATVEC_NP10_GFLOPS', 'MATVEC_NP20_GFLOPS', 'MATVEC_NP36_GFLOPS', 'MATVEC_NP64_GFLOPS',
