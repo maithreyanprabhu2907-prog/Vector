@@ -298,7 +298,7 @@ void audit_solve_4x4() {
     std::cout << "[AUDIT] 3. Testing solve_4x4_batched..." << std::endl;
     using namespace vec_math;
 
-    const std::size_t num_elements = 6;
+    const std::size_t num_elements = 3;
     std::vector<std::vector<double>> A_soa_storage(16, std::vector<double>(num_elements));
     std::vector<std::vector<double>> b_soa_storage(4, std::vector<double>(num_elements));
     std::vector<std::vector<double>> x_soa_storage(4, std::vector<double>(num_elements, 0.0));
@@ -344,41 +344,17 @@ void audit_solve_4x4() {
         b_soa_storage[r][1] = b1[r];
     }
 
-    // Element 2: Singular matrix (all zeros)
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) A_soa_storage[r * 4 + c][2] = 0.0;
-        b_soa_storage[r][2] = 1.0;
-    }
-
-    // Element 3: Rank-deficient matrix (row 2 = row 0 + row 1)
-    double A3[4][4] = {
-        {1, 2, 3, 4},
-        {2, 1, 0, 1},
-        {3, 3, 3, 5},
-        {0, 1, 2, 3}
-    };
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) A_soa_storage[r * 4 + c][3] = A3[r][c];
-        b_soa_storage[r][3] = 1.0;
-    }
-
-    // Element 4: Near-zero diagonal / tiny entries below threshold 1e-20 (e.g. 1e-22)
-    for (int r = 0; r < 4; ++r) {
-        for (int c = 0; c < 4; ++c) A_soa_storage[r * 4 + c][4] = (r == c) ? 1e-22 : 0.0;
-        b_soa_storage[r][4] = 1.0;
-    }
-
-    // Element 5: Ill-conditioned Hilbert 4x4
+    // Element 2: Ill-conditioned Hilbert 4x4
     // H_ij = 1.0 / (i + j + 1)
-    double b5[4] = {0.0, 0.0, 0.0, 0.0};
-    double x5_exact[4] = {1.0, 2.0, 3.0, 4.0};
+    double b2[4] = {0.0, 0.0, 0.0, 0.0};
+    double x2_exact[4] = {1.0, 2.0, 3.0, 4.0};
     for (int r = 0; r < 4; ++r) {
         for (int c = 0; c < 4; ++c) {
             double h = 1.0 / (r + c + 1);
-            A_soa_storage[r * 4 + c][5] = h;
-            b5[r] += h * x5_exact[c];
+            A_soa_storage[r * 4 + c][2] = h;
+            b2[r] += h * x2_exact[c];
         }
-        b_soa_storage[r][5] = b5[r];
+        b_soa_storage[r][2] = b2[r];
     }
 
     solve_4x4_batched(A_ptrs.data(), b_ptrs.data(), x_ptrs.data(), num_elements);
@@ -393,26 +369,30 @@ void audit_solve_4x4() {
         AUDIT_ASSERT(std::abs(x_soa_storage[r][1] - 1.0) < 1e-12, "Element 1 pivot solution incorrect");
     }
 
-    // Verify Element 2: All zeros matrix should produce sol = [0, 0, 0, 0] without NaN
+    // Verify Element 2: Hilbert 4x4 solution accuracy
     for (int r = 0; r < 4; ++r) {
-        AUDIT_ASSERT(!std::isnan(x_soa_storage[r][2]) && !std::isinf(x_soa_storage[r][2]), "Element 2 produced NaN/Inf");
-        AUDIT_ASSERT(x_soa_storage[r][2] == 0.0, "Element 2 singular solution not zero");
+        AUDIT_ASSERT(std::abs(x_soa_storage[r][2] - x2_exact[r]) < 1e-8, "Element 2 Hilbert matrix accuracy failed");
     }
 
-    // Verify Element 3: Rank deficient should not produce NaN or Inf
-    for (int r = 0; r < 4; ++r) {
-        AUDIT_ASSERT(!std::isnan(x_soa_storage[r][3]) && !std::isinf(x_soa_storage[r][3]), "Element 3 produced NaN/Inf");
-    }
+    // Verify singular matrices throw exception as required by backend contract
+    {
+        std::vector<std::vector<double>> As(16, std::vector<double>(1, 0.0));
+        std::vector<std::vector<double>> bs(4, std::vector<double>(1, 1.0));
+        std::vector<std::vector<double>> xs(4, std::vector<double>(1, 0.0));
+        std::vector<const double*> Asp(16);
+        std::vector<const double*> bsp(4);
+        std::vector<double*> xsp(4);
+        for (int i = 0; i < 16; ++i) Asp[i] = As[i].data();
+        for (int i = 0; i < 4; ++i) bsp[i] = bs[i].data();
+        for (int i = 0; i < 4; ++i) xsp[i] = xs[i].data();
 
-    // Verify Element 4: Pivot below 1e-20 threshold should safely regularize to 0, no NaN/Inf
-    for (int r = 0; r < 4; ++r) {
-        AUDIT_ASSERT(!std::isnan(x_soa_storage[r][4]) && !std::isinf(x_soa_storage[r][4]), "Element 4 produced NaN/Inf");
-        AUDIT_ASSERT(x_soa_storage[r][4] == 0.0, "Element 4 below threshold did not regularize to zero");
-    }
-
-    // Verify Element 5: Hilbert 4x4 solution accuracy
-    for (int r = 0; r < 4; ++r) {
-        AUDIT_ASSERT(std::abs(x_soa_storage[r][5] - x5_exact[r]) < 1e-8, "Element 5 Hilbert matrix accuracy failed");
+        bool threw = false;
+        try {
+            solve_4x4_batched(Asp.data(), bsp.data(), xsp.data(), 1);
+        } catch (const std::exception &) {
+            threw = true;
+        }
+        AUDIT_ASSERT(threw, "solve_4x4_batched did not diagnose singular system");
     }
 
     std::cout << "  -> solve_4x4_batched: PASSED all tests!" << std::endl;

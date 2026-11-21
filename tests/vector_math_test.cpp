@@ -573,6 +573,7 @@ int main() {
     // ========================================================================
     // Error Handling Tests
     // ========================================================================
+#if !defined(VEC_MATH_NO_CHECKS) && !defined(VEC_MATH_NO_EXCEPTIONS)
     bool caught_mismatch = false;
     try {
         std::vector<double> small = {1.0, 2.0};
@@ -653,6 +654,7 @@ int main() {
         caught_max_val_empty = true;
     }
     assert(caught_max_val_empty);
+#endif
 
     // ========================================================================
     // DG Math Core & Review Probes Verification

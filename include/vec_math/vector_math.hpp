@@ -159,6 +159,9 @@
 
 namespace vec_math {
 
+    template<typename T>
+    class StridedSpan;
+
     namespace detail {
         template<typename T>
         struct is_std_vector : std::false_type {};
@@ -186,6 +189,15 @@ namespace vec_math {
 
         template<typename T>
         inline constexpr bool is_std_array_v = is_std_array<std::remove_cvref_t<T>>::value;
+
+        template<typename T>
+        struct is_strided_span : std::false_type {};
+
+        template<typename T>
+        struct is_strided_span<StridedSpan<T>> : std::true_type {};
+
+        template<typename T>
+        inline constexpr bool is_strided_span_v = is_strided_span<std::remove_cvref_t<T>>::value;
 
         template<typename T>
         inline constexpr bool is_contiguous_vector_v = is_std_vector_v<T> || is_std_span_v<T> || is_std_array_v<T>;
@@ -257,7 +269,7 @@ namespace vec_math {
     concept Scalar = detail::is_valid_numeric_v<T>;
 
     template<typename T>
-    concept NumericVector = detail::is_contiguous_vector_v<T> && Scalar<typename std::remove_cvref_t<T>::value_type>;
+    concept NumericVector = (detail::is_contiguous_vector_v<T> || detail::is_strided_span_v<T>) && Scalar<typename std::remove_cvref_t<T>::value_type>;
 
     template<typename T>
     concept VecExpression = detail::is_vec_expr_v<T>;
@@ -510,7 +522,11 @@ namespace vec_math {
 
         template<NumericVector Vec>
         struct OperandStorage<Vec> {
-            using type = VecRef<std::remove_cvref_t<Vec>>;
+            using type = std::conditional_t<
+                is_strided_span_v<Vec>,
+                std::remove_cvref_t<Vec>,
+                VecRef<std::remove_cvref_t<Vec>>
+            >;
         };
 
         template<Scalar S>
@@ -715,6 +731,14 @@ namespace vec_math {
             if (!ref.data()) return false;
             const char* p_begin = reinterpret_cast<const char*>(ref.data());
             const char* p_end = p_begin + ref.size() * sizeof(typename VecRef<Vec>::value_type);
+            return (p_begin < dst_end) && (dst_begin < p_end) && (p_begin != dst_begin);
+        }
+
+        template<typename T>
+        VEC_MATH_HD_INLINE bool has_partial_overlap(const StridedSpan<T>& ref, const char* dst_begin, const char* dst_end) noexcept {
+            if (!ref.data() || ref.size() == 0) return false;
+            const char* p_begin = reinterpret_cast<const char*>(ref.data());
+            const char* p_end = p_begin + ref.size() * ref.stride() * sizeof(T);
             return (p_begin < dst_end) && (dst_begin < p_end) && (p_begin != dst_begin);
         }
 
@@ -1319,6 +1343,11 @@ namespace vec_math {
         );
     }
 
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize("no-fast-math", "no-associative-math")
+#endif
+
     namespace detail {
         template<typename ValueT, typename Accessor>
         constexpr ValueT pairwise_tree_sum(Accessor&& acc, std::size_t start, std::size_t count) {
@@ -1454,6 +1483,10 @@ namespace vec_math {
         }
         return total;
     }
+
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 
     // dot: dot product with SIMD intrinsics and 8-way multi-accumulator dependency breaking
     template<VectorOperand Lhs, VectorOperand Rhs>
@@ -2083,6 +2116,10 @@ namespace vec_math {
                         pivot = k;
                     }
                 }
+                if (max_val <= T{1e-20}) [[unlikely]] {
+                    VEC_MATH_THROW_OR_ABORT(std::runtime_error, "vec_math: singular matrix in solve_4x4_batched");
+                    return;
+                }
                 if (pivot != i) {
                     for (int c = 0; c < 4; ++c) {
                         T tmp = a[i][c];
@@ -2095,15 +2132,13 @@ namespace vec_math {
                 }
 
                 T diag = a[i][i];
-                if (std::abs(diag) > T{1e-20}) {
-                    T inv_diag = T{1} / diag;
-                    for (int k = i + 1; k < 4; ++k) {
-                        T factor = a[k][i] * inv_diag;
-                        for (int c = i; c < 4; ++c) {
-                            a[k][c] -= factor * a[i][c];
-                        }
-                        rhs[k] -= factor * rhs[i];
+                T inv_diag = T{1} / diag;
+                for (int k = i + 1; k < 4; ++k) {
+                    T factor = a[k][i] * inv_diag;
+                    for (int c = i; c < 4; ++c) {
+                        a[k][c] -= factor * a[i][c];
                     }
+                    rhs[k] -= factor * rhs[i];
                 }
             }
 
@@ -2113,7 +2148,11 @@ namespace vec_math {
                 for (int c = i + 1; c < 4; ++c) {
                     sum -= a[i][c] * sol[c];
                 }
-                sol[i] = (std::abs(a[i][i]) > T{1e-20}) ? (sum / a[i][i]) : T{0};
+                if (std::abs(a[i][i]) <= T{1e-20}) [[unlikely]] {
+                    VEC_MATH_THROW_OR_ABORT(std::runtime_error, "vec_math: singular matrix in solve_4x4_batched");
+                    return;
+                }
+                sol[i] = sum / a[i][i];
             }
 
             for (int r = 0; r < 4; ++r) {
