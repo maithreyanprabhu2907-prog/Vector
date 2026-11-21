@@ -102,19 +102,24 @@ BenchResult benchmark_dot(const std::string& opt_level, std::size_t n, int warmu
     double total = 0.0;
 
     for (int i = 0; i < warmup_runs; ++i) {
+        a[i % n] += 1e-16;
         total += (a | b);
         do_not_optimize(total);
+        do_not_optimize(a.data());
     }
 
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < timed_runs; ++i) {
+        a[i % n] += 1e-16;
         total += (a | b);
         do_not_optimize(total);
+        do_not_optimize(a.data());
     }
     auto end = std::chrono::high_resolution_clock::now();
 
     double total_us = std::chrono::duration<double, std::micro>(end - start).count();
-    double avg_us = total_us / timed_runs;
+    double avg_us = (timed_runs > 0) ? (total_us / timed_runs) : 1e-9;
+    if (avg_us < 1e-9) avg_us = 1e-9;
 
     double gflops = (static_cast<double>(n) * 2.0) / (avg_us * 1000.0);
     double total_bytes = static_cast<double>(n) * 2.0 * sizeof(double);

@@ -128,12 +128,28 @@
 #endif
 
 #if defined(__SYCL_DEVICE_ONLY__)
+#include <cassert>
 #define VEC_MATH_THROW_OR_ABORT(exc_type, msg) ((void)0)
+#define VEC_MATH_DEVICE_ASSERT(cond, msg) assert((cond) && (msg))
 #elif defined(VEC_MATH_NO_EXCEPTIONS)
+#include <cassert>
 #include <cstdlib>
 #define VEC_MATH_THROW_OR_ABORT(exc_type, msg) do { assert(false && (msg)); std::abort(); } while (false)
+#define VEC_MATH_DEVICE_ASSERT(cond, msg) do { if (!(cond)) { assert(false && (msg)); std::abort(); } } while (false)
 #else
 #define VEC_MATH_THROW_OR_ABORT(exc_type, msg) throw exc_type(msg)
+#define VEC_MATH_DEVICE_ASSERT(cond, msg) do { if (!(cond)) { throw std::invalid_argument(msg); } } while (false)
+#endif
+
+#if defined(VEC_MATH_NO_CHECKS)
+#define VEC_MATH_CHECK_SIZE_EQ(sz1, sz2, msg) ((void)0)
+#else
+#define VEC_MATH_CHECK_SIZE_EQ(sz1, sz2, msg) \
+    do { \
+        if ((sz1) != (sz2)) [[unlikely]] { \
+            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, msg); \
+        } \
+    } while (false)
 #endif
 
 namespace vec_math {
@@ -255,6 +271,33 @@ namespace vec_math {
     // 64-Byte Cache-Line Aligned Memory
     // ============================================================================
 
+    namespace detail {
+        inline void* aligned_alloc_helper(std::size_t align, std::size_t bytes) {
+            if (bytes == 0) return nullptr;
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
+            void* ptr = _aligned_malloc(bytes, align);
+            if (!ptr) throw std::bad_alloc{};
+            return ptr;
+#else
+            void* ptr = nullptr;
+            std::size_t a = align < sizeof(void*) ? sizeof(void*) : align;
+            if (posix_memalign(&ptr, a, bytes) != 0 || !ptr) {
+                throw std::bad_alloc{};
+            }
+            return ptr;
+#endif
+        }
+
+        inline void aligned_free_helper(void* ptr) noexcept {
+            if (!ptr) return;
+#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
+            _aligned_free(ptr);
+#else
+            std::free(ptr);
+#endif
+        }
+    }
+
     template<typename T, std::size_t Alignment = 64>
     struct aligned_allocator {
         using value_type = T;
@@ -275,28 +318,11 @@ namespace vec_math {
             if (n > std::size_t(-1) / sizeof(T)) {
                 throw std::bad_array_new_length{};
             }
-            const std::size_t bytes = n * sizeof(T);
-#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
-            void* ptr = _aligned_malloc(bytes, Alignment);
-            if (!ptr) throw std::bad_alloc{};
-            return static_cast<T*>(ptr);
-#else
-            void* ptr = nullptr;
-            constexpr std::size_t align = Alignment < sizeof(void*) ? sizeof(void*) : Alignment;
-            if (posix_memalign(&ptr, align, bytes) != 0 || !ptr) {
-                throw std::bad_alloc{};
-            }
-            return static_cast<T*>(ptr);
-#endif
+            return static_cast<T*>(detail::aligned_alloc_helper(Alignment, n * sizeof(T)));
         }
 
         void deallocate(T* p, [[maybe_unused]] std::size_t n) noexcept {
-            if (!p) return;
-#if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
-            _aligned_free(p);
-#else
-            std::free(p);
-#endif
+            detail::aligned_free_helper(p);
         }
 
         template<typename U, std::size_t A2>
@@ -681,16 +707,53 @@ namespace vec_math {
 
         template<typename T, typename Alloc, VectorOperand Src, typename CompoundFn>
         VEC_MATH_FORCE_INLINE void apply_vec_inplace(std::vector<T, Alloc> &dst, const Src &src, CompoundFn fn) {
-            if (dst.size() != src.size()) [[unlikely]] {
-                VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: vector size mismatch in compound assignment");
-            }
-
+            VEC_MATH_CHECK_SIZE_EQ(dst.size(), src.size(), "vec_math: vector size mismatch in compound assignment");
             const std::size_t n = dst.size();
             T * p = dst.data();
             auto storage = make_operand(src);
 
             VEC_MATH_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
+        }
+
+        template<typename T, std::size_t Extent, Scalar S, typename CompoundFn>
+        VEC_MATH_FORCE_INLINE void apply_scalar_inplace(std::span<T, Extent> dst, const S &scalar, CompoundFn fn) noexcept {
+            const std::size_t n = dst.size();
+            T * p = dst.data();
+            const T s = static_cast<T>(scalar);
+
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t i = 0; i < n; ++i) { fn(p[i], s); }
+        }
+
+        template<typename T, std::size_t Extent, VectorOperand Src, typename CompoundFn>
+        VEC_MATH_FORCE_INLINE void apply_vec_inplace(std::span<T, Extent> dst, const Src &src, CompoundFn fn) {
+            VEC_MATH_CHECK_SIZE_EQ(dst.size(), src.size(), "vec_math: span size mismatch in compound assignment");
+            const std::size_t n = dst.size();
+            T * p = dst.data();
+            auto storage = make_operand(src);
+
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t i = 0; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
+        }
+
+        template<typename T, std::size_t N, Scalar S, typename CompoundFn>
+        VEC_MATH_FORCE_INLINE void apply_scalar_inplace(std::array<T, N> &dst, const S &scalar, CompoundFn fn) noexcept {
+            T * p = dst.data();
+            const T s = static_cast<T>(scalar);
+
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t i = 0; i < N; ++i) { fn(p[i], s); }
+        }
+
+        template<typename T, std::size_t N, VectorOperand Src, typename CompoundFn>
+        VEC_MATH_FORCE_INLINE void apply_vec_inplace(std::array<T, N> &dst, const Src &src, CompoundFn fn) {
+            VEC_MATH_CHECK_SIZE_EQ(N, src.size(), "vec_math: array size mismatch in compound assignment");
+            T * p = dst.data();
+            auto storage = make_operand(src);
+
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t i = 0; i < N; ++i) { fn(p[i], static_cast<T>(storage[i])); }
         }
 
         template<typename T, typename Alloc, VectorOperand Src>
@@ -712,9 +775,7 @@ namespace vec_math {
 
         template<typename T, std::size_t Extent, VectorOperand Src>
         VEC_MATH_FORCE_INLINE void assign_zero_malloc(std::span<T, Extent> dst, const Src &src) {
-            if (dst.size() != src.size()) [[unlikely]] {
-                VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: span size mismatch in assignment");
-            }
+            VEC_MATH_CHECK_SIZE_EQ(dst.size(), src.size(), "vec_math: span size mismatch in assignment");
             T * p = dst.data();
             auto storage = make_operand(src);
             VEC_MATH_PRAGMA_SIMD
@@ -723,9 +784,7 @@ namespace vec_math {
 
         template<typename T, std::size_t N, VectorOperand Src>
         VEC_MATH_FORCE_INLINE void assign_zero_malloc(std::array<T, N> &dst, const Src &src) {
-            if (N != src.size()) [[unlikely]] {
-                VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: array size mismatch in assignment");
-            }
+            VEC_MATH_CHECK_SIZE_EQ(N, src.size(), "vec_math: array size mismatch in assignment");
             T * p = dst.data();
             auto storage = make_operand(src);
             VEC_MATH_PRAGMA_SIMD
@@ -804,6 +863,104 @@ namespace vec_math {
 
         template<typename T, typename Alloc, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::vector<T, Alloc> &operator/=(std::vector<T, Alloc> &lhs, const S &scalar) noexcept {
+            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a /= s; });
+            return lhs;
+        }
+
+        // Compound assignment operators for std::span
+        template<typename T, std::size_t Extent, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        inline std::span<T, Extent> operator+=(std::span<T, Extent> lhs, const Rhs &rhs) {
+            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a += b; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t Extent, Scalar S> requires detail::is_valid_numeric_v<T>
+        inline std::span<T, Extent> operator+=(std::span<T, Extent> lhs, const S &scalar) noexcept {
+            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a += s; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t Extent, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        inline std::span<T, Extent> operator-=(std::span<T, Extent> lhs, const Rhs &rhs) {
+            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a -= b; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t Extent, Scalar S> requires detail::is_valid_numeric_v<T>
+        inline std::span<T, Extent> operator-=(std::span<T, Extent> lhs, const S &scalar) noexcept {
+            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a -= s; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t Extent, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        inline std::span<T, Extent> operator*=(std::span<T, Extent> lhs, const Rhs &rhs) {
+            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a *= b; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t Extent, Scalar S> requires detail::is_valid_numeric_v<T>
+        inline std::span<T, Extent> operator*=(std::span<T, Extent> lhs, const S &scalar) noexcept {
+            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a *= s; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t Extent, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        inline std::span<T, Extent> operator/=(std::span<T, Extent> lhs, const Rhs &rhs) {
+            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a /= b; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t Extent, Scalar S> requires detail::is_valid_numeric_v<T>
+        inline std::span<T, Extent> operator/=(std::span<T, Extent> lhs, const S &scalar) noexcept {
+            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a /= s; });
+            return lhs;
+        }
+
+        // Compound assignment operators for std::array
+        template<typename T, std::size_t N, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        inline std::array<T, N> &operator+=(std::array<T, N> &lhs, const Rhs &rhs) {
+            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a += b; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t N, Scalar S> requires detail::is_valid_numeric_v<T>
+        inline std::array<T, N> &operator+=(std::array<T, N> &lhs, const S &scalar) noexcept {
+            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a += s; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t N, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        inline std::array<T, N> &operator-=(std::array<T, N> &lhs, const Rhs &rhs) {
+            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a -= b; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t N, Scalar S> requires detail::is_valid_numeric_v<T>
+        inline std::array<T, N> &operator-=(std::array<T, N> &lhs, const S &scalar) noexcept {
+            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a -= s; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t N, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        inline std::array<T, N> &operator*=(std::array<T, N> &lhs, const Rhs &rhs) {
+            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a *= b; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t N, Scalar S> requires detail::is_valid_numeric_v<T>
+        inline std::array<T, N> &operator*=(std::array<T, N> &lhs, const S &scalar) noexcept {
+            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a *= s; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t N, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        inline std::array<T, N> &operator/=(std::array<T, N> &lhs, const Rhs &rhs) {
+            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a /= b; });
+            return lhs;
+        }
+
+        template<typename T, std::size_t N, Scalar S> requires detail::is_valid_numeric_v<T>
+        inline std::array<T, N> &operator/=(std::array<T, N> &lhs, const S &scalar) noexcept {
             detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a /= s; });
             return lhs;
         }
@@ -1086,6 +1243,34 @@ namespace vec_math {
     namespace detail {
     }
 
+    enum class ReductionPolicy {
+        FAST,
+        REPRO
+    };
+
+    // sum_repro: Blocked tree reduction guaranteeing bit-identical results across thread counts and bounded FP32 error
+    template<VectorOperand Op>
+    [[nodiscard]] constexpr auto sum_repro(const Op &op_in) {
+        auto op = detail::make_operand(op_in);
+        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        const std::size_t n = op.size();
+        if (n == 0) return value_type{0};
+
+        constexpr std::size_t BLOCK_SIZE = 512;
+        const std::size_t num_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        value_type total{0};
+        for (std::size_t b = 0; b < num_blocks; ++b) {
+            const std::size_t start = b * BLOCK_SIZE;
+            const std::size_t end = (start + BLOCK_SIZE < n) ? (start + BLOCK_SIZE) : n;
+            value_type block_sum{0};
+            for (std::size_t i = start; i < end; ++i) {
+                block_sum = block_sum + static_cast<value_type>(op[i]);
+            }
+            total = total + block_sum;
+        }
+        return total;
+    }
+
     // sum_deterministic: bit-identical strictly sequential reduction for regression tests
     template<VectorOperand Op>
     [[nodiscard]] constexpr auto sum_deterministic(const Op &op_in) {
@@ -1125,12 +1310,38 @@ namespace vec_math {
         return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
     }
 
+    // dot_repro: Blocked tree inner product guaranteeing bit-identical results across thread counts and bounded FP32 error
+    template<VectorOperand Lhs, VectorOperand Rhs>
+    [[nodiscard]] constexpr auto dot_repro(const Lhs &lhs_in, const Rhs &rhs_in) {
+        VEC_MATH_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "vec_math: vector size mismatch in dot_repro");
+        auto lhs_op = detail::make_operand(lhs_in);
+        auto rhs_op = detail::make_operand(rhs_in);
+        using ResType = std::common_type_t<
+            typename detail::operand_storage_t<Lhs>::value_type,
+            typename detail::operand_storage_t<Rhs>::value_type
+        >;
+        const std::size_t n = lhs_in.size();
+        if (n == 0) return ResType{0};
+
+        constexpr std::size_t BLOCK_SIZE = 512;
+        const std::size_t num_blocks = (n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+        ResType total{0};
+        for (std::size_t b = 0; b < num_blocks; ++b) {
+            const std::size_t start = b * BLOCK_SIZE;
+            const std::size_t end = (start + BLOCK_SIZE < n) ? (start + BLOCK_SIZE) : n;
+            ResType block_sum{0};
+            for (std::size_t i = start; i < end; ++i) {
+                block_sum = block_sum + static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+            }
+            total = total + block_sum;
+        }
+        return total;
+    }
+
     // dot_deterministic: bit-identical strictly sequential inner product for regression tests
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] constexpr auto dot_deterministic(const Lhs &lhs_in, const Rhs &rhs_in) {
-        if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
-            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: vector size mismatch in dot_deterministic");
-        }
+        VEC_MATH_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "vec_math: vector size mismatch in dot_deterministic");
         auto lhs_op = detail::make_operand(lhs_in);
         auto rhs_op = detail::make_operand(rhs_in);
         using ResType = std::common_type_t<
@@ -1148,9 +1359,7 @@ namespace vec_math {
     // dot: dot product with SIMD intrinsics and 8-way multi-accumulator dependency breaking
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] constexpr auto dot(const Lhs &lhs_in, const Rhs &rhs_in) {
-        if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
-            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: vector size mismatch in dot product");
-        }
+        VEC_MATH_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "vec_math: vector size mismatch in dot product");
         auto lhs_op = detail::make_operand(lhs_in);
         auto rhs_op = detail::make_operand(rhs_in);
         using ResType = std::common_type_t<
@@ -1467,12 +1676,14 @@ namespace vec_math {
             const MatT* row = A + r * cols;
             if (cols <= 36) {
                 std::size_t c = 0;
+                VecOutT acc0{0}, acc1{0}, acc2{0}, acc3{0};
                 for (; c + 4 <= cols; c += 4) {
-                    sum = sum + static_cast<VecOutT>(row[c + 0]) * static_cast<VecOutT>(x[c + 0])
-                              + static_cast<VecOutT>(row[c + 1]) * static_cast<VecOutT>(x[c + 1])
-                              + static_cast<VecOutT>(row[c + 2]) * static_cast<VecOutT>(x[c + 2])
-                              + static_cast<VecOutT>(row[c + 3]) * static_cast<VecOutT>(x[c + 3]);
+                    acc0 = acc0 + static_cast<VecOutT>(row[c + 0]) * static_cast<VecOutT>(x[c + 0]);
+                    acc1 = acc1 + static_cast<VecOutT>(row[c + 1]) * static_cast<VecOutT>(x[c + 1]);
+                    acc2 = acc2 + static_cast<VecOutT>(row[c + 2]) * static_cast<VecOutT>(x[c + 2]);
+                    acc3 = acc3 + static_cast<VecOutT>(row[c + 3]) * static_cast<VecOutT>(x[c + 3]);
                 }
+                sum = (acc0 + acc1) + (acc2 + acc3);
                 for (; c < cols; ++c) {
                     sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
                 }
@@ -1534,6 +1745,303 @@ namespace vec_math {
                 for (std::size_t c = 0; c < cols; ++c) {
                     y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
                 }
+            }
+        }
+    }
+
+    // Compile-time fixed Np small-matrix vector multiplication
+    template<std::size_t Rows, std::size_t Cols, typename MatT, typename VecInT, typename VecOutT>
+    VEC_MATH_HOST_DEVICE inline void matvec_fixed(const MatT* A, const VecInT* x, VecOutT* y) {
+        if constexpr (Rows == 0 || Cols == 0) return;
+        const bool aliased = (static_cast<const void*>(x) == static_cast<const void*>(y));
+        if (aliased) {
+            VecOutT local_buf[Rows];
+            matvec_fixed<Rows, Cols>(A, x, local_buf);
+            for (std::size_t r = 0; r < Rows; ++r) {
+                y[r] = local_buf[r];
+            }
+            return;
+        }
+
+        for (std::size_t r = 0; r < Rows; ++r) {
+            const MatT* row = A + r * Cols;
+            std::size_t c = 0;
+            VecOutT acc0{0}, acc1{0}, acc2{0}, acc3{0};
+            for (; c + 4 <= Cols; c += 4) {
+                acc0 = acc0 + static_cast<VecOutT>(row[c + 0]) * static_cast<VecOutT>(x[c + 0]);
+                acc1 = acc1 + static_cast<VecOutT>(row[c + 1]) * static_cast<VecOutT>(x[c + 1]);
+                acc2 = acc2 + static_cast<VecOutT>(row[c + 2]) * static_cast<VecOutT>(x[c + 2]);
+                acc3 = acc3 + static_cast<VecOutT>(row[c + 3]) * static_cast<VecOutT>(x[c + 3]);
+            }
+            VecOutT sum = (acc0 + acc1) + (acc2 + acc3);
+            for (; c < Cols; ++c) {
+                sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
+            }
+            y[r] = sum;
+        }
+    }
+
+    template<std::size_t Rows, std::size_t Cols, typename MatT, typename VecInT, typename VecOutT>
+    VEC_MATH_HOST_DEVICE inline void matvec_transposed_fixed(const MatT* A, const VecInT* x, VecOutT* y) {
+        if constexpr (Rows == 0 || Cols == 0) return;
+        const bool aliased = (static_cast<const void*>(x) == static_cast<const void*>(y));
+        if (aliased) {
+            VecOutT local_buf[Cols];
+            matvec_transposed_fixed<Rows, Cols>(A, x, local_buf);
+            for (std::size_t c = 0; c < Cols; ++c) {
+                y[c] = local_buf[c];
+            }
+            return;
+        }
+
+        for (std::size_t c = 0; c < Cols; ++c) {
+            y[c] = VecOutT{0};
+        }
+        for (std::size_t r = 0; r < Rows; ++r) {
+            const MatT* row = A + r * Cols;
+            const auto xr = static_cast<VecOutT>(x[r]);
+            std::size_t c = 0;
+            for (; c + 4 <= Cols; c += 4) {
+                y[c + 0] = y[c + 0] + static_cast<VecOutT>(row[c + 0]) * xr;
+                y[c + 1] = y[c + 1] + static_cast<VecOutT>(row[c + 1]) * xr;
+                y[c + 2] = y[c + 2] + static_cast<VecOutT>(row[c + 2]) * xr;
+                y[c + 3] = y[c + 3] + static_cast<VecOutT>(row[c + 3]) * xr;
+            }
+            for (; c < Cols; ++c) {
+                y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
+            }
+        }
+    }
+
+    // ============================================================================
+    // DG Primitives: StridedSpan, WorkspaceArena, Gather/Scatter, Batched 4x4
+    // ============================================================================
+
+    template<typename T>
+    class StridedSpan {
+    public:
+        using value_type = T;
+        using size_type = std::size_t;
+        using difference_type = std::ptrdiff_t;
+        using reference = T&;
+        using const_reference = const T&;
+        using pointer = T*;
+        using const_pointer = const T*;
+
+        constexpr StridedSpan() noexcept : ptr_(nullptr), size_(0), stride_(1) {}
+        constexpr StridedSpan(T* ptr, std::size_t size, std::size_t stride) noexcept
+            : ptr_(ptr), size_(size), stride_(stride) {}
+
+        [[nodiscard]] constexpr std::size_t size() const noexcept { return size_; }
+        [[nodiscard]] constexpr std::size_t stride() const noexcept { return stride_; }
+        [[nodiscard]] constexpr bool empty() const noexcept { return size_ == 0; }
+        [[nodiscard]] constexpr pointer data() const noexcept { return ptr_; }
+
+        [[nodiscard]] constexpr reference operator[](std::size_t i) const noexcept {
+            return ptr_[i * stride_];
+        }
+
+    private:
+        T* ptr_;
+        std::size_t size_;
+        std::size_t stride_;
+    };
+
+    template<typename T, typename ScalarT>
+    VEC_MATH_HOST_DEVICE inline void broadcast_multiply(T* data, std::size_t count, ScalarT factor) {
+        const auto f = static_cast<T>(factor);
+        VEC_MATH_PRAGMA_SIMD
+        for (std::size_t i = 0; i < count; ++i) {
+            data[i] = data[i] * f;
+        }
+    }
+
+    template<typename T, std::size_t Extent, typename ScalarT>
+    VEC_MATH_HOST_DEVICE inline void broadcast_multiply(std::span<T, Extent> span_data, ScalarT factor) {
+        broadcast_multiply(span_data.data(), span_data.size(), factor);
+    }
+
+    class WorkspaceArena {
+    public:
+        explicit WorkspaceArena(std::size_t capacity_bytes = 1024 * 1024)
+            : capacity_(capacity_bytes), offset_(0) {
+            buffer_ = static_cast<char*>(detail::aligned_alloc_helper(64, capacity_bytes));
+        }
+
+        ~WorkspaceArena() {
+            if (buffer_) {
+                detail::aligned_free_helper(buffer_);
+            }
+        }
+
+        WorkspaceArena(const WorkspaceArena&) = delete;
+        WorkspaceArena& operator=(const WorkspaceArena&) = delete;
+
+        WorkspaceArena(WorkspaceArena&& other) noexcept
+            : buffer_(other.buffer_), capacity_(other.capacity_), offset_(other.offset_) {
+            other.buffer_ = nullptr;
+            other.capacity_ = 0;
+            other.offset_ = 0;
+        }
+
+        WorkspaceArena& operator=(WorkspaceArena&& other) noexcept {
+            if (this != &other) {
+                if (buffer_) detail::aligned_free_helper(buffer_);
+                buffer_ = other.buffer_;
+                capacity_ = other.capacity_;
+                offset_ = other.offset_;
+                other.buffer_ = nullptr;
+                other.capacity_ = 0;
+                other.offset_ = 0;
+            }
+            return *this;
+        }
+
+        template<typename T>
+        [[nodiscard]] std::span<T> allocate(std::size_t count) {
+            constexpr std::size_t alignment = 64;
+            std::size_t current_addr = reinterpret_cast<std::size_t>(buffer_ + offset_);
+            std::size_t aligned_addr = (current_addr + alignment - 1) & ~(alignment - 1);
+            std::size_t new_offset = (aligned_addr - reinterpret_cast<std::size_t>(buffer_)) + count * sizeof(T);
+            if (new_offset > capacity_) [[unlikely]] {
+                VEC_MATH_THROW_OR_ABORT(std::length_error, "vec_math: WorkspaceArena capacity exceeded");
+            }
+            offset_ = new_offset;
+            return std::span<T>(reinterpret_cast<T*>(aligned_addr), count);
+        }
+
+        void reset() noexcept {
+            offset_ = 0;
+        }
+
+        [[nodiscard]] std::size_t allocated_bytes() const noexcept { return offset_; }
+        [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
+
+    private:
+        char* buffer_;
+        std::size_t capacity_;
+        std::size_t offset_;
+    };
+
+    template<typename T, typename IndexT>
+    VEC_MATH_HOST_DEVICE inline void gather(T* dst, const T* src, const IndexT* indices, std::size_t count) {
+        VEC_MATH_PRAGMA_SIMD
+        for (std::size_t i = 0; i < count; ++i) {
+            dst[i] = src[indices[i]];
+        }
+    }
+
+    template<typename T, std::size_t DstExt, std::size_t SrcExt, typename IndexT, std::size_t IdxExt>
+    VEC_MATH_HOST_DEVICE inline void gather(std::span<T, DstExt> dst, std::span<const T, SrcExt> src, std::span<const IndexT, IdxExt> indices) {
+        VEC_MATH_CHECK_SIZE_EQ(dst.size(), indices.size(), "vec_math: size mismatch in gather");
+        gather(dst.data(), src.data(), indices.data(), indices.size());
+    }
+
+    template<typename T, typename IndexT>
+    VEC_MATH_HOST_DEVICE inline void scatter_add(T* dst, const IndexT* indices, const T* src, std::size_t count) {
+        for (std::size_t i = 0; i < count; ++i) {
+            dst[indices[i]] += src[i];
+        }
+    }
+
+    template<typename T, std::size_t DstExt, typename IndexT, std::size_t IdxExt, std::size_t SrcExt>
+    VEC_MATH_HOST_DEVICE inline void scatter_add(std::span<T, DstExt> dst, std::span<const IndexT, IdxExt> indices, std::span<const T, SrcExt> src) {
+        VEC_MATH_CHECK_SIZE_EQ(indices.size(), src.size(), "vec_math: size mismatch in scatter_add");
+        scatter_add(dst.data(), indices.data(), src.data(), src.size());
+    }
+
+    // Point-implicit 4x4 linear solve in SoA layout across elements: A_soa x_soa = b_soa
+    template<typename T>
+    VEC_MATH_HOST_DEVICE inline void solve_4x4_batched(
+        const T* const* A_soa, // 16 pointers, each pointing to array of size num_elements
+        const T* const* b_soa, // 4 pointers, each pointing to array of size num_elements
+        T* const* x_soa,       // 4 pointers, each pointing to array of size num_elements
+        std::size_t num_elements
+    ) {
+        VEC_MATH_PRAGMA_SIMD
+        for (std::size_t e = 0; e < num_elements; ++e) {
+            T a[4][4];
+            T rhs[4];
+            for (int r = 0; r < 4; ++r) {
+                for (int c = 0; c < 4; ++c) {
+                    a[r][c] = A_soa[r * 4 + c][e];
+                }
+                rhs[r] = b_soa[r][e];
+            }
+
+            for (int i = 0; i < 4; ++i) {
+                int pivot = i;
+                T max_val = std::abs(a[i][i]);
+                for (int k = i + 1; k < 4; ++k) {
+                    T val = std::abs(a[k][i]);
+                    if (val > max_val) {
+                        max_val = val;
+                        pivot = k;
+                    }
+                }
+                if (pivot != i) {
+                    for (int c = 0; c < 4; ++c) {
+                        T tmp = a[i][c];
+                        a[i][c] = a[pivot][c];
+                        a[pivot][c] = tmp;
+                    }
+                    T tmp_b = rhs[i];
+                    rhs[i] = rhs[pivot];
+                    rhs[pivot] = tmp_b;
+                }
+
+                T diag = a[i][i];
+                if (std::abs(diag) > T{1e-20}) {
+                    T inv_diag = T{1} / diag;
+                    for (int k = i + 1; k < 4; ++k) {
+                        T factor = a[k][i] * inv_diag;
+                        for (int c = i; c < 4; ++c) {
+                            a[k][c] -= factor * a[i][c];
+                        }
+                        rhs[k] -= factor * rhs[i];
+                    }
+                }
+            }
+
+            T sol[4];
+            for (int i = 3; i >= 0; --i) {
+                T sum = rhs[i];
+                for (int c = i + 1; c < 4; ++c) {
+                    sum -= a[i][c] * sol[c];
+                }
+                sol[i] = (std::abs(a[i][i]) > T{1e-20}) ? (sum / a[i][i]) : T{0};
+            }
+
+            for (int r = 0; r < 4; ++r) {
+                x_soa[r][e] = sol[r];
+            }
+        }
+    }
+
+    template<typename T>
+    VEC_MATH_HOST_DEVICE inline void transpose_aos_to_soa(
+        const T* aos,
+        T* soa,
+        std::size_t num_tuples,
+        std::size_t tuple_size
+    ) {
+        for (std::size_t i = 0; i < num_tuples; ++i) {
+            for (std::size_t v = 0; v < tuple_size; ++v) {
+                soa[v * num_tuples + i] = aos[i * tuple_size + v];
+            }
+        }
+    }
+
+    template<typename T>
+    VEC_MATH_HOST_DEVICE inline void transpose_soa_to_aos(
+        const T* soa,
+        T* aos,
+        std::size_t num_tuples,
+        std::size_t tuple_size
+    ) {
+        for (std::size_t v = 0; v < tuple_size; ++v) {
+            for (std::size_t i = 0; i < num_tuples; ++i) {
+                aos[i * tuple_size + v] = soa[v * num_tuples + i];
             }
         }
     }

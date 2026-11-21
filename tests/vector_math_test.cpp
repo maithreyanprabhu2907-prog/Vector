@@ -862,6 +862,223 @@ int main() {
         assert(approx_eq(s_val, 20.0));
     }
 
+    // 13. S1: matvec_fixed and matvec_transposed_fixed
+    {
+        double A[16] = {
+            2.0, 1.0, 0.0, 0.0,
+            1.0, 2.0, 1.0, 0.0,
+            0.0, 1.0, 2.0, 1.0,
+            0.0, 0.0, 1.0, 2.0
+        };
+        double x[4] = {1.0, 2.0, 3.0, 4.0};
+        double y[4] = {0.0, 0.0, 0.0, 0.0};
+        matvec_fixed<4, 4>(A, x, y);
+        assert(approx_eq(y[0], 4.0));
+        assert(approx_eq(y[1], 8.0));
+        assert(approx_eq(y[2], 12.0));
+        assert(approx_eq(y[3], 11.0));
+
+        // Fixed self-aliased in-place matvec
+        double x_inplace[4] = {1.0, 2.0, 3.0, 4.0};
+        matvec_fixed<4, 4>(A, x_inplace, x_inplace);
+        assert(approx_eq(x_inplace[0], 4.0));
+        assert(approx_eq(x_inplace[1], 8.0));
+        assert(approx_eq(x_inplace[2], 12.0));
+        assert(approx_eq(x_inplace[3], 11.0));
+
+        double yt[4] = {0.0, 0.0, 0.0, 0.0};
+        matvec_transposed_fixed<4, 4>(A, x, yt);
+        assert(approx_eq(yt[0], 4.0));
+        assert(approx_eq(yt[1], 8.0));
+        assert(approx_eq(yt[2], 12.0));
+        assert(approx_eq(yt[3], 11.0));
+    }
+
+    // 14. S2: Compound assignment for std::span and std::array
+    {
+        double raw_span_buf[4] = {10.0, 20.0, 30.0, 40.0};
+        std::span<double> sp(raw_span_buf, 4);
+        double add_buf[4] = {1.0, 2.0, 3.0, 4.0};
+        std::span<const double> sp_add(add_buf, 4);
+
+        sp += sp_add;
+        assert(approx_eq(sp[0], 11.0));
+        assert(approx_eq(sp[1], 22.0));
+        assert(approx_eq(sp[2], 33.0));
+        assert(approx_eq(sp[3], 44.0));
+
+        sp -= 1.0;
+        assert(approx_eq(sp[0], 10.0));
+        assert(approx_eq(sp[1], 21.0));
+        assert(approx_eq(sp[2], 32.0));
+        assert(approx_eq(sp[3], 43.0));
+
+        sp *= 2.0;
+        assert(approx_eq(sp[0], 20.0));
+        assert(approx_eq(sp[1], 42.0));
+
+        sp /= 2.0;
+        assert(approx_eq(sp[0], 10.0));
+        assert(approx_eq(sp[1], 21.0));
+
+        std::array<double, 3> arr = {1.0, 2.0, 3.0};
+        std::array<double, 3> arr2 = {4.0, 5.0, 6.0};
+        arr += arr2;
+        assert(approx_eq(arr[0], 5.0));
+        assert(approx_eq(arr[1], 7.0));
+        assert(approx_eq(arr[2], 9.0));
+
+        arr *= 2.0;
+        assert(approx_eq(arr[0], 10.0));
+        assert(approx_eq(arr[1], 14.0));
+        assert(approx_eq(arr[2], 18.0));
+    }
+
+    // 15. S3: sum_repro and dot_repro
+    {
+        std::vector<float> v_float_repro(1024);
+        for (std::size_t i = 0; i < 1024; ++i) {
+            v_float_repro[i] = 1.0f / static_cast<float>(i + 1);
+        }
+        float s_repro = sum_repro(v_float_repro);
+        float s_det = sum_deterministic(v_float_repro);
+        assert(std::abs(s_repro - s_det) < 1e-4f);
+
+        std::vector<double> vd1(1024, 1.5);
+        std::vector<double> vd2(1024, 2.0);
+        double d_repro = dot_repro(vd1, vd2);
+        assert(approx_eq(d_repro, 1024.0 * 3.0));
+    }
+
+    // 16. S5: StridedSpan, broadcast_multiply, and WorkspaceArena
+    {
+        double buf[12] = {
+            1.0, 10.0, 100.0,
+            2.0, 20.0, 200.0,
+            3.0, 30.0, 300.0,
+            4.0, 40.0, 400.0
+        };
+        StridedSpan<double> sspan(buf + 1, 4, 3);
+        assert(sspan.size() == 4);
+        assert(approx_eq(sspan[0], 10.0));
+        assert(approx_eq(sspan[1], 20.0));
+        assert(approx_eq(sspan[2], 30.0));
+        assert(approx_eq(sspan[3], 40.0));
+
+        double bcast_buf[4] = {2.0, 4.0, 6.0, 8.0};
+        broadcast_multiply(std::span<double>(bcast_buf, 4), 0.5);
+        assert(approx_eq(bcast_buf[0], 1.0));
+        assert(approx_eq(bcast_buf[1], 2.0));
+        assert(approx_eq(bcast_buf[2], 3.0));
+        assert(approx_eq(bcast_buf[3], 4.0));
+
+        WorkspaceArena arena(64 * 1024);
+        assert(arena.capacity() == 64 * 1024);
+        auto sp1 = arena.allocate<double>(100);
+        assert(sp1.size() == 100);
+        assert(reinterpret_cast<std::uintptr_t>(sp1.data()) % 64 == 0);
+        auto sp2 = arena.allocate<double>(50);
+        assert(sp2.size() == 50);
+        assert(reinterpret_cast<std::uintptr_t>(sp2.data()) % 64 == 0);
+        assert(arena.allocated_bytes() >= (150 * sizeof(double)));
+
+        arena.reset();
+        assert(arena.allocated_bytes() == 0);
+    }
+
+    // 17. S6: gather and scatter_add
+    {
+        double src[6] = {10.0, 20.0, 30.0, 40.0, 50.0, 60.0};
+        std::size_t idx[3] = {1, 3, 5};
+        double dst[3] = {0.0, 0.0, 0.0};
+
+        gather(std::span<double>(dst, 3), std::span<const double>(src, 6), std::span<const std::size_t>(idx, 3));
+        assert(approx_eq(dst[0], 20.0));
+        assert(approx_eq(dst[1], 40.0));
+        assert(approx_eq(dst[2], 60.0));
+
+        double accum[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        double flux[3] = {5.0, 15.0, 25.0};
+        scatter_add(std::span<double>(accum, 6), std::span<const std::size_t>(idx, 3), std::span<const double>(flux, 3));
+        assert(approx_eq(accum[1], 5.0));
+        assert(approx_eq(accum[3], 15.0));
+        assert(approx_eq(accum[5], 25.0));
+        assert(approx_eq(accum[0], 0.0));
+    }
+
+    // 18. S7: solve_4x4_batched and AoS <-> SoA transpositions
+    {
+        // Solve A x = b for 2 elements simultaneously in SoA layout
+        // For element 0: diag matrix 2, 3, 4, 5 with rhs 4, 9, 16, 25 -> sol 2, 3, 4, 5
+        // For element 1: identity matrix with rhs 1, 2, 3, 4 -> sol 1, 2, 3, 4
+        constexpr std::size_t nelem = 2;
+        double A_entries[16][nelem] = {};
+        // Diagonal elements
+        A_entries[0][0] = 2.0;  A_entries[0][1] = 1.0;
+        A_entries[5][0] = 3.0;  A_entries[5][1] = 1.0;
+        A_entries[10][0] = 4.0; A_entries[10][1] = 1.0;
+        A_entries[15][0] = 5.0; A_entries[15][1] = 1.0;
+
+        double b_entries[4][nelem] = {
+            {4.0, 1.0},
+            {9.0, 2.0},
+            {16.0, 3.0},
+            {25.0, 4.0}
+        };
+
+        double x_entries[4][nelem] = {};
+
+        const double* A_ptrs[16];
+        for (int i = 0; i < 16; ++i) A_ptrs[i] = A_entries[i];
+
+        const double* b_ptrs[4];
+        double* x_ptrs[4];
+        for (int i = 0; i < 4; ++i) {
+            b_ptrs[i] = b_entries[i];
+            x_ptrs[i] = x_entries[i];
+        }
+
+        solve_4x4_batched(A_ptrs, b_ptrs, x_ptrs, nelem);
+
+        assert(approx_eq(x_entries[0][0], 2.0));
+        assert(approx_eq(x_entries[1][0], 3.0));
+        assert(approx_eq(x_entries[2][0], 4.0));
+        assert(approx_eq(x_entries[3][0], 5.0));
+
+        assert(approx_eq(x_entries[0][1], 1.0));
+        assert(approx_eq(x_entries[1][1], 2.0));
+        assert(approx_eq(x_entries[2][1], 3.0));
+        assert(approx_eq(x_entries[3][1], 4.0));
+
+        // Transposition test: 2 elements with 4 variables
+        double aos[8] = {1.0, 2.0, 3.0, 4.0,  5.0, 6.0, 7.0, 8.0};
+        double soa[8] = {};
+        double aos_back[8] = {};
+
+        transpose_aos_to_soa(aos, soa, 2, 4);
+        assert(approx_eq(soa[0], 1.0)); // v=0, elem=0
+        assert(approx_eq(soa[1], 5.0)); // v=0, elem=1
+        assert(approx_eq(soa[2], 2.0)); // v=1, elem=0
+        assert(approx_eq(soa[3], 6.0)); // v=1, elem=1
+
+        transpose_soa_to_aos(soa, aos_back, 2, 4);
+        for (int i = 0; i < 8; ++i) {
+            assert(approx_eq(aos[i], aos_back[i]));
+        }
+    }
+
+    // 19. S4: Mathematical property tests
+    {
+        std::vector<double> px = {1.5, -2.5, 3.5, -4.5};
+        double nsq = norm_sq(px);
+        double dself = dot(px, px);
+        assert(approx_eq(nsq, dself));
+
+        std::vector<double> pdiff(4, 0.0);
+        pdiff <<= px - px;
+        assert(approx_eq(sum(pdiff), 0.0));
+    }
+
     std::vector<std::string> svec = {"hello", "world"};
     assert(svec.size() == 2);
 
