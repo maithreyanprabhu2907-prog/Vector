@@ -165,6 +165,90 @@ double total_sum  = vec_math::sum_par(energy);
 double global_dot = vec_math::dot_par(u, v);
 ```
 
+### 6. Discontinuous Galerkin (DG) Endgame Primitives
+
+A specialized suite of high-performance primitives designed specifically for high-order DG discretizations, Runge-Kutta time steppers, face Riemann flux exchange, and Implicit-Explicit (IMEX) relaxation:
+
+#### 1. Compile-Time Fixed $N_p$ Matrix-Vector (`matvec_fixed`, `matvec_transposed_fixed`)
+Flattens matrix-vector products into vector registers with 4-way independent accumulators (`acc0..acc3`) for DG differentiation:
+```cpp
+// Order p=3 triangle (Np = 10 nodes): dudr = Dr * u
+alignas(64) double Dr[100], u[10], dudr[10];
+vec_math::matvec_fixed<10, 10>(Dr, u, dudr);
+
+// Safe self-aliased in-place execution:
+vec_math::matvec_fixed<10, 10>(Dr, u, u);
+```
+
+#### 2. Full In-Place Compound Assignment on `std::span` and `std::array`
+Perform zero-allocation in-place arithmetic (`+=`, `-=`, `*=`, `/=`) directly on slices or stack arrays:
+```cpp
+// std::span slice accumulation
+std::span<double> elem_u(domain.data(), 64);
+std::span<const double> elem_flux(fluxes.data(), 64);
+elem_u += elem_flux;
+elem_u *= 0.5;
+
+// std::array state update (e.g. Nvar=4 state vectors)
+std::array<double, 4> state = {1.0, 2.0, 0.0, 2.5};
+state += dstate;
+```
+
+#### 3. Bit-Identical Reproducible Reductions (`sum_repro`, `dot_repro`, `ReductionPolicy`)
+Guarantees bit-identical reductions across thread counts and compilers via blocked 512-element tree accumulation:
+```cpp
+// Reproducible dot product for Krylov solvers (GMRES / BiCGSTAB)
+double d = vec_math::dot_repro(r, p);
+
+// Policy-guided reductions:
+double s1 = vec_math::sum(res, vec_math::ReductionPolicy::REPRO); // Bit-identical
+double s2 = vec_math::sum(res, vec_math::ReductionPolicy::FAST);  // Max throughput
+```
+
+#### 4. Non-Contiguous Strided Views (`StridedSpan<T>`)
+Zero-copy 1D random-access views over non-contiguous multi-variable or interleaved arrays:
+```cpp
+// Slicing y-coordinates from interleaved [x0, y0, z0, x1, y1, z1, ...]
+vec_math::StridedSpan<double> y_coords(coords + 1, num_nodes, 3);
+double y1 = y_coords[1];
+```
+
+#### 5. Elemental Metric Scaling (`broadcast_multiply`)
+Scales quadrature node arrays by elemental Jacobians $J_e$ or face metric determinants with SIMD vectorization:
+```cpp
+vec_math::broadcast_multiply(std::span<double>(quad_weights, 8), J_elem);
+```
+
+#### 6. Zero-Malloc Runge-Kutta Scratchpad (`WorkspaceArena`)
+64-byte cache-aligned linear bump allocator for scratch buffers across RK stages ($k_1 \dots k_s$):
+```cpp
+vec_math::WorkspaceArena arena(16 * 1024 * 1024); // 16 MB pre-allocated
+arena.reset();
+auto k1 = arena.allocate<double>(num_dofs);
+auto k2 = arena.allocate<double>(num_dofs);
+```
+
+#### 7. Surface Riemann Flux Exchange (`gather` and `scatter_add`)
+Extracts traces from element volume nodes onto faces and scatters flux residuals back:
+```cpp
+// Gather trace values onto face quadrature nodes
+vec_math::gather(std::span(u_face), std::span(u_vol), std::span(face_node_map));
+
+// Scatter-add numerical fluxes to volume residual
+vec_math::scatter_add(std::span(residual), std::span(face_node_map), std::span(flux));
+```
+
+#### 8. Point-Implicit IMEX Solve (`solve_4x4_batched`) & Layout Transpositions
+Solves decoupled $4 \times 4$ linear systems across all elements simultaneously in SoA layout with partial pivoting:
+```cpp
+// Solves A_soa * x_soa = b_soa across 1000 elements concurrently
+vec_math::solve_4x4_batched(A_ptrs, b_ptrs, x_ptrs, 1000);
+
+// AoS <-> SoA layout conversions
+vec_math::transpose_aos_to_soa(aos_data, soa_data, num_elements, 4);
+vec_math::transpose_soa_to_aos(soa_data, aos_data, num_elements, 4);
+```
+
 ## Compile-Time Options
 
 * **`VEC_MATH_NO_EXCEPTIONS`**: Define before including `vector_math.hpp` when building with `-fno-exceptions` to use `assert` + `std::abort()` on dimension/capacity errors instead of throwing.
@@ -302,13 +386,30 @@ Building with `-Ofast` (or MSVC `/fp:fast /O2 /openmp /arch:AVX2`) yields critic
 4. **Streaming Stores Bypassing RFO**: `assign_stream` utilizes `_mm256_stream_pd` non-temporal stores to eliminate cache write-allocate reads when vectors exceed CPU L3 cache size (16 MB).
 5. **Selective Domain Parallelism**: Single-threaded default operators eliminate OpenMP thread pool overhead in fine-grained DG element quadrature loops, while `assign_par` accelerates bulk global mesh updates across all CPU cores.
 
-### Discontinuous Galerkin (DG) Math Core Operations
+### Discontinuous Galerkin (DG) Math Core & Endgame Primitives
 
-1. **Sub-Range Spans (`std::span`)**: Zero-copy, zero-allocation operations on sub-vectors and element blocks (`elem_u <<= elem_u + dt * elem_k`).
+`vec_math` provides an endgame mathematical foundation tailored for high-order Discontinuous Galerkin solvers:
+
+| Primitive | Category | Key Characteristics | DG Solver Application |
+| :--- | :--- | :--- | :--- |
+| **`matvec_fixed<Rows, Cols>`** | Kernel | Static dimensions, 4-way ILP unrolling, self-aliasing safe | DG volume/surface numerical differentiation ($N_p \le 36$) |
+| **`matvec_transposed_fixed<Rows, Cols>`** | Kernel | Static dimensions, register-pinned transposed matvec | Mass matrix inverse application, adjoint operators |
+| **Span/Array In-Place Assign** | Syntax | `+=`, `-=`, `*=`, `/=` for `std::span` and `std::array` | Sub-element state and local flux accumulation |
+| **`ReductionPolicy` (`FAST`, `REPRO`)** | Reductions | Blocked 512-element tree vs 8-way multi-accumulator SIMD | Bit-identical Krylov solvers vs high-speed CFL reductions |
+| **`sum_repro`, `dot_repro`** | Reductions | Guaranteed bit-identical results across thread counts | Orthogonalization in GMRES / BiCGSTAB, regression tests |
+| **`StridedSpan<T>`** | View | 1D non-contiguous view with stride and random-access iterator | Slicing multi-variable fields in interleaved AoS/SoA data |
+| **`broadcast_multiply`** | Metric | Vectorized scaling of spans/pointers by scalar factors | Scaling quadrature nodes by elemental Jacobians $J_e$ |
+| **`WorkspaceArena`** | Memory | 64-byte aligned linear bump allocator with instant reset | Zero-malloc Runge-Kutta stages ($k_1 \dots k_s$) & scratch pads |
+| **`gather`** | Surface | SIMD indirect gather from nodal to face quadrature points | Extracting trace values $Q^-, Q^+$ at element interfaces |
+| **`scatter_add`** | Surface | SIMD indirect scatter-addition into residual vectors | Accumulating Riemann numerical fluxes into element residuals |
+| **`solve_4x4_batched`** | Linear Solve | Batched $4 \times 4$ LU solve with partial pivoting in SoA | Point-implicit IMEX relaxation for stiff acoustic modes |
+| **`transpose_aos_to_soa` / `transpose_soa_to_aos`** | Layout | High-throughput AoS $\leftrightarrow$ SoA multi-variable array conversions | Interfacing nodal quadrature loops with batched SIMD solves |
+
+1. **Sub-Range Spans (`std::span`)**: Zero-copy, zero-allocation operations on sub-vectors and element blocks (`elem_u <<= elem_u + dt * elem_k`, `elem_u += elem_flux`).
 2. **Fixed-Size State Vectors (`std::array`)**: 4-variable state blocks (e.g. Euler $[\rho, \rho u, \rho v, E]$) processed on the stack with zero heap allocation.
-3. **Dense Matrix-Vector Operations (`matvec`)**: Small dense matvec (`matvec(A, x, y, rows, cols)`) and transposed matvec (`matvec_transposed(...)`) optimized for DG polynomial orders ($N_p = 4 \dots 36$) for volume, surface, and mass-inverse operators.
-4. **Direct Buffer Write (`eval_into`)**: Evaluates expressions directly into raw pointers or device buffers without container allocations (`eval_into(ptr, n, expr)`).
-5. **Deterministic Reduction Mode**: Bit-identical strictly sequential reductions (`sum_deterministic`, `dot_deterministic`) for regression testing.
+3. **Dense Matrix-Vector Operations (`matvec` & `matvec_fixed`)**: Small dense matvec with runtime dimensions or compile-time unrolling (`matvec_fixed<Rows, Cols>`) optimized for DG polynomial orders ($N_p = 4 \dots 36$) for volume, surface, and mass-inverse operators.
+4. **Reproducible Reductions (`sum_repro`, `dot_repro`)**: Invariant 512-element chunk tree accumulation ensuring bit-identical results regardless of OpenMP thread count or compiler optimizations.
+5. **Direct Buffer Write (`eval_into`)**: Evaluates expressions directly into raw pointers or device buffers without container allocations (`eval_into(ptr, n, expr)`).
 6. **Compile-Time Include Optimization**: Defining `VEC_MATH_NO_INTRINSICS` skips `<immintrin.h>`, reducing translation unit compile times by ~800 ms.
 
 ## Compiler Flag Recommendations

@@ -2047,6 +2047,192 @@ namespace vec_math {
     }
 
     // ============================================================================
+    // Stage S10: Sum-Factorization / Tensor Contractions
+    // ============================================================================
+
+    enum class Axis : std::size_t {
+        X = 0,
+        Y = 1,
+        Z = 2
+    };
+
+    template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
+    VEC_MATH_HOST_DEVICE inline void contract_axis(
+        const MatT* D,
+        const T* in,
+        T* out,
+        [[maybe_unused]] std::size_t nx,
+        [[maybe_unused]] std::size_t ny,
+        [[maybe_unused]] std::size_t nz = 1
+    ) {
+        constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
+        static_assert(axis_idx <= 2, "vec_math: contract_axis Axis must be 0 (X), 1 (Y), or 2 (Z)");
+
+        if (nx == 0 || ny == 0 || nz == 0) return;
+
+        VEC_MATH_DEVICE_ASSERT(D != nullptr, "vec_math: null matrix pointer in contract_axis");
+        VEC_MATH_DEVICE_ASSERT(in != nullptr, "vec_math: null input pointer in contract_axis");
+        VEC_MATH_DEVICE_ASSERT(out != nullptr, "vec_math: null output pointer in contract_axis");
+
+        if constexpr (axis_idx == 0 && N > 0) {
+            VEC_MATH_DEVICE_ASSERT(nx == N, "vec_math: nx must match N for Axis 0 contraction");
+        }
+        if constexpr (axis_idx == 1 && N > 0) {
+            VEC_MATH_DEVICE_ASSERT(ny == N, "vec_math: ny must match N for Axis 1 contraction");
+        }
+        if constexpr (axis_idx == 2 && N > 0) {
+            VEC_MATH_DEVICE_ASSERT(nz == N, "vec_math: nz must match N for Axis 2 contraction");
+        }
+
+        const bool aliased = (static_cast<const void*>(in) == static_cast<const void*>(out));
+        if (aliased) {
+            constexpr std::size_t STACK_TOTAL_CAP = 1024;
+            const std::size_t total = nx * ny * nz;
+            if (total <= STACK_TOTAL_CAP) {
+                T local_buf[STACK_TOTAL_CAP];
+                contract_axis<AxisParam, N>(D, in, local_buf, nx, ny, nz);
+                for (std::size_t idx = 0; idx < total; ++idx) {
+                    out[idx] = local_buf[idx];
+                }
+                return;
+            }
+#if !defined(__SYCL_DEVICE_ONLY__)
+            else {
+                std::vector<T> local_buf(total);
+                contract_axis<AxisParam, N>(D, in, local_buf.data(), nx, ny, nz);
+                for (std::size_t idx = 0; idx < total; ++idx) {
+                    out[idx] = local_buf[idx];
+                }
+                return;
+            }
+#endif
+        }
+
+        if constexpr (axis_idx == 0) {
+            const std::size_t n_pencils = ny * nz;
+            if constexpr (N > 0) {
+                for (std::size_t p = 0; p < n_pencils; ++p) {
+                    const T* VEC_MATH_RESTRICT in_ptr = in + p * N;
+                    T* VEC_MATH_RESTRICT out_ptr = out + p * N;
+                    for (std::size_t i = 0; i < N; ++i) {
+                        const MatT* VEC_MATH_RESTRICT row = D + i * N;
+                        T sum{0};
+                        std::size_t j = 0;
+                        for (; j + 4 <= N; j += 4) {
+                            sum = sum + static_cast<T>(row[j + 0]) * in_ptr[j + 0]
+                                      + static_cast<T>(row[j + 1]) * in_ptr[j + 1]
+                                      + static_cast<T>(row[j + 2]) * in_ptr[j + 2]
+                                      + static_cast<T>(row[j + 3]) * in_ptr[j + 3];
+                        }
+                        for (; j < N; ++j) {
+                            sum = sum + static_cast<T>(row[j]) * in_ptr[j];
+                        }
+                        out_ptr[i] = sum;
+                    }
+                }
+            } else {
+                for (std::size_t p = 0; p < n_pencils; ++p) {
+                    const T* VEC_MATH_RESTRICT in_ptr = in + p * nx;
+                    T* VEC_MATH_RESTRICT out_ptr = out + p * nx;
+                    for (std::size_t i = 0; i < nx; ++i) {
+                        const MatT* VEC_MATH_RESTRICT row = D + i * nx;
+                        T acc0{0}, acc1{0}, acc2{0}, acc3{0};
+                        std::size_t j = 0;
+                        for (; j + 4 <= nx; j += 4) {
+                            acc0 = acc0 + static_cast<T>(row[j + 0]) * in_ptr[j + 0];
+                            acc1 = acc1 + static_cast<T>(row[j + 1]) * in_ptr[j + 1];
+                            acc2 = acc2 + static_cast<T>(row[j + 2]) * in_ptr[j + 2];
+                            acc3 = acc3 + static_cast<T>(row[j + 3]) * in_ptr[j + 3];
+                        }
+                        T sum = (acc0 + acc1) + (acc2 + acc3);
+                        for (; j < nx; ++j) {
+                            sum = sum + static_cast<T>(row[j]) * in_ptr[j];
+                        }
+                        out_ptr[i] = sum;
+                    }
+                }
+            }
+        } else if constexpr (axis_idx == 1) {
+            if constexpr (N > 0) {
+                for (std::size_t k = 0; k < nz; ++k) {
+                    const T* VEC_MATH_RESTRICT in_k = in + k * (nx * N);
+                    T* VEC_MATH_RESTRICT out_k = out + k * (nx * N);
+                    for (std::size_t j = 0; j < N; ++j) {
+                        T* VEC_MATH_RESTRICT out_row = out_k + j * nx;
+                        const MatT* VEC_MATH_RESTRICT row = D + j * N;
+                        VEC_MATH_PRAGMA_SIMD
+                        for (std::size_t i = 0; i < nx; ++i) {
+                            T sum{0};
+                            for (std::size_t q = 0; q < N; ++q) {
+                                sum = sum + static_cast<T>(row[q]) * in_k[q * nx + i];
+                            }
+                            out_row[i] = sum;
+                        }
+                    }
+                }
+            } else {
+                for (std::size_t k = 0; k < nz; ++k) {
+                    const T* VEC_MATH_RESTRICT in_k = in + k * (nx * ny);
+                    T* VEC_MATH_RESTRICT out_k = out + k * (nx * ny);
+                    for (std::size_t j = 0; j < ny; ++j) {
+                        T* VEC_MATH_RESTRICT out_row = out_k + j * nx;
+                        const MatT* VEC_MATH_RESTRICT row = D + j * ny;
+                        VEC_MATH_PRAGMA_SIMD
+                        for (std::size_t i = 0; i < nx; ++i) {
+                            T sum{0};
+                            for (std::size_t q = 0; q < ny; ++q) {
+                                sum = sum + static_cast<T>(row[q]) * in_k[q * nx + i];
+                            }
+                            out_row[i] = sum;
+                        }
+                    }
+                }
+            }
+        } else if constexpr (axis_idx == 2) {
+            const std::size_t nxy = nx * ny;
+            if constexpr (N > 0) {
+                for (std::size_t k = 0; k < N; ++k) {
+                    T* VEC_MATH_RESTRICT out_plane = out + k * nxy;
+                    const MatT* VEC_MATH_RESTRICT row = D + k * N;
+                    VEC_MATH_PRAGMA_SIMD
+                    for (std::size_t p = 0; p < nxy; ++p) {
+                        T sum{0};
+                        for (std::size_t r = 0; r < N; ++r) {
+                            sum = sum + static_cast<T>(row[r]) * in[r * nxy + p];
+                        }
+                        out_plane[p] = sum;
+                    }
+                }
+            } else {
+                for (std::size_t k = 0; k < nz; ++k) {
+                    T* VEC_MATH_RESTRICT out_plane = out + k * nxy;
+                    const MatT* VEC_MATH_RESTRICT row = D + k * nz;
+                    VEC_MATH_PRAGMA_SIMD
+                    for (std::size_t p = 0; p < nxy; ++p) {
+                        T sum{0};
+                        for (std::size_t r = 0; r < nz; ++r) {
+                            sum = sum + static_cast<T>(row[r]) * in[r * nxy + p];
+                        }
+                        out_plane[p] = sum;
+                    }
+                }
+            }
+        }
+    }
+
+    template<auto AxisParam, std::size_t N = 0, typename MatT, typename InT, typename OutT, std::size_t DExt, std::size_t InExt, std::size_t OutExt>
+    VEC_MATH_HOST_DEVICE inline void contract_axis(
+        std::span<MatT, DExt> D,
+        std::span<InT, InExt> in,
+        std::span<OutT, OutExt> out,
+        std::size_t nx,
+        std::size_t ny,
+        std::size_t nz = 1
+    ) {
+        contract_axis<AxisParam, N>(D.data(), in.data(), out.data(), nx, ny, nz);
+    }
+
+    // ============================================================================
     // Explicit Parallel Helpers (OpenMP-guarded)
     // ============================================================================
 

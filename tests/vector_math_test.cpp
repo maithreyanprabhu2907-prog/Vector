@@ -1079,6 +1079,223 @@ int main() {
         assert(approx_eq(sum(pdiff), 0.0));
     }
 
+    // 20. S10: Sum-Factorization / Tensor Contractions (contract_axis)
+    {
+        ZeroMallocGuard guard("s10_tensor_contraction");
+
+        // Helper naive contraction for reference
+        auto naive_contract = [](auto axis, const double* D, const double* in, double* out,
+                                 std::size_t nx, std::size_t ny, std::size_t nz) {
+            constexpr std::size_t ax = static_cast<std::size_t>(decltype(axis)::value);
+            for (std::size_t k = 0; k < nz; ++k) {
+                for (std::size_t j = 0; j < ny; ++j) {
+                    for (std::size_t i = 0; i < nx; ++i) {
+                        double s = 0.0;
+                        if constexpr (ax == 0) {
+                            for (std::size_t p = 0; p < nx; ++p) {
+                                s += D[i * nx + p] * in[p + j * nx + k * nx * ny];
+                            }
+                        } else if constexpr (ax == 1) {
+                            for (std::size_t q = 0; q < ny; ++q) {
+                                s += D[j * ny + q] * in[i + q * nx + k * nx * ny];
+                            }
+                        } else if constexpr (ax == 2) {
+                            for (std::size_t r = 0; r < nz; ++r) {
+                                s += D[k * nz + r] * in[i + j * nx + r * nx * ny];
+                            }
+                        }
+                        out[i + j * nx + k * nx * ny] = s;
+                    }
+                }
+            }
+        };
+
+        // --- 2D Contraction (nz = 1) ---
+        // Let nx = 4, ny = 4, isotropic N = 4
+        constexpr std::size_t N = 4;
+        double D_4x4[16] = {
+            1.0, 2.0, -1.0, 0.5,
+            0.5, -1.5, 2.0, 1.0,
+            2.5, 0.0, -2.0, 1.5,
+            -1.0, 1.0, 0.5, -0.5
+        };
+
+        double in_2d[16];
+        for (std::size_t i = 0; i < 16; ++i) {
+            in_2d[i] = static_cast<double>(i + 1) * 0.75;
+        }
+
+        double out_fast[16] = {};
+        double out_ref[16] = {};
+
+        // 2D Axis 0 (X), compile-time N = 4
+        contract_axis<0, N>(D_4x4, in_2d, out_fast, N, N, 1);
+        naive_contract(std::integral_constant<std::size_t, 0>{}, D_4x4, in_2d, out_ref, N, N, 1);
+        for (std::size_t i = 0; i < 16; ++i) {
+            assert(approx_eq(out_fast[i], out_ref[i], 1e-11));
+        }
+
+        // 2D Axis 0 (X), runtime N = 0
+        std::fill(out_fast, out_fast + 16, 0.0);
+        contract_axis<0>(D_4x4, in_2d, out_fast, N, N, 1);
+        for (std::size_t i = 0; i < 16; ++i) {
+            assert(approx_eq(out_fast[i], out_ref[i], 1e-11));
+        }
+
+        // 2D Axis 1 (Y), compile-time N = 4 via Axis::Y
+        std::fill(out_fast, out_fast + 16, 0.0);
+        std::fill(out_ref, out_ref + 16, 0.0);
+        contract_axis<Axis::Y, N>(D_4x4, in_2d, out_fast, N, N); // default nz = 1
+        naive_contract(std::integral_constant<std::size_t, 1>{}, D_4x4, in_2d, out_ref, N, N, 1);
+        for (std::size_t i = 0; i < 16; ++i) {
+            assert(approx_eq(out_fast[i], out_ref[i], 1e-11));
+        }
+
+        // 2D Axis 1 (Y), runtime N = 0
+        std::fill(out_fast, out_fast + 16, 0.0);
+        contract_axis<1>(D_4x4, in_2d, out_fast, N, N);
+        for (std::size_t i = 0; i < 16; ++i) {
+            assert(approx_eq(out_fast[i], out_ref[i], 1e-11));
+        }
+
+        // 2D In-place aliasing (in == out)
+        double in_aliased[16];
+        std::copy(in_2d, in_2d + 16, in_aliased);
+        contract_axis<Axis::X, N>(D_4x4, in_aliased, in_aliased, N, N, 1);
+        naive_contract(std::integral_constant<std::size_t, 0>{}, D_4x4, in_2d, out_ref, N, N, 1);
+        for (std::size_t i = 0; i < 16; ++i) {
+            assert(approx_eq(in_aliased[i], out_ref[i], 1e-11));
+        }
+
+        // --- 3D Contraction ---
+        // Let nx = 3, ny = 3, nz = 3
+        constexpr std::size_t N3 = 3;
+        constexpr std::size_t total_3d = N3 * N3 * N3;
+        double D_3x3[9] = {
+            1.2, -0.8, 0.5,
+            0.3, 1.5, -1.1,
+            -0.7, 0.9, 2.1
+        };
+
+        double in_3d[total_3d];
+        for (std::size_t i = 0; i < total_3d; ++i) {
+            in_3d[i] = static_cast<double>(i + 1) * 0.5 - 7.0;
+        }
+
+        double out_fast_3d[total_3d] = {};
+        double out_ref_3d[total_3d] = {};
+
+        // 3D Axis 0 (X): fixed N=3
+        contract_axis<Axis::X, N3>(D_3x3, in_3d, out_fast_3d, N3, N3, N3);
+        naive_contract(std::integral_constant<std::size_t, 0>{}, D_3x3, in_3d, out_ref_3d, N3, N3, N3);
+        for (std::size_t i = 0; i < total_3d; ++i) {
+            assert(approx_eq(out_fast_3d[i], out_ref_3d[i], 1e-11));
+        }
+
+        // 3D Axis 0 (X): dynamic N=0
+        std::fill(out_fast_3d, out_fast_3d + total_3d, 0.0);
+        contract_axis<0>(D_3x3, in_3d, out_fast_3d, N3, N3, N3);
+        for (std::size_t i = 0; i < total_3d; ++i) {
+            assert(approx_eq(out_fast_3d[i], out_ref_3d[i], 1e-11));
+        }
+
+        // 3D Axis 1 (Y): fixed N=3
+        std::fill(out_fast_3d, out_fast_3d + total_3d, 0.0);
+        contract_axis<Axis::Y, N3>(D_3x3, in_3d, out_fast_3d, N3, N3, N3);
+        naive_contract(std::integral_constant<std::size_t, 1>{}, D_3x3, in_3d, out_ref_3d, N3, N3, N3);
+        for (std::size_t i = 0; i < total_3d; ++i) {
+            assert(approx_eq(out_fast_3d[i], out_ref_3d[i], 1e-11));
+        }
+
+        // 3D Axis 1 (Y): dynamic N=0
+        std::fill(out_fast_3d, out_fast_3d + total_3d, 0.0);
+        contract_axis<1>(D_3x3, in_3d, out_fast_3d, N3, N3, N3);
+        for (std::size_t i = 0; i < total_3d; ++i) {
+            assert(approx_eq(out_fast_3d[i], out_ref_3d[i], 1e-11));
+        }
+
+        // 3D Axis 2 (Z): fixed N=3
+        std::fill(out_fast_3d, out_fast_3d + total_3d, 0.0);
+        contract_axis<Axis::Z, N3>(D_3x3, in_3d, out_fast_3d, N3, N3, N3);
+        naive_contract(std::integral_constant<std::size_t, 2>{}, D_3x3, in_3d, out_ref_3d, N3, N3, N3);
+        for (std::size_t i = 0; i < total_3d; ++i) {
+            assert(approx_eq(out_fast_3d[i], out_ref_3d[i], 1e-11));
+        }
+
+        // 3D Axis 2 (Z): dynamic N=0
+        std::fill(out_fast_3d, out_fast_3d + total_3d, 0.0);
+        contract_axis<2>(D_3x3, in_3d, out_fast_3d, N3, N3, N3);
+        for (std::size_t i = 0; i < total_3d; ++i) {
+            assert(approx_eq(out_fast_3d[i], out_ref_3d[i], 1e-11));
+        }
+
+        // 3D In-place aliasing (in == out) on Axis 2
+        double in_aliased_3d[total_3d];
+        std::copy(in_3d, in_3d + total_3d, in_aliased_3d);
+        contract_axis<Axis::Z, N3>(D_3x3, in_aliased_3d, in_aliased_3d, N3, N3, N3);
+        for (std::size_t i = 0; i < total_3d; ++i) {
+            assert(approx_eq(in_aliased_3d[i], out_ref_3d[i], 1e-11));
+        }
+
+        // --- Anisotropic 3D Contraction ---
+        // nx = 2, ny = 3, nz = 4
+        constexpr std::size_t anx = 2, any = 3, anz = 4;
+        constexpr std::size_t an_total = anx * any * anz;
+        double D_nx[anx * anx] = {1.0, -1.0, 2.0, 0.5};
+        double D_ny[any * any] = {
+            1.0, 0.2, -0.3,
+            -0.5, 2.0, 0.1,
+            0.4, -0.6, 1.5
+        };
+        double D_nz[anz * anz] = {
+            1.0, -0.5, 0.2, 0.1,
+            0.3, 1.2, -0.4, 0.5,
+            -0.2, 0.1, 1.8, -0.3,
+            0.5, -0.2, 0.3, 1.1
+        };
+
+        double an_in[an_total];
+        for (std::size_t i = 0; i < an_total; ++i) {
+            an_in[i] = static_cast<double>(i) * 0.3 - 2.5;
+        }
+        double an_fast[an_total] = {};
+        double an_ref[an_total] = {};
+
+        // Anisotropic Axis 0
+        contract_axis<0>(D_nx, an_in, an_fast, anx, any, anz);
+        naive_contract(std::integral_constant<std::size_t, 0>{}, D_nx, an_in, an_ref, anx, any, anz);
+        for (std::size_t i = 0; i < an_total; ++i) {
+            assert(approx_eq(an_fast[i], an_ref[i], 1e-11));
+        }
+
+        // Anisotropic Axis 1
+        std::fill(an_fast, an_fast + an_total, 0.0);
+        contract_axis<1>(D_ny, an_in, an_fast, anx, any, anz);
+        naive_contract(std::integral_constant<std::size_t, 1>{}, D_ny, an_in, an_ref, anx, any, anz);
+        for (std::size_t i = 0; i < an_total; ++i) {
+            assert(approx_eq(an_fast[i], an_ref[i], 1e-11));
+        }
+
+        // Anisotropic Axis 2
+        std::fill(an_fast, an_fast + an_total, 0.0);
+        contract_axis<2>(D_nz, an_in, an_fast, anx, any, anz);
+        naive_contract(std::integral_constant<std::size_t, 2>{}, D_nz, an_in, an_ref, anx, any, anz);
+        for (std::size_t i = 0; i < an_total; ++i) {
+            assert(approx_eq(an_fast[i], an_ref[i], 1e-11));
+        }
+
+        // Span interface test
+        std::fill(an_fast, an_fast + an_total, 0.0);
+        contract_axis<0>(std::span<const double>(D_nx, anx * anx),
+                         std::span<const double>(an_in, an_total),
+                         std::span<double>(an_fast, an_total),
+                         anx, any, anz);
+        naive_contract(std::integral_constant<std::size_t, 0>{}, D_nx, an_in, an_ref, anx, any, anz);
+        for (std::size_t i = 0; i < an_total; ++i) {
+            assert(approx_eq(an_fast[i], an_ref[i], 1e-11));
+        }
+    }
+
     std::vector<std::string> svec = {"hello", "world"};
     assert(svec.size() == 2);
 
