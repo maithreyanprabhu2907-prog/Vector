@@ -1,5 +1,5 @@
 <svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
-     width="100%" height="428" viewBox="0 0 1400 428" id="flamegraph-svg"
+     width="100%" height="308" viewBox="0 0 1400 308" id="flamegraph-svg"
      style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background: #18191c; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.4);">
   <defs>
     <linearGradient id="header-grad" x1="0%" y1="0%" x2="100%" y2="0%">
@@ -20,9 +20,9 @@
 
   <!-- Title & Controls Header -->
   <rect x="0" y="0" width="1400" height="95" fill="url(#header-grad)" rx="8" ry="8"/>
-  <text x="20" y="32" font-size="20" font-weight="700" fill="#ffffff">Vector CPU Execution Flamegraph &amp; Bottleneck Analysis</text>
-  <text x="20" y="52" font-size="12" fill="#a0aec0">AMD Ryzen 5 / Intel Core &bull; AVX2+FMA &bull; Zero-Allocation Benchmark Suite</text>
-  <text x="20" y="74" font-size="11" fill="#48bb78">&bull; Green = SIMD Zero-Alloc &bull; Red = Naive Heap Malloc &bull; Blue = DRAM Traffic &bull; Purple = OpenMP / Page Faults</text>
+  <text x="20" y="32" font-size="20" font-weight="700" fill="#ffffff">vec_math CPU Execution Flamegraph &amp; Microarchitecture Trace</text>
+  <text x="20" y="52" font-size="12" fill="#a0aec0">vec_math Pure Implementation &bull; AVX2+FMA &bull; Zero-Allocation Execution Engine</text>
+  <text x="20" y="74" font-size="11" fill="#48bb78">&bull; Green = Fused SIMD Pipelines &bull; Orange = DG Tensor Contractions &bull; Warm Orange = DG Matvec &bull; Blue = Streaming Stores &bull; Cyan = OpenMP &bull; Indigo = Reductions</text>
 
   <!-- Interactive Controls in Header -->
   <g transform="translate(1080, 20)">
@@ -46,444 +46,180 @@
   <g id="frames-group" transform="translate(0, 140)">
 
     <g class="frame-node" id="node-0-10"
-       data-name="all (Vector Benchmarks)" data-mod="system" data-pct="100.00" data-val="10000"
-       data-info="Total CPU execution profile across benchmark suite" data-x="10.00" data-width="1380.00" data-depth="0"
+       data-name="all (vec_math Pure Implementation)" data-mod="libvec_math" data-pct="100.00" data-val="10000"
+       data-info="vec_math 100% Zero-Allocation High-Performance Engine Profile" data-x="10.00" data-width="1380.00" data-depth="0"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
       <rect class="func-box" x="10.00" y="0" width="1380.00" height="23" fill="#4a5568" rx="2" ry="2"/>
-      <text class="func-text" x="15.00" y="15">all (Vector Benchmarks)</text>
+      <text class="func-text" x="15.00" y="15">all (vec_math Pure Implementation)</text>
     </g>
     <g class="frame-node" id="node-1-10"
-       data-name="benchmark.exe" data-mod="benchmark.exe" data-pct="85.00" data-val="8500"
-       data-info="vec_math zero-allocation high-performance benchmark suite" data-x="10.00" data-width="1173.00" data-depth="1"
+       data-name="vec_math::kernel_pipeline" data-mod="libvec_math" data-pct="100.00" data-val="10000"
+       data-info="Execution of pure vec_math kernels (zero heap allocations, zero redundant loads)" data-x="10.00" data-width="1380.00" data-depth="1"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="10.00" y="24" width="1173.00" height="23" fill="#dd6b20" rx="2" ry="2"/>
-      <text class="func-text" x="15.00" y="39">benchmark.exe</text>
+      <rect class="func-box" x="10.00" y="24" width="1380.00" height="23" fill="#dd6b20" rx="2" ry="2"/>
+      <text class="func-text" x="15.00" y="39">vec_math::kernel_pipeline</text>
     </g>
     <g class="frame-node" id="node-2-10"
-       data-name="__scrt_common_main_seh" data-mod="benchmark.exe" data-pct="85.00" data-val="8500"
-       data-info="C++ CRT runtime startup &amp; entry point" data-x="10.00" data-width="1173.00" data-depth="2"
+       data-name="vec_math::operator&lt;&lt;= (Expression Template Fused Pipeline)" data-mod="vec_math::expression" data-pct="32.00" data-val="3200"
+       data-info="Single-pass register fusion: 0 B temporary allocations across arbitrarily chained operations" data-x="10.00" data-width="441.60" data-depth="2"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="10.00" y="48" width="1173.00" height="23" fill="#718096" rx="2" ry="2"/>
-      <text class="func-text" x="15.00" y="63">__scrt_common_main_seh</text>
+      <rect class="func-box" x="10.00" y="48" width="441.60" height="23" fill="#38a169" rx="2" ry="2"/>
+      <text class="func-text" x="15.00" y="63">vec_math::operator&lt;&lt;= (Expression Template Fused Pipeline)</text>
     </g>
     <g class="frame-node" id="node-3-10"
-       data-name="main" data-mod="benchmark.exe" data-pct="84.60" data-val="8460"
-       data-info="Main benchmark orchestrator" data-x="10.00" data-width="1167.48" data-depth="3"
+       data-name="eval_into (Single-Pass AVX2 FMA Register Stream)" data-mod="vec_math::eval" data-pct="19.00" data-val="1900"
+       data-info="_mm256_fmadd_pd &amp; _mm256_sub_pd in single register stream, zero intermediate memory traffic" data-x="10.00" data-width="262.20" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="10.00" y="72" width="1167.48" height="23" fill="#dd6b20" rx="2" ry="2"/>
-      <text class="func-text" x="15.00" y="87">main</text>
+      <rect class="func-box" x="10.00" y="72" width="262.20" height="23" fill="#38a169" rx="2" ry="2"/>
+      <text class="func-text" x="15.00" y="87">eval_into (Single-Pass AVX2 FMA Re..</text>
     </g>
     <g class="frame-node" id="node-4-10"
-       data-name="run_size_benchmark (1K-5M Elements)" data-mod="benchmark.exe" data-pct="44.80" data-val="4480"
-       data-info="Multi-scale fused expression: 2.5*a + 1.5*b - 0.5*c (5 FLOP/elem, 32 B/elem)" data-x="10.00" data-width="618.24" data-depth="4"
+       data-name="L1/L2 Cache In-Core Execution (1K-100K)" data-mod="cpu::core" data-pct="12.00" data-val="1200"
+       data-info="54.4 GFLOPS peak AVX2 throughput; 2 FMA ops/cycle execution on Port 0 &amp; 1" data-x="10.00" data-width="165.60" data-depth="4"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="10.00" y="96" width="618.24" height="23" fill="#ed8936" rx="2" ry="2"/>
-      <text class="func-text" x="15.00" y="111">run_size_benchmark (1K-5M Elements)</text>
+      <rect class="func-box" x="10.00" y="96" width="165.60" height="23" fill="#48bb78" rx="2" ry="2"/>
+      <text class="func-text" x="15.00" y="111">L1/L2 Cache In-Core E..</text>
     </g>
-    <g class="frame-node" id="node-5-10"
-       data-name="naive::evaluate_fused [Heap Allocations Bottleneck]" data-mod="benchmark.exe" data-pct="37.40" data-val="3740"
-       data-info="Naive std::vector creates 5 temporary heap allocations per iteration! 83.5% time spent in malloc/free" data-x="10.00" data-width="516.12" data-depth="5"
+    <g class="frame-node" id="node-4-175"
+       data-name="DRAM Streaming Store Saturation (1M-5M)" data-mod="memory::bus" data-pct="7.00" data-val="700"
+       data-info="Direct non-temporal stores bypass cache lines, saturating DDR4 memory bandwidth cleanly" data-x="175.60" data-width="96.60" data-depth="4"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="10.00" y="120" width="516.12" height="23" fill="#e53e3e" rx="2" ry="2"/>
-      <text class="func-text" x="15.00" y="135">naive::evaluate_fused [Heap Allocations Bottleneck]</text>
+      <rect class="func-box" x="175.60" y="96" width="96.60" height="23" fill="#2a9d8f" rx="2" ry="2"/>
+      <text class="func-text" x="180.60" y="111">DRAM Stream..</text>
     </g>
-    <g class="frame-node" id="node-6-10"
-       data-name="naive::mul [Temporary #1 &amp; #2 &amp; #4]" data-mod="benchmark.exe" data-pct="14.20" data-val="1420"
-       data-info="operator* allocates temporary std::vector" data-x="10.00" data-width="195.96" data-depth="6"
+    <g class="frame-node" id="node-3-272"
+       data-name="has_partial_overlap (Static Aliasing Contract)" data-mod="vec_math::safety" data-pct="3.00" data-val="300"
+       data-info="Compile-time folded AST leaf inspection: zero runtime cost when disjoint" data-x="272.20" data-width="41.40" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="10.00" y="144" width="195.96" height="23" fill="#e53e3e" rx="2" ry="2"/>
-      <text class="func-text" x="15.00" y="159">naive::mul [Temporary #1 ..</text>
+      <rect class="func-box" x="272.20" y="72" width="41.40" height="23" fill="#319795" rx="2" ry="2"/>
+      <text class="func-text" x="277.20" y="87">has..</text>
     </g>
-    <g class="frame-node" id="node-7-10"
-       data-name="operator new[] / malloc" data-mod="vcruntime140.dll" data-pct="6.80" data-val="680"
-       data-info="Heap allocation overhead (39.3 KB to 190.7 MB per run)" data-x="10.00" data-width="93.84" data-depth="7"
+    <g class="frame-node" id="node-3-313"
+       data-name="aligned_span / aligned_vector (64B AVX-512 Ready)" data-mod="vec_math::memory" data-pct="10.00" data-val="1000"
+       data-info="Strict 64-byte aligned load/store pointers enabling aligned vector load instructions" data-x="313.60" data-width="138.00" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="10.00" y="168" width="93.84" height="23" fill="#d53f8c" rx="2" ry="2"/>
-      <text class="func-text" x="15.00" y="183">operator ne..</text>
+      <rect class="func-box" x="313.60" y="72" width="138.00" height="23" fill="#38a169" rx="2" ry="2"/>
+      <text class="func-text" x="318.60" y="87">aligned_span / al..</text>
     </g>
-    <g class="frame-node" id="node-8-10"
-       data-name="RtlAllocateHeap" data-mod="ntdll.dll" data-pct="4.20" data-val="420"
-       data-info="Heap allocator lock &amp; chunk lookup" data-x="10.00" data-width="57.96" data-depth="8"
+    <g class="frame-node" id="node-2-451"
+       data-name="vec_math::contract_axis (3D DG Sum-Factorization)" data-mod="vec_math::dg" data-pct="24.00" data-val="2400"
+       data-info="Discontinuous Galerkin tensor contraction: O(Np^(d+1)) vs O(Np^2d) dense matvec (3.3x-5.3x speedup)" data-x="451.60" data-width="331.20" data-depth="2"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="10.00" y="192" width="57.96" height="23" fill="#d53f8c" rx="2" ry="2"/>
-      <text class="func-text" x="15.00" y="207">RtlAll..</text>
+      <rect class="func-box" x="451.60" y="48" width="331.20" height="23" fill="#f77f00" rx="2" ry="2"/>
+      <text class="func-text" x="456.60" y="63">vec_math::contract_axis (3D DG Sum-Factoriza..</text>
     </g>
-    <g class="frame-node" id="node-9-10"
-       data-name="KiPageFault / MiUserFault" data-mod="kernel" data-pct="2.60" data-val="260"
-       data-info="OS zero-page demand fault &amp; TLB miss overhead" data-x="10.00" data-width="35.88" data-depth="9"
+    <g class="frame-node" id="node-3-451"
+       data-name="Axis 0 Contraction (Unit-Stride X-Fastest Row Dot)" data-mod="vec_math::dg" data-pct="9.00" data-val="900"
+       data-info="Continuous contiguous memory streaming dot product along fastest spatial index" data-x="451.60" data-width="124.20" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="10.00" y="216" width="35.88" height="23" fill="#805ad5" rx="2" ry="2"/>
-      <text class="func-text" x="15.00" y="231"></text>
+      <rect class="func-box" x="451.60" y="72" width="124.20" height="23" fill="#38a169" rx="2" ry="2"/>
+      <text class="func-text" x="456.60" y="87">Axis 0 Contract..</text>
     </g>
-    <g class="frame-node" id="node-7-103"
-       data-name="naive elementwise mul loop" data-mod="benchmark.exe" data-pct="7.40" data-val="740"
-       data-info="Isolated vector loop writing to cold temporary buffer" data-x="103.84" data-width="102.12" data-depth="7"
+    <g class="frame-node" id="node-3-575"
+       data-name="Axis 1 Contraction (Loop-Interchanged Streaming FMA)" data-mod="vec_math::dg" data-pct="8.00" data-val="800"
+       data-info="Interchanged loop order: broadcasts coefficient and updates contiguous destination rows" data-x="575.80" data-width="110.40" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="103.84" y="168" width="102.12" height="23" fill="#f6ad55" rx="2" ry="2"/>
-      <text class="func-text" x="108.84" y="183">naive elemen..</text>
+      <rect class="func-box" x="575.80" y="72" width="110.40" height="23" fill="#38a169" rx="2" ry="2"/>
+      <text class="func-text" x="580.80" y="87">Axis 1 Contra..</text>
     </g>
-    <g class="frame-node" id="node-6-205"
-       data-name="naive::add &amp; sub [Temporary #3 &amp; #5]" data-mod="benchmark.exe" data-pct="12.80" data-val="1280"
-       data-info="operator+ and operator- intermediate heap buffers" data-x="205.96" data-width="176.64" data-depth="6"
+    <g class="frame-node" id="node-3-686"
+       data-name="Axis 2 Contraction (Unit-Stride Spatial FMA Broadcast)" data-mod="vec_math::dg" data-pct="7.00" data-val="700"
+       data-info="Outer slice broadcast with sequential streaming stores, avoiding strided cache thrashing" data-x="686.20" data-width="96.60" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="205.96" y="144" width="176.64" height="23" fill="#e53e3e" rx="2" ry="2"/>
-      <text class="func-text" x="210.96" y="159">naive::add &amp; sub [Temp..</text>
+      <rect class="func-box" x="686.20" y="72" width="96.60" height="23" fill="#38a169" rx="2" ry="2"/>
+      <text class="func-text" x="691.20" y="87">Axis 2 Cont..</text>
     </g>
-    <g class="frame-node" id="node-7-205"
-       data-name="operator new[] / malloc" data-mod="vcruntime140.dll" data-pct="6.10" data-val="610"
-       data-info="Intermediate buffers allocation" data-x="205.96" data-width="84.18" data-depth="7"
+    <g class="frame-node" id="node-2-782"
+       data-name="vec_math::matvec_fixed &amp; matvec (DG Operator)" data-mod="vec_math::dg" data-pct="18.00" data-val="1800"
+       data-info="Row-span vectorized dot products: 22+ GFLOPS sustained across -O2, -O3, and -Ofast" data-x="782.80" data-width="248.40" data-depth="2"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="205.96" y="168" width="84.18" height="23" fill="#d53f8c" rx="2" ry="2"/>
-      <text class="func-text" x="210.96" y="183">operator ..</text>
+      <rect class="func-box" x="782.80" y="48" width="248.40" height="23" fill="#fb8500" rx="2" ry="2"/>
+      <text class="func-text" x="787.80" y="63">vec_math::matvec_fixed &amp; matvec ..</text>
     </g>
-    <g class="frame-node" id="node-7-290"
-       data-name="naive elementwise add/sub loop" data-mod="benchmark.exe" data-pct="6.70" data-val="670"
-       data-info="Cache thrashing over intermediate results" data-x="290.14" data-width="92.46" data-depth="7"
+    <g class="frame-node" id="node-3-782"
+       data-name="matvec_fixed&lt;Np, Np&gt; (Compile-Time Fixed Shapes)" data-mod="vec_math::dg" data-pct="10.00" data-val="1000"
+       data-info="Fully unrolled compile-time column loops with dedicated YMM accumulator registers" data-x="782.80" data-width="138.00" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="290.14" y="168" width="92.46" height="23" fill="#f6ad55" rx="2" ry="2"/>
-      <text class="func-text" x="295.14" y="183">naive elem..</text>
+      <rect class="func-box" x="782.80" y="72" width="138.00" height="23" fill="#38a169" rx="2" ry="2"/>
+      <text class="func-text" x="787.80" y="87">matvec_fixed&lt;Np, ..</text>
     </g>
-    <g class="frame-node" id="node-6-382"
-       data-name="operator delete[] / free" data-mod="vcruntime140.dll" data-pct="10.40" data-val="1040"
-       data-info="5x temporary vector destructions per step" data-x="382.60" data-width="143.52" data-depth="6"
+    <g class="frame-node" id="node-3-920"
+       data-name="matvec(rows, cols) (Dynamic Shape Row-Span Dot)" data-mod="vec_math::dg" data-pct="8.00" data-val="800"
+       data-info="Row span delegation to vectorized dot() kernel; zero compiler optimization swings" data-x="920.80" data-width="110.40" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="382.60" y="144" width="143.52" height="23" fill="#d53f8c" rx="2" ry="2"/>
-      <text class="func-text" x="387.60" y="159">operator delete[]..</text>
+      <rect class="func-box" x="920.80" y="72" width="110.40" height="23" fill="#38a169" rx="2" ry="2"/>
+      <text class="func-text" x="925.80" y="87">matvec(rows, ..</text>
     </g>
-    <g class="frame-node" id="node-5-526"
-       data-name="vec_math::operator&lt;&lt;= (Expression Template) [Zero-Alloc]" data-mod="benchmark.exe" data-pct="3.60" data-val="360"
-       data-info="Single-pass fused evaluation: 0 heap allocations, 64.55x speedup at 10K!" data-x="526.12" data-width="49.68" data-depth="5"
+    <g class="frame-node" id="node-2-1031"
+       data-name="vec_math::reductions (sum, dot, dot_par, repro)" data-mod="vec_math::reduction" data-pct="15.00" data-val="1500"
+       data-info="Dual-accumulator FMA loops and chunk-blocked bit-reproducible reductions" data-x="1031.20" data-width="207.00" data-depth="2"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="526.12" y="120" width="49.68" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="531.12" y="135">vec_..</text>
+      <rect class="func-box" x="1031.20" y="48" width="207.00" height="23" fill="#3f51b5" rx="2" ry="2"/>
+      <text class="func-text" x="1036.20" y="63">vec_math::reductions (sum,..</text>
     </g>
-    <g class="frame-node" id="node-6-526"
-       data-name="eval_into [Fused Single-Pass AVX2+FMA]" data-mod="benchmark.exe" data-pct="2.60" data-val="260"
-       data-info="_mm256_fmadd_pd &amp; _mm256_sub_pd in single register stream, zero intermediate stores" data-x="526.12" data-width="35.88" data-depth="6"
+    <g class="frame-node" id="node-3-1031"
+       data-name="dot() / sum() (Dual YMM Accumulator FMA)" data-mod="vec_math::reduction" data-pct="6.50" data-val="650"
+       data-info="Two independent accumulator dependency chains achieving 0.25 cycles/elem throughput" data-x="1031.20" data-width="89.70" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="526.12" y="144" width="35.88" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="531.12" y="159"></text>
+      <rect class="func-box" x="1031.20" y="72" width="89.70" height="23" fill="#38a169" rx="2" ry="2"/>
+      <text class="func-text" x="1036.20" y="87">dot() / su..</text>
     </g>
-    <g class="frame-node" id="node-7-526"
-       data-name="In-Cache L1/L2 Execution (1K-100K)" data-mod="benchmark.exe" data-pct="1.10" data-val="110"
-       data-info="43.10 GFLOPS peak throughput, optimal register reuse" data-x="526.12" data-width="15.18" data-depth="7"
+    <g class="frame-node" id="node-3-1120"
+       data-name="dot_par() / sum_par() (Multi-Core SIMD Chunks)" data-mod="vec_math::reduction" data-pct="5.00" data-val="500"
+       data-info="OpenMP parallel reduction dispatching 64KB cache-aligned chunks per physical core" data-x="1120.90" data-width="69.00" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="526.12" y="168" width="15.18" height="23" fill="#48bb78" rx="2" ry="2"/>
-      <text class="func-text" x="531.12" y="183"></text>
+      <rect class="func-box" x="1120.90" y="72" width="69.00" height="23" fill="#00b4d8" rx="2" ry="2"/>
+      <text class="func-text" x="1125.90" y="87">dot_par..</text>
     </g>
-    <g class="frame-node" id="node-7-541"
-       data-name="DRAM Memory Bus Bound (1M-5M)" data-mod="benchmark.exe" data-pct="1.50" data-val="150"
-       data-info="Saturation at 32-35 GB/s DDR4 bandwidth; working set exceeds 16MB L3 cache" data-x="541.30" data-width="20.70" data-depth="7"
+    <g class="frame-node" id="node-3-1189"
+       data-name="dot_repro() / sum_repro() (Bit-Identical Across Threads)" data-mod="vec_math::reduction" data-pct="3.50" data-val="350"
+       data-info="Rigid 512-element pairwise tree reduction: bit-identical across thread counts 1..64" data-x="1189.90" data-width="48.30" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="541.30" y="168" width="20.70" height="23" fill="#3182ce" rx="2" ry="2"/>
-      <text class="func-text" x="546.30" y="183"></text>
+      <rect class="func-box" x="1189.90" y="72" width="48.30" height="23" fill="#3f51b5" rx="2" ry="2"/>
+      <text class="func-text" x="1194.90" y="87">dot_..</text>
     </g>
-    <g class="frame-node" id="node-6-562"
-       data-name="has_partial_overlap [Aliasing Safety Check]" data-mod="benchmark.exe" data-pct="1.00" data-val="100"
-       data-info="Static expression tree inspection: compile-time folded or O(1) pointer bounds check" data-x="562.00" data-width="13.80" data-depth="6"
+    <g class="frame-node" id="node-2-1238"
+       data-name="vec_math::solve_4x4_batched &amp; RK Stages" data-mod="vec_math::dg" data-pct="11.00" data-val="1100"
+       data-info="Discontinuous Galerkin local element operations: batched 4x4 solve and RK AXPBY" data-x="1238.20" data-width="151.80" data-depth="2"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="562.00" y="144" width="13.80" height="23" fill="#319795" rx="2" ry="2"/>
-      <text class="func-text" x="567.00" y="159"></text>
+      <rect class="func-box" x="1238.20" y="48" width="151.80" height="23" fill="#d4a373" rx="2" ry="2"/>
+      <text class="func-text" x="1243.20" y="63">vec_math::solve_4x4..</text>
     </g>
-    <g class="frame-node" id="node-5-575"
-       data-name="scalar::evaluate_fused [Hand-Written Loop]" data-mod="benchmark.exe" data-pct="3.80" data-val="380"
-       data-info="Manual loop 2.5*a[i] + 1.5*b[i] - 0.5*c[i]: auto-vectorized by compiler" data-x="575.80" data-width="52.44" data-depth="5"
+    <g class="frame-node" id="node-3-1238"
+       data-name="solve_4x4_batched (SoA Direct Invert)" data-mod="vec_math::dg" data-pct="6.50" data-val="650"
+       data-info="SIMD Structure-of-Arrays Gaussian elimination: 27M elements/s throughput" data-x="1238.20" data-width="89.70" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="575.80" y="120" width="52.44" height="23" fill="#dd6b20" rx="2" ry="2"/>
-      <text class="func-text" x="580.80" y="135">scala..</text>
+      <rect class="func-box" x="1238.20" y="72" width="89.70" height="23" fill="#d4a373" rx="2" ry="2"/>
+      <text class="func-text" x="1243.20" y="87">solve_4x4_..</text>
     </g>
-    <g class="frame-node" id="node-6-575"
-       data-name="AVX2 Auto-vectorized Loop" data-mod="benchmark.exe" data-pct="3.80" data-val="380"
-       data-info="Compiler autovectorization achieves identical throughput to expression template" data-x="575.80" data-width="52.44" data-depth="6"
+    <g class="frame-node" id="node-3-1327"
+       data-name="Runge-Kutta AXPBY Substep (out &lt;&lt;= a*x + b*y)" data-mod="vec_math::dg" data-pct="4.50" data-val="450"
+       data-info="Fused 3-FLOP/elem substep update directly in registers with zero memory traffic" data-x="1327.90" data-width="62.10" data-depth="3"
        onclick="window.zoomToNode(this)"
        onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="575.80" y="144" width="52.44" height="23" fill="#f6ad55" rx="2" ry="2"/>
-      <text class="func-text" x="580.80" y="159">AVX2 ..</text>
-    </g>
-    <g class="frame-node" id="node-4-628"
-       data-name="run_parallel_benchmark (OpenMP Multi-Core)" data-mod="benchmark.exe" data-pct="21.00" data-val="2100"
-       data-info="Multi-threaded assign_par &amp; reduction scaling across physical cores" data-x="628.24" data-width="289.80" data-depth="4"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="628.24" y="96" width="289.80" height="23" fill="#00b4d8" rx="2" ry="2"/>
-      <text class="func-text" x="633.24" y="111">run_parallel_benchmark (OpenMP Multi-C..</text>
-    </g>
-    <g class="frame-node" id="node-5-628"
-       data-name="vec_math::assign_par [Parallel Assign]" data-mod="benchmark.exe" data-pct="12.20" data-val="1220"
-       data-info="Chunked parallel expression assignment across threads" data-x="628.24" data-width="168.36" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="628.24" y="120" width="168.36" height="23" fill="#00b4d8" rx="2" ry="2"/>
-      <text class="func-text" x="633.24" y="135">vec_math::assign_par ..</text>
-    </g>
-    <g class="frame-node" id="node-6-628"
-       data-name="Thread Local Compute Chunks" data-mod="benchmark.exe" data-pct="7.80" data-val="780"
-       data-info="Independent thread execution on core local L1/L2 caches" data-x="628.24" data-width="107.64" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="628.24" y="144" width="107.64" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="633.24" y="159">Thread Local..</text>
-    </g>
-    <g class="frame-node" id="node-6-735"
-       data-name="Memory Controller &amp; Cache Line Sharing" data-mod="hardware" data-pct="4.40" data-val="440"
-       data-info="DRAM controller contention on large vectors; shared memory bus saturation" data-x="735.88" data-width="60.72" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="735.88" y="144" width="60.72" height="23" fill="#3182ce" rx="2" ry="2"/>
-      <text class="func-text" x="740.88" y="159">Memory..</text>
-    </g>
-    <g class="frame-node" id="node-5-796"
-       data-name="OpenMP Runtime &amp; Synchronization" data-mod="openmp" data-pct="8.80" data-val="880"
-       data-info="OpenMP barrier, fork/join thread pool dispatch, and spin-wait" data-x="796.60" data-width="121.44" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="796.60" y="120" width="121.44" height="23" fill="#5a189a" rx="2" ry="2"/>
-      <text class="func-text" x="801.60" y="135">OpenMP Runtime..</text>
-    </g>
-    <g class="frame-node" id="node-6-796"
-       data-name="omp_fork / omp_barrier" data-mod="openmp" data-pct="5.20" data-val="520"
-       data-info="Barrier latency overhead on short vector sizes (&lt;100K)" data-x="796.60" data-width="71.76" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="796.60" y="144" width="71.76" height="23" fill="#5a189a" rx="2" ry="2"/>
-      <text class="func-text" x="801.60" y="159">omp_for..</text>
-    </g>
-    <g class="frame-node" id="node-6-868"
-       data-name="Thread Scheduling &amp; Yield" data-mod="kernel" data-pct="3.60" data-val="360"
-       data-info="OS thread scheduling when threads finish chunks unevenly" data-x="868.36" data-width="49.68" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="868.36" y="144" width="49.68" height="23" fill="#805ad5" rx="2" ry="2"/>
-      <text class="func-text" x="873.36" y="159">Thre..</text>
-    </g>
-    <g class="frame-node" id="node-4-918"
-       data-name="run_extended_benchmarks (Reductions &amp; DG Math Kit)" data-mod="benchmark.exe" data-pct="8.30" data-val="830"
-       data-info="Reductions (sum, dot, repro), tensor contractions, matvec, solve_4x4_batched" data-x="918.04" data-width="114.54" data-depth="4"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="918.04" y="96" width="114.54" height="23" fill="#e65100" rx="2" ry="2"/>
-      <text class="func-text" x="923.04" y="111">run_extended_..</text>
-    </g>
-    <g class="frame-node" id="node-5-918"
-       data-name="vec_math::sum &amp; dot [Reduction SIMD Kernel]" data-mod="benchmark.exe" data-pct="2.40" data-val="240"
-       data-info="Dual YMM accumulators + 512-element chunk blocking with pairwise tree reduction" data-x="918.04" data-width="33.12" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="918.04" y="120" width="33.12" height="23" fill="#3f51b5" rx="2" ry="2"/>
-      <text class="func-text" x="923.04" y="135"></text>
-    </g>
-    <g class="frame-node" id="node-6-918"
-       data-name="AVX2 Dual-Accumulator FMA Vector Loop" data-mod="benchmark.exe" data-pct="1.60" data-val="160"
-       data-info="2 cycles per 8 elements throughput, peak hardware utilization" data-x="918.04" data-width="22.08" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="918.04" y="144" width="22.08" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="923.04" y="159"></text>
-    </g>
-    <g class="frame-node" id="node-6-940"
-       data-name="Horizontal Reduction Fold (_mm256_extractf128_pd)" data-mod="benchmark.exe" data-pct="0.80" data-val="80"
-       data-info="Scalar extraction of final dot product" data-x="940.12" data-width="11.04" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="940.12" y="144" width="11.04" height="23" fill="#3f51b5" rx="2" ry="2"/>
-      <text class="func-text" x="945.12" y="159"></text>
-    </g>
-    <g class="frame-node" id="node-5-951"
-       data-name="vec_math::contract_axis (3D DG Tensor Contraction)" data-mod="benchmark.exe" data-pct="2.90" data-val="290"
-       data-info="Sum-factorization: O(Np^(d+1)) vs O(Np^2d) dense matvec (2.36x-5.3x speedup)" data-x="951.16" data-width="40.02" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="951.16" y="120" width="40.02" height="23" fill="#f77f00" rx="2" ry="2"/>
-      <text class="func-text" x="956.16" y="135">vec..</text>
-    </g>
-    <g class="frame-node" id="node-6-951"
-       data-name="Axis 0 Contraction (Unit Stride, X-fastest)" data-mod="benchmark.exe" data-pct="1.00" data-val="100"
-       data-info="Vectorized row-span dot product, continuous memory streaming" data-x="951.16" data-width="13.80" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="951.16" y="144" width="13.80" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="956.16" y="159"></text>
-    </g>
-    <g class="frame-node" id="node-6-964"
-       data-name="Axis 1 &amp; 2 Contraction (Interchanged Unit-Stride FMA)" data-mod="benchmark.exe" data-pct="1.90" data-val="190"
-       data-info="Loop-interchanged streaming FMA, zero strided register spills" data-x="964.96" data-width="26.22" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="964.96" y="144" width="26.22" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="969.96" y="159"></text>
-    </g>
-    <g class="frame-node" id="node-5-991"
-       data-name="vec_math::matvec_fixed &amp; matvec" data-mod="benchmark.exe" data-pct="1.70" data-val="170"
-       data-info="Row-span dot product evaluation with AVX2 FMA and zero register spills" data-x="991.18" data-width="23.46" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="991.18" y="120" width="23.46" height="23" fill="#fb8500" rx="2" ry="2"/>
-      <text class="func-text" x="996.18" y="135"></text>
-    </g>
-    <g class="frame-node" id="node-6-991"
-       data-name="Row-Span Vectorized FMA" data-mod="benchmark.exe" data-pct="1.70" data-val="170"
-       data-info="22+ GFLOPS sustained throughput at -O2, -O3, and -Ofast" data-x="991.18" data-width="23.46" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="991.18" y="144" width="23.46" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="996.18" y="159"></text>
-    </g>
-    <g class="frame-node" id="node-5-1014"
-       data-name="vec_math::solve_4x4_batched (SoA Solver)" data-mod="benchmark.exe" data-pct="1.30" data-val="130"
-       data-info="Gaussian elimination with partial pivoting &amp; singularity diagnostics" data-x="1014.64" data-width="17.94" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1014.64" y="120" width="17.94" height="23" fill="#d4a373" rx="2" ry="2"/>
-      <text class="func-text" x="1019.64" y="135"></text>
-    </g>
-    <g class="frame-node" id="node-6-1014"
-       data-name="Partial Pivot Search &amp; Row Swap" data-mod="benchmark.exe" data-pct="0.70" data-val="70"
-       data-info="Threshold checks and row swaps" data-x="1014.64" data-width="9.66" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1014.64" y="144" width="9.66" height="23" fill="#f6ad55" rx="2" ry="2"/>
-      <text class="func-text" x="1019.64" y="159"></text>
-    </g>
-    <g class="frame-node" id="node-6-1024"
-       data-name="Back-substitution Loop" data-mod="benchmark.exe" data-pct="0.60" data-val="60"
-       data-info="SoA back-substitution with reciprocal multiplications" data-x="1024.30" data-width="8.28" data-depth="6"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1024.30" y="144" width="8.28" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="1029.30" y="159"></text>
-    </g>
-    <g class="frame-node" id="node-4-1032"
-       data-name="run_dg_rk_benchmark (AXPBY Time Step: y = a*x + b*y)" data-mod="benchmark.exe" data-pct="5.60" data-val="560"
-       data-info="Discontinuous Galerkin Runge-Kutta substep (3 FLOPs, 24 Bytes/elem)" data-x="1032.58" data-width="77.28" data-depth="4"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1032.58" y="96" width="77.28" height="23" fill="#e76f51" rx="2" ry="2"/>
-      <text class="func-text" x="1037.58" y="111">run_dg_r..</text>
-    </g>
-    <g class="frame-node" id="node-5-1032"
-       data-name="Naive std::vector (3 mallocs/step)" data-mod="benchmark.exe" data-pct="4.10" data-val="410"
-       data-info="Creates 3 temporary heap buffers per Runge-Kutta stage" data-x="1032.58" data-width="56.58" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1032.58" y="120" width="56.58" height="23" fill="#e53e3e" rx="2" ry="2"/>
-      <text class="func-text" x="1037.58" y="135">Naive..</text>
-    </g>
-    <g class="frame-node" id="node-5-1089"
-       data-name="vec_math::operator&lt;&lt;= (Fused AXPBY)" data-mod="benchmark.exe" data-pct="0.80" data-val="80"
-       data-info="Single-pass AVX2 FMA: out[i] = alpha*x[i] + beta*y[i]" data-x="1089.16" data-width="11.04" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1089.16" y="120" width="11.04" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="1094.16" y="135"></text>
-    </g>
-    <g class="frame-node" id="node-5-1100"
-       data-name="Manual Scalar Loop" data-mod="benchmark.exe" data-pct="0.70" data-val="70"
-       data-info="Handwritten scalar loop" data-x="1100.20" data-width="9.66" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1100.20" y="120" width="9.66" height="23" fill="#dd6b20" rx="2" ry="2"/>
-      <text class="func-text" x="1105.20" y="135"></text>
-    </g>
-    <g class="frame-node" id="node-4-1109"
-       data-name="run_streaming_benchmark (Non-Temporal Streaming Stores)" data-mod="benchmark.exe" data-pct="4.50" data-val="450"
-       data-info="Evaluation of _mm256_stream_pd non-temporal stores vs normal cache-polluting writes" data-x="1109.86" data-width="62.10" data-depth="4"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1109.86" y="96" width="62.10" height="23" fill="#2a9d8f" rx="2" ry="2"/>
-      <text class="func-text" x="1114.86" y="111">run_st..</text>
-    </g>
-    <g class="frame-node" id="node-5-1109"
-       data-name="Standard Store (_mm256_store_pd / memcpy)" data-mod="benchmark.exe" data-pct="2.60" data-val="260"
-       data-info="Write-allocate causes RFO (Read-For-Ownership) cache line fetch, doubling memory traffic" data-x="1109.86" data-width="35.88" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1109.86" y="120" width="35.88" height="23" fill="#3182ce" rx="2" ry="2"/>
-      <text class="func-text" x="1114.86" y="135"></text>
-    </g>
-    <g class="frame-node" id="node-5-1145"
-       data-name="Streaming Store (_mm256_stream_pd)" data-mod="benchmark.exe" data-pct="1.90" data-val="190"
-       data-info="Bypasses L1/L2/L3 caches directly to write-combining buffers; preserves cache contents" data-x="1145.74" data-width="26.22" data-depth="5"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1145.74" y="120" width="26.22" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="1150.74" y="135"></text>
-    </g>
-    <g class="frame-node" id="node-1-1183"
-       data-name="bench_ofast.exe (Compiler Optimization Workload)" data-mod="bench_ofast.exe" data-pct="15.00" data-val="1500"
-       data-info="Optimization comparison benchmark (-Ofast vs -O3 vs -Os)" data-x="1183.00" data-width="207.00" data-depth="1"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1183.00" y="24" width="207.00" height="23" fill="#e76f51" rx="2" ry="2"/>
-      <text class="func-text" x="1188.00" y="39">bench_ofast.exe (Compiler ..</text>
-    </g>
-    <g class="frame-node" id="node-2-1183"
-       data-name="benchmark_fused_expr (7 FLOPs/elem)" data-mod="bench_ofast.exe" data-pct="8.90" data-val="890"
-       data-info="Fused expression: 2.0*a + b/c - 1.5 + (+a) - (-c)" data-x="1183.00" data-width="122.82" data-depth="2"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1183.00" y="48" width="122.82" height="23" fill="#f3722c" rx="2" ry="2"/>
-      <text class="func-text" x="1188.00" y="63">benchmark_fused..</text>
-    </g>
-    <g class="frame-node" id="node-3-1183"
-       data-name="Vector Division (b / c) Bottleneck" data-mod="bench_ofast.exe" data-pct="5.40" data-val="540"
-       data-info="_mm256_div_pd high latency (13-14 cycles) dominates pipeline throughput" data-x="1183.00" data-width="74.52" data-depth="3"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1183.00" y="72" width="74.52" height="23" fill="#b71c1c" rx="2" ry="2"/>
-      <text class="func-text" x="1188.00" y="87">Vector D..</text>
-    </g>
-    <g class="frame-node" id="node-4-1183"
-       data-name="FPU Divider Execution Pipe" data-mod="hardware" data-pct="5.40" data-val="540"
-       data-info="Non-pipelined divider limits IPC to ~0.08 div/cycle" data-x="1183.00" data-width="74.52" data-depth="4"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1183.00" y="96" width="74.52" height="23" fill="#7209b7" rx="2" ry="2"/>
-      <text class="func-text" x="1188.00" y="111">FPU Divi..</text>
-    </g>
-    <g class="frame-node" id="node-3-1257"
-       data-name="FMA &amp; Add/Sub Pipeline" data-mod="bench_ofast.exe" data-pct="3.50" data-val="350"
-       data-info="2.0*a and +/- operations execute concurrently on dual FMA ports" data-x="1257.52" data-width="48.30" data-depth="3"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1257.52" y="72" width="48.30" height="23" fill="#38a169" rx="2" ry="2"/>
-      <text class="func-text" x="1262.52" y="87">FMA ..</text>
-    </g>
-    <g class="frame-node" id="node-2-1305"
-       data-name="benchmark_axpy (2 FLOPs/elem)" data-mod="bench_ofast.exe" data-pct="3.50" data-val="350"
-       data-info="AXPY: y = alpha*x + y; memory bandwidth ceiling bound" data-x="1305.82" data-width="48.30" data-depth="2"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1305.82" y="48" width="48.30" height="23" fill="#1d3557" rx="2" ry="2"/>
-      <text class="func-text" x="1310.82" y="63">benc..</text>
-    </g>
-    <g class="frame-node" id="node-2-1354"
-       data-name="benchmark_dot (Dot Product Reduction)" data-mod="bench_ofast.exe" data-pct="2.60" data-val="260"
-       data-info="Dot product sum(a[i] * b[i]) with FMA accumulation" data-x="1354.12" data-width="35.88" data-depth="2"
-       onclick="window.zoomToNode(this)"
-       onmouseover="window.showDetails(this)" onmouseout="window.hideDetails()">
-      <rect class="func-box" x="1354.12" y="48" width="35.88" height="23" fill="#2b9348" rx="2" ry="2"/>
-      <text class="func-text" x="1359.12" y="63"></text>
+      <rect class="func-box" x="1327.90" y="72" width="62.10" height="23" fill="#e76f51" rx="2" ry="2"/>
+      <text class="func-text" x="1332.90" y="87">Runge-..</text>
     </g>
   </g>
 

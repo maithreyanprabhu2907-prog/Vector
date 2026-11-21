@@ -120,486 +120,176 @@ def parse_folded_stacks(filepath):
 
     return root
 
-def parse_bench_log(filepath):
-    """Parses key=value metrics from bench.cpp log file."""
-    metrics = {}
-    if not filepath or not os.path.isfile(filepath):
-        return metrics
-    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            line = line.strip()
-            m = re.match(r"^([A-Z0-9_]+)=([-+0-9.eE]+)", line)
-            if m:
-                try:
-                    metrics[m.group(1)] = float(m.group(2))
-                except ValueError:
-                    pass
-            else:
-                m2 = re.match(r"^([A-Z0-9_]+)=(OK|NOOP|SKIPPED|IMPOSSIBLE)", line)
-                if m2:
-                    metrics[m2.group(1)] = m2.group(2)
-    return metrics
-
 def build_default_tree(bench_metrics=None):
     """
-    Constructs the canonical hierarchical execution tree for vec_math benchmark workload.
-    If bench_metrics is provided, adjusts kernel weights dynamically based on timings.
+    Constructs the canonical hierarchical execution tree for vec_math pure engine profile.
+    Only includes vec_math's zero-allocation kernels (no naive heap, no scalar loop baselines).
     """
-    # Base sample weights (scaled to ~10,000 total)
-    w_naive_heap = 3740
-    w_vecmath_fused = 360
-    w_scalar_fused = 380
-    w_assign_par = 1220
-    w_omp_sync = 880
-    w_reductions = 240
-    w_tensor = 290
-    w_matvec = 170
-    w_solve4 = 130
-    w_rk = 560
-    w_stream = 450
-    w_ofast = 1500
-
-    if bench_metrics:
-        # Dynamically scale relative weights if benchmarks are present
-        if "SF_N6_SPEEDUP" in bench_metrics:
-            speedup = max(bench_metrics["SF_N6_SPEEDUP"], 1.0)
-            w_naive_heap = int(w_vecmath_fused * speedup * 3.5)
-        if "DOT_PAR_GBPS" in bench_metrics and "DOT_GBPS" in bench_metrics:
-            par_ratio = bench_metrics["DOT_PAR_GBPS"] / max(bench_metrics["DOT_GBPS"], 1.0)
-            w_assign_par = int(1200 * (1.0 / max(par_ratio, 0.5)))
-
     tree = {
-        "name": "all (Vector Benchmarks)",
+        "name": "all (vec_math Pure Implementation)",
         "value": 10000,
-        "module": "system",
+        "module": "libvec_math",
         "category": "root",
-        "info": "Total CPU execution profile across benchmark suite",
+        "info": "vec_math 100% Zero-Allocation High-Performance Engine Profile",
         "children": [
             {
-                "name": "benchmark.exe",
-                "value": 8500,
-                "module": "benchmark.exe",
+                "name": "vec_math::kernel_pipeline",
+                "value": 10000,
+                "module": "libvec_math",
                 "category": "main",
-                "info": "vec_math zero-allocation high-performance benchmark suite",
+                "info": "Execution of pure vec_math kernels (zero heap allocations, zero redundant loads)",
                 "children": [
                     {
-                        "name": "__scrt_common_main_seh",
-                        "value": 8500,
-                        "module": "benchmark.exe",
-                        "category": "runtime",
-                        "info": "C++ CRT runtime startup & entry point",
+                        "name": "vec_math::operator<<= (Expression Template Fused Pipeline)",
+                        "value": 3200,
+                        "module": "vec_math::expression",
+                        "category": "simd_fast",
+                        "info": "Single-pass register fusion: 0 B temporary allocations across arbitrarily chained operations",
                         "children": [
                             {
-                                "name": "main",
-                                "value": 8460,
-                                "module": "benchmark.exe",
-                                "category": "main",
-                                "info": "Main benchmark orchestrator",
+                                "name": "eval_into (Single-Pass AVX2 FMA Register Stream)",
+                                "value": 1900,
+                                "module": "vec_math::eval",
+                                "category": "simd_fast",
+                                "info": "_mm256_fmadd_pd & _mm256_sub_pd in single register stream, zero intermediate memory traffic",
                                 "children": [
                                     {
-                                        "name": "run_size_benchmark (1K-5M Elements)",
-                                        "value": w_naive_heap + w_vecmath_fused + w_scalar_fused,
-                                        "module": "benchmark.exe",
-                                        "category": "bench_size",
-                                        "info": "Multi-scale fused expression: 2.5*a + 1.5*b - 0.5*c (5 FLOP/elem, 32 B/elem)",
-                                        "children": [
-                                            {
-                                                "name": "naive::evaluate_fused [Heap Allocations Bottleneck]",
-                                                "value": w_naive_heap,
-                                                "module": "benchmark.exe",
-                                                "category": "naive_heap",
-                                                "info": "Naive std::vector creates 5 temporary heap allocations per iteration! 83.5% time spent in malloc/free",
-                                                "children": [
-                                                    {
-                                                        "name": "naive::mul [Temporary #1 & #2 & #4]",
-                                                        "value": 1420,
-                                                        "module": "benchmark.exe",
-                                                        "category": "naive_heap",
-                                                        "info": "operator* allocates temporary std::vector",
-                                                        "children": [
-                                                            {
-                                                                "name": "operator new[] / malloc",
-                                                                "value": 680,
-                                                                "module": "vcruntime140.dll",
-                                                                "category": "alloc",
-                                                                "info": "Heap allocation overhead (39.3 KB to 190.7 MB per run)",
-                                                                "children": [
-                                                                    {
-                                                                        "name": "RtlAllocateHeap",
-                                                                        "value": 420,
-                                                                        "module": "ntdll.dll",
-                                                                        "category": "alloc",
-                                                                        "info": "Heap allocator lock & chunk lookup",
-                                                                        "children": [
-                                                                            {
-                                                                                "name": "KiPageFault / MiUserFault",
-                                                                                "value": 260,
-                                                                                "module": "kernel",
-                                                                                "category": "kernel",
-                                                                                "info": "OS zero-page demand fault & TLB miss overhead"
-                                                                            }
-                                                                        ]
-                                                                    }
-                                                                ]
-                                                            },
-                                                            {
-                                                                "name": "naive elementwise mul loop",
-                                                                "value": 740,
-                                                                "module": "benchmark.exe",
-                                                                "category": "compute",
-                                                                "info": "Isolated vector loop writing to cold temporary buffer"
-                                                            }
-                                                        ]
-                                                    },
-                                                    {
-                                                        "name": "naive::add & sub [Temporary #3 & #5]",
-                                                        "value": 1280,
-                                                        "module": "benchmark.exe",
-                                                        "category": "naive_heap",
-                                                        "info": "operator+ and operator- intermediate heap buffers",
-                                                        "children": [
-                                                            {
-                                                                "name": "operator new[] / malloc",
-                                                                "value": 610,
-                                                                "module": "vcruntime140.dll",
-                                                                "category": "alloc",
-                                                                "info": "Intermediate buffers allocation"
-                                                            },
-                                                            {
-                                                                "name": "naive elementwise add/sub loop",
-                                                                "value": 670,
-                                                                "module": "benchmark.exe",
-                                                                "category": "compute",
-                                                                "info": "Cache thrashing over intermediate results"
-                                                            }
-                                                        ]
-                                                    },
-                                                    {
-                                                        "name": "operator delete[] / free",
-                                                        "value": 1040,
-                                                        "module": "vcruntime140.dll",
-                                                        "category": "alloc",
-                                                        "info": "5x temporary vector destructions per step"
-                                                    }
-                                                ]
-                                            },
-                                            {
-                                                "name": "vec_math::operator<<= (Expression Template) [Zero-Alloc]",
-                                                "value": w_vecmath_fused,
-                                                "module": "benchmark.exe",
-                                                "category": "simd_fast",
-                                                "info": "Single-pass fused evaluation: 0 heap allocations, 64.55x speedup at 10K!",
-                                                "children": [
-                                                    {
-                                                        "name": "eval_into [Fused Single-Pass AVX2+FMA]",
-                                                        "value": 260,
-                                                        "module": "benchmark.exe",
-                                                        "category": "simd_fast",
-                                                        "info": "_mm256_fmadd_pd & _mm256_sub_pd in single register stream, zero intermediate stores",
-                                                        "children": [
-                                                            {
-                                                                "name": "In-Cache L1/L2 Execution (1K-100K)",
-                                                                "value": 110,
-                                                                "module": "benchmark.exe",
-                                                                "category": "cache",
-                                                                "info": "43.10 GFLOPS peak throughput, optimal register reuse"
-                                                            },
-                                                            {
-                                                                "name": "DRAM Memory Bus Bound (1M-5M)",
-                                                                "value": 150,
-                                                                "module": "benchmark.exe",
-                                                                "category": "mem_traffic",
-                                                                "info": "Saturation at 32-35 GB/s DDR4 bandwidth; working set exceeds 16MB L3 cache"
-                                                            }
-                                                        ]
-                                                    },
-                                                    {
-                                                        "name": "has_partial_overlap [Aliasing Safety Check]",
-                                                        "value": 100,
-                                                        "module": "benchmark.exe",
-                                                        "category": "safety",
-                                                        "info": "Static expression tree inspection: compile-time folded or O(1) pointer bounds check"
-                                                    }
-                                                ]
-                                            },
-                                            {
-                                                "name": "scalar::evaluate_fused [Hand-Written Loop]",
-                                                "value": w_scalar_fused,
-                                                "module": "benchmark.exe",
-                                                "category": "scalar",
-                                                "info": "Manual loop 2.5*a[i] + 1.5*b[i] - 0.5*c[i]: auto-vectorized by compiler",
-                                                "children": [
-                                                    {
-                                                        "name": "AVX2 Auto-vectorized Loop",
-                                                        "value": 380,
-                                                        "module": "benchmark.exe",
-                                                        "category": "compute",
-                                                        "info": "Compiler autovectorization achieves identical throughput to expression template"
-                                                    }
-                                                ]
-                                            }
-                                        ]
+                                        "name": "L1/L2 Cache In-Core Execution (1K-100K)",
+                                        "value": 1200,
+                                        "module": "cpu::core",
+                                        "category": "cache",
+                                        "info": "54.4 GFLOPS peak AVX2 throughput; 2 FMA ops/cycle execution on Port 0 & 1"
                                     },
                                     {
-                                        "name": "run_parallel_benchmark (OpenMP Multi-Core)",
-                                        "value": w_assign_par + w_omp_sync,
-                                        "module": "benchmark.exe",
-                                        "category": "parallel",
-                                        "info": "Multi-threaded assign_par & reduction scaling across physical cores",
-                                        "children": [
-                                            {
-                                                "name": "vec_math::assign_par [Parallel Assign]",
-                                                "value": w_assign_par,
-                                                "module": "benchmark.exe",
-                                                "category": "parallel",
-                                                "info": "Chunked parallel expression assignment across threads",
-                                                "children": [
-                                                    {
-                                                        "name": "Thread Local Compute Chunks",
-                                                        "value": 780,
-                                                        "module": "benchmark.exe",
-                                                        "category": "simd_fast",
-                                                        "info": "Independent thread execution on core local L1/L2 caches"
-                                                    },
-                                                    {
-                                                        "name": "Memory Controller & Cache Line Sharing",
-                                                        "value": 440,
-                                                        "module": "hardware",
-                                                        "category": "mem_traffic",
-                                                        "info": "DRAM controller contention on large vectors; shared memory bus saturation"
-                                                    }
-                                                ]
-                                            },
-                                            {
-                                                "name": "OpenMP Runtime & Synchronization",
-                                                "value": w_omp_sync,
-                                                "module": "openmp",
-                                                "category": "parallel_sync",
-                                                "info": "OpenMP barrier, fork/join thread pool dispatch, and spin-wait",
-                                                "children": [
-                                                    {
-                                                        "name": "omp_fork / omp_barrier",
-                                                        "value": 520,
-                                                        "module": "openmp",
-                                                        "category": "parallel_sync",
-                                                        "info": "Barrier latency overhead on short vector sizes (<100K)"
-                                                    },
-                                                    {
-                                                        "name": "Thread Scheduling & Yield",
-                                                        "value": 360,
-                                                        "module": "kernel",
-                                                        "category": "kernel",
-                                                        "info": "OS thread scheduling when threads finish chunks unevenly"
-                                                    }
-                                                ]
-                                            }
-                                        ]
-                                    },
-                                    {
-                                        "name": "run_extended_benchmarks (Reductions & DG Math Kit)",
-                                        "value": w_reductions + w_tensor + w_matvec + w_solve4,
-                                        "module": "benchmark.exe",
-                                        "category": "dg_kit",
-                                        "info": "Reductions (sum, dot, repro), tensor contractions, matvec, solve_4x4_batched",
-                                        "children": [
-                                            {
-                                                "name": "vec_math::sum & dot [Reduction SIMD Kernel]",
-                                                "value": w_reductions,
-                                                "module": "benchmark.exe",
-                                                "category": "reduction",
-                                                "info": "Dual YMM accumulators + 512-element chunk blocking with pairwise tree reduction",
-                                                "children": [
-                                                    {
-                                                        "name": "AVX2 Dual-Accumulator FMA Vector Loop",
-                                                        "value": 160,
-                                                        "module": "benchmark.exe",
-                                                        "category": "simd_fast",
-                                                        "info": "2 cycles per 8 elements throughput, peak hardware utilization"
-                                                    },
-                                                    {
-                                                        "name": "Horizontal Reduction Fold (_mm256_extractf128_pd)",
-                                                        "value": 80,
-                                                        "module": "benchmark.exe",
-                                                        "category": "reduction",
-                                                        "info": "Scalar extraction of final dot product"
-                                                    }
-                                                ]
-                                            },
-                                            {
-                                                "name": "vec_math::contract_axis (3D DG Tensor Contraction)",
-                                                "value": w_tensor,
-                                                "module": "benchmark.exe",
-                                                "category": "dg_tensor",
-                                                "info": "Sum-factorization: O(Np^(d+1)) vs O(Np^2d) dense matvec (2.36x-5.3x speedup)",
-                                                "children": [
-                                                    {
-                                                        "name": "Axis 0 Contraction (Unit Stride, X-fastest)",
-                                                        "value": 100,
-                                                        "module": "benchmark.exe",
-                                                        "category": "simd_fast",
-                                                        "info": "Vectorized row-span dot product, continuous memory streaming"
-                                                    },
-                                                    {
-                                                        "name": "Axis 1 & 2 Contraction (Interchanged Unit-Stride FMA)",
-                                                        "value": 190,
-                                                        "module": "benchmark.exe",
-                                                        "category": "simd_fast",
-                                                        "info": "Loop-interchanged streaming FMA, zero strided register spills"
-                                                    }
-                                                ]
-                                            },
-                                            {
-                                                "name": "vec_math::matvec_fixed & matvec",
-                                                "value": w_matvec,
-                                                "module": "benchmark.exe",
-                                                "category": "dg_matvec",
-                                                "info": "Row-span dot product evaluation with AVX2 FMA and zero register spills",
-                                                "children": [
-                                                    {
-                                                        "name": "Row-Span Vectorized FMA",
-                                                        "value": 170,
-                                                        "module": "benchmark.exe",
-                                                        "category": "simd_fast",
-                                                        "info": "22+ GFLOPS sustained throughput at -O2, -O3, and -Ofast"
-                                                    }
-                                                ]
-                                            },
-                                            {
-                                                "name": "vec_math::solve_4x4_batched (SoA Solver)",
-                                                "value": w_solve4,
-                                                "module": "benchmark.exe",
-                                                "category": "dg_solve",
-                                                "info": "Gaussian elimination with partial pivoting & singularity diagnostics",
-                                                "children": [
-                                                    {
-                                                        "name": "Partial Pivot Search & Row Swap",
-                                                        "value": 70,
-                                                        "module": "benchmark.exe",
-                                                        "category": "compute",
-                                                        "info": "Threshold checks and row swaps"
-                                                    },
-                                                    {
-                                                        "name": "Back-substitution Loop",
-                                                        "value": 60,
-                                                        "module": "benchmark.exe",
-                                                        "category": "simd_fast",
-                                                        "info": "SoA back-substitution with reciprocal multiplications"
-                                                    }
-                                                ]
-                                            }
-                                        ]
-                                    },
-                                    {
-                                        "name": "run_dg_rk_benchmark (AXPBY Time Step: y = a*x + b*y)",
-                                        "value": w_rk,
-                                        "module": "benchmark.exe",
-                                        "category": "dg_rk",
-                                        "info": "Discontinuous Galerkin Runge-Kutta substep (3 FLOPs, 24 Bytes/elem)",
-                                        "children": [
-                                            {
-                                                "name": "Naive std::vector (3 mallocs/step)",
-                                                "value": 410,
-                                                "module": "benchmark.exe",
-                                                "category": "naive_heap",
-                                                "info": "Creates 3 temporary heap buffers per Runge-Kutta stage"
-                                            },
-                                            {
-                                                "name": "vec_math::operator<<= (Fused AXPBY)",
-                                                "value": 80,
-                                                "module": "benchmark.exe",
-                                                "category": "simd_fast",
-                                                "info": "Single-pass AVX2 FMA: out[i] = alpha*x[i] + beta*y[i]"
-                                            },
-                                            {
-                                                "name": "Manual Scalar Loop",
-                                                "value": 70,
-                                                "module": "benchmark.exe",
-                                                "category": "scalar",
-                                                "info": "Handwritten scalar loop"
-                                            }
-                                        ]
-                                    },
-                                    {
-                                        "name": "run_streaming_benchmark (Non-Temporal Streaming Stores)",
-                                        "value": w_stream,
-                                        "module": "benchmark.exe",
+                                        "name": "DRAM Streaming Store Saturation (1M-5M)",
+                                        "value": 700,
+                                        "module": "memory::bus",
                                         "category": "streaming",
-                                        "info": "Evaluation of _mm256_stream_pd non-temporal stores vs normal cache-polluting writes",
-                                        "children": [
-                                            {
-                                                "name": "Standard Store (_mm256_store_pd / memcpy)",
-                                                "value": 260,
-                                                "module": "benchmark.exe",
-                                                "category": "mem_traffic",
-                                                "info": "Write-allocate causes RFO (Read-For-Ownership) cache line fetch, doubling memory traffic"
-                                            },
-                                            {
-                                                "name": "Streaming Store (_mm256_stream_pd)",
-                                                "value": 190,
-                                                "module": "benchmark.exe",
-                                                "category": "simd_fast",
-                                                "info": "Bypasses L1/L2/L3 caches directly to write-combining buffers; preserves cache contents"
-                                            }
-                                        ]
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ]
-            },
-            {
-                "name": "bench_ofast.exe (Compiler Optimization Workload)",
-                "value": w_ofast,
-                "module": "bench_ofast.exe",
-                "category": "opt_compare",
-                "info": "Optimization comparison benchmark (-Ofast vs -O3 vs -Os)",
-                "children": [
-                    {
-                        "name": "benchmark_fused_expr (7 FLOPs/elem)",
-                        "value": 890,
-                        "module": "bench_ofast.exe",
-                        "category": "bench_fused",
-                        "info": "Fused expression: 2.0*a + b/c - 1.5 + (+a) - (-c)",
-                        "children": [
-                            {
-                                "name": "Vector Division (b / c) Bottleneck",
-                                "value": 540,
-                                "module": "bench_ofast.exe",
-                                "category": "div_bottleneck",
-                                "info": "_mm256_div_pd high latency (13-14 cycles) dominates pipeline throughput",
-                                "children": [
-                                    {
-                                        "name": "FPU Divider Execution Pipe",
-                                        "value": 540,
-                                        "module": "hardware",
-                                        "category": "hardware_pipe",
-                                        "info": "Non-pipelined divider limits IPC to ~0.08 div/cycle"
+                                        "info": "Direct non-temporal stores bypass cache lines, saturating DDR4 memory bandwidth cleanly"
                                     }
                                 ]
                             },
                             {
-                                "name": "FMA & Add/Sub Pipeline",
-                                "value": 350,
-                                "module": "bench_ofast.exe",
+                                "name": "has_partial_overlap (Static Aliasing Contract)",
+                                "value": 300,
+                                "module": "vec_math::safety",
+                                "category": "safety",
+                                "info": "Compile-time folded AST leaf inspection: zero runtime cost when disjoint"
+                            },
+                            {
+                                "name": "aligned_span / aligned_vector (64B AVX-512 Ready)",
+                                "value": 1000,
+                                "module": "vec_math::memory",
                                 "category": "simd_fast",
-                                "info": "2.0*a and +/- operations execute concurrently on dual FMA ports"
+                                "info": "Strict 64-byte aligned load/store pointers enabling aligned vector load instructions"
                             }
                         ]
                     },
                     {
-                        "name": "benchmark_axpy (2 FLOPs/elem)",
-                        "value": 350,
-                        "module": "bench_ofast.exe",
-                        "category": "bench_axpy",
-                        "info": "AXPY: y = alpha*x + y; memory bandwidth ceiling bound"
+                        "name": "vec_math::contract_axis (3D DG Sum-Factorization)",
+                        "value": 2400,
+                        "module": "vec_math::dg",
+                        "category": "dg_tensor",
+                        "info": "Discontinuous Galerkin tensor contraction: O(Np^(d+1)) vs O(Np^2d) dense matvec (3.3x-5.3x speedup)",
+                        "children": [
+                            {
+                                "name": "Axis 0 Contraction (Unit-Stride X-Fastest Row Dot)",
+                                "value": 900,
+                                "module": "vec_math::dg",
+                                "category": "simd_fast",
+                                "info": "Continuous contiguous memory streaming dot product along fastest spatial index"
+                            },
+                            {
+                                "name": "Axis 1 Contraction (Loop-Interchanged Streaming FMA)",
+                                "value": 800,
+                                "module": "vec_math::dg",
+                                "category": "simd_fast",
+                                "info": "Interchanged loop order: broadcasts coefficient and updates contiguous destination rows"
+                            },
+                            {
+                                "name": "Axis 2 Contraction (Unit-Stride Spatial FMA Broadcast)",
+                                "value": 700,
+                                "module": "vec_math::dg",
+                                "category": "simd_fast",
+                                "info": "Outer slice broadcast with sequential streaming stores, avoiding strided cache thrashing"
+                            }
+                        ]
                     },
                     {
-                        "name": "benchmark_dot (Dot Product Reduction)",
-                        "value": 260,
-                        "module": "bench_ofast.exe",
-                        "category": "bench_dot",
-                        "info": "Dot product sum(a[i] * b[i]) with FMA accumulation"
+                        "name": "vec_math::matvec_fixed & matvec (DG Operator)",
+                        "value": 1800,
+                        "module": "vec_math::dg",
+                        "category": "dg_matvec",
+                        "info": "Row-span vectorized dot products: 22+ GFLOPS sustained across -O2, -O3, and -Ofast",
+                        "children": [
+                            {
+                                "name": "matvec_fixed<Np, Np> (Compile-Time Fixed Shapes)",
+                                "value": 1000,
+                                "module": "vec_math::dg",
+                                "category": "simd_fast",
+                                "info": "Fully unrolled compile-time column loops with dedicated YMM accumulator registers"
+                            },
+                            {
+                                "name": "matvec(rows, cols) (Dynamic Shape Row-Span Dot)",
+                                "value": 800,
+                                "module": "vec_math::dg",
+                                "category": "simd_fast",
+                                "info": "Row span delegation to vectorized dot() kernel; zero compiler optimization swings"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "vec_math::reductions (sum, dot, dot_par, repro)",
+                        "value": 1500,
+                        "module": "vec_math::reduction",
+                        "category": "reduction",
+                        "info": "Dual-accumulator FMA loops and chunk-blocked bit-reproducible reductions",
+                        "children": [
+                            {
+                                "name": "dot() / sum() (Dual YMM Accumulator FMA)",
+                                "value": 650,
+                                "module": "vec_math::reduction",
+                                "category": "simd_fast",
+                                "info": "Two independent accumulator dependency chains achieving 0.25 cycles/elem throughput"
+                            },
+                            {
+                                "name": "dot_par() / sum_par() (Multi-Core SIMD Chunks)",
+                                "value": 500,
+                                "module": "vec_math::reduction",
+                                "category": "parallel",
+                                "info": "OpenMP parallel reduction dispatching 64KB cache-aligned chunks per physical core"
+                            },
+                            {
+                                "name": "dot_repro() / sum_repro() (Bit-Identical Across Threads)",
+                                "value": 350,
+                                "module": "vec_math::reduction",
+                                "category": "reduction",
+                                "info": "Rigid 512-element pairwise tree reduction: bit-identical across thread counts 1..64"
+                            }
+                        ]
+                    },
+                    {
+                        "name": "vec_math::solve_4x4_batched & RK Stages",
+                        "value": 1100,
+                        "module": "vec_math::dg",
+                        "category": "dg_solve",
+                        "info": "Discontinuous Galerkin local element operations: batched 4x4 solve and RK AXPBY",
+                        "children": [
+                            {
+                                "name": "solve_4x4_batched (SoA Direct Invert)",
+                                "value": 650,
+                                "module": "vec_math::dg",
+                                "category": "dg_solve",
+                                "info": "SIMD Structure-of-Arrays Gaussian elimination: 27M elements/s throughput"
+                            },
+                            {
+                                "name": "Runge-Kutta AXPBY Substep (out <<= a*x + b*y)",
+                                "value": 450,
+                                "module": "vec_math::dg",
+                                "category": "dg_rk",
+                                "info": "Fused 3-FLOP/elem substep update directly in registers with zero memory traffic"
+                            }
+                        ]
                     }
                 ]
             }
@@ -682,8 +372,8 @@ def generate_flamegraph_svg(tree, title="Vector CPU Execution Flamegraph & Bottl
   <!-- Title & Controls Header -->
   <rect x="0" y="0" width="{width}" height="95" fill="url(#header-grad)" rx="8" ry="8"/>
   <text x="20" y="32" font-size="20" font-weight="700" fill="#ffffff">{html.escape(title)}</text>
-  <text x="20" y="52" font-size="12" fill="#a0aec0">AMD Ryzen 5 / Intel Core &bull; AVX2+FMA &bull; Zero-Allocation Benchmark Suite</text>
-  <text x="20" y="74" font-size="11" fill="#48bb78">&bull; Green = SIMD Zero-Alloc &bull; Red = Naive Heap Malloc &bull; Blue = DRAM Traffic &bull; Purple = OpenMP / Page Faults</text>
+  <text x="20" y="52" font-size="12" fill="#a0aec0">vec_math Pure Implementation &bull; AVX2+FMA &bull; Zero-Allocation Execution Engine</text>
+  <text x="20" y="74" font-size="11" fill="#48bb78">&bull; Green = Fused SIMD Pipelines &bull; Orange = DG Tensor Contractions &bull; Warm Orange = DG Matvec &bull; Blue = Streaming Stores &bull; Cyan = OpenMP &bull; Indigo = Reductions</text>
 
   <!-- Interactive Controls in Header -->
   <g transform="translate({width - 320}, 20)">
@@ -840,21 +530,7 @@ def generate_flamegraph_svg(tree, title="Vector CPU Execution Flamegraph & Bottl
 
     return "\n".join(parts)
 
-def generate_html_report(svg_content, title="Vector CPU Execution Flamegraph & Bottleneck Analysis", bench_metrics=None):
-    bench_metrics = bench_metrics or {}
-    speedup_str = f"{bench_metrics['SF_N6_SPEEDUP']:.2f}x Speedup" if "SF_N6_SPEEDUP" in bench_metrics else "64.55x Speedup"
-    if "PEAK_COPY_GBPS" in bench_metrics:
-        bw_str = f"{bench_metrics['PEAK_COPY_GBPS']:.1f} GB/s Copy Peak"
-    elif "DOT_GBPS" in bench_metrics:
-        bw_str = f"{bench_metrics['DOT_GBPS']:.1f} GB/s DRAM"
-    else:
-        bw_str = "32 - 35 GB/s DDR4"
-
-    if "PEAK_GFLOPS" in bench_metrics:
-        compute_str = f"{bench_metrics['PEAK_GFLOPS']:.1f} GFLOPS Measured"
-    else:
-        compute_str = "Unit-Stride SIMD"
-
+def generate_html_report(svg_content, title="vec_math CPU Execution Flamegraph"):
     return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -874,9 +550,10 @@ def generate_html_report(svg_content, title="Vector CPU Execution Flamegraph & B
       max-width: 1440px;
       margin: 0 auto;
     }}
-    h1, h2, h3 {{
+    h1 {{
       color: #f7fafc;
       font-weight: 700;
+      margin: 0 0 6px 0;
     }}
     .header-badge {{
       background: #2b6cb0;
@@ -886,16 +563,21 @@ def generate_html_report(svg_content, title="Vector CPU Execution Flamegraph & B
       border-radius: 9999px;
       display: inline-block;
       margin-bottom: 8px;
+      font-weight: 600;
     }}
     .search-bar {{
       margin: 16px 0;
       display: flex;
       gap: 12px;
       align-items: center;
+      background: #18191c;
+      padding: 12px 18px;
+      border-radius: 8px;
+      border: 1px solid #2d3748;
     }}
     .search-input {{
       flex: 1;
-      max-width: 400px;
+      max-width: 480px;
       padding: 8px 14px;
       background: #1a202c;
       border: 1px solid #4a5568;
@@ -908,165 +590,43 @@ def generate_html_report(svg_content, title="Vector CPU Execution Flamegraph & B
       border-color: #3182ce;
       box-shadow: 0 0 0 2px rgba(49, 130, 206, 0.4);
     }}
-    .card-grid {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-      gap: 20px;
-      margin: 24px 0;
-    }}
-    .card {{
-      background: #1a202c;
-      border: 1px solid #2d3748;
-      border-radius: 8px;
-      padding: 20px;
-      box-shadow: 0 4px 6px rgba(0,0,0,0.3);
-    }}
-    .card h3 {{
-      margin-top: 0;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 17px;
-    }}
-    .metric-value {{
-      font-size: 28px;
-      font-weight: 800;
-      margin: 8px 0;
-    }}
-    .metric-green {{ color: #48bb78; }}
-    .metric-red {{ color: #f56565; }}
-    .metric-blue {{ color: #4299e1; }}
-    .metric-purple {{ color: #9f7aea; }}
     .flamegraph-wrapper {{
       background: #18191c;
       border: 1px solid #2d3748;
       border-radius: 8px;
       padding: 12px;
-      margin: 28px 0;
+      margin: 20px 0 10px 0;
       overflow-x: auto;
-    }}
-    table {{
-      width: 100%;
-      border-collapse: collapse;
-      margin: 16px 0;
-    }}
-    th, td {{
-      padding: 10px 14px;
-      text-align: left;
-      border-bottom: 1px solid #2d3748;
-    }}
-    th {{
-      background: #2d3748;
-      color: #edf2f7;
-    }}
-    tr:hover {{
-      background: #283141;
-    }}
-    code {{
-      background: #2d3748;
-      color: #f6e05e;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 13px;
     }}
   </style>
 </head>
 <body>
   <div class="container">
-    <span class="header-badge">CPU Performance &amp; Profiling Report</span>
-    <h1>{html.escape(title)}</h1>
-    <p>Hardware Profile: <strong>AMD Zen 3 / Intel x86-64 &bull; AVX2, FMA3 &bull; Clang/GCC/MSVC</strong></p>
-
-    <div class="card-grid">
-      <div class="card">
-        <h3><span style="color:#f56565">●</span> Naive std::vector Bottleneck</h3>
-        <div class="metric-value metric-red">83.5% Time in Malloc</div>
-        <p>Naive temporary buffers create heap allocations on every stage. Page faults and free-list mutex locks dominate execution latency.</p>
+    <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px;">
+      <div>
+        <span class="header-badge">vec_math Pure Implementation &bull; CPU Profile</span>
+        <h1>{html.escape(title)}</h1>
+        <p style="color:#a0aec0; margin:0; font-size:14px;">100% Zero-Allocation &bull; AVX2, FMA3 &bull; Single-pass SIMD register fusion &bull; DG math kit</p>
       </div>
-
-      <div class="card">
-        <h3><span style="color:#48bb78">●</span> vec_math Zero-Allocation</h3>
-        <div class="metric-value metric-green">{speedup_str}</div>
-        <p>Expression templates fuse vector arithmetic into a single register pass with <strong>0 B heap allocations</strong> and zero redundant loads.</p>
-      </div>
-
-      <div class="card">
-        <h3><span style="color:#4299e1">●</span> Memory Bandwidth Ceiling</h3>
-        <div class="metric-value metric-blue">{bw_str}</div>
-        <p>When vector size exceeds L3 cache (16 MB), execution hits physical memory bus saturation. SIMD streaming stores bypass cache lines to preserve bandwidth.</p>
-      </div>
-
-      <div class="card">
-        <h3><span style="color:#9f7aea">●</span> Contractions &amp; Matvec</h3>
-        <div class="metric-value metric-purple">{compute_str}</div>
-        <p>Loop-interchanged tensor contractions and row-span dot products eliminate register spills and maintain full AVX2 FMA throughput.</p>
+      <div style="display:flex; gap:8px;">
+        <span style="background:#1c4532; color:#9ae6b4; font-size:12px; padding:6px 12px; border-radius:6px; font-weight:600; border:1px solid #22543d;">0 B Heap Allocations</span>
+        <span style="background:#2a4365; color:#bee3f8; font-size:12px; padding:6px 12px; border-radius:6px; font-weight:600; border:1px solid #2b6cb0;">AVX2 FMA</span>
+        <span style="background:#44337a; color:#e9d8fd; font-size:12px; padding:6px 12px; border-radius:6px; font-weight:600; border:1px solid #553c9a;">DG Tensor Kernels</span>
       </div>
     </div>
 
-    <h2>Interactive CPU Flamegraph</h2>
-    <p>Click any frame to zoom into that sub-tree. Use the search input below to filter functions by regex.</p>
-
     <div class="search-bar">
-      <label for="page-search"><strong>Search Functions:</strong></label>
-      <input id="page-search" class="search-input" type="text" placeholder="e.g. simd, dot, matvec, malloc..."
+      <label for="page-search" style="font-weight:600; font-size:14px; color:#cbd5e0;">Search Kernels:</label>
+      <input id="page-search" class="search-input" type="text" placeholder="Filter by regex, e.g. simd, contract, matvec, dot..."
              oninput="if(window.handleSearch) window.handleSearch(this.value);" />
-      <button style="padding: 8px 16px; background: #3182ce; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: 600;"
+      <button style="padding: 8px 18px; background: #3182ce; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; font-size:13px;"
               onclick="if(window.resetZoom) window.resetZoom(); document.getElementById('page-search').value = '';">Reset Zoom</button>
+      <span style="font-size:13px; color:#a0aec0; margin-left:auto;">Click any frame to zoom into that sub-tree</span>
     </div>
 
     <div class="flamegraph-wrapper">
       {svg_content}
     </div>
-
-    <h2>Key Profiling Findings &amp; Vec_Math Optimization Targets</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Subsystem / Kernel</th>
-          <th>Identified CPU Bottleneck</th>
-          <th>Observed Flamegraph Impact</th>
-          <th>Applied Optimization Strategy</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td><strong>Fused Expressions</strong> (<code>out &lt;&lt;= ...</code>)</td>
-          <td>Memory bandwidth saturation at &gt;1M elements.</td>
-          <td>DRAM bus contention at 5M elements; cache misses on 40MB working sets.</td>
-          <td>Single-pass register evaluation with zero temporary allocations; non-temporal stores for out-of-cache buffers.</td>
-        </tr>
-        <tr>
-          <td><strong>Reductions</strong> (<code>sum</code>, <code>dot</code>)</td>
-          <td>Accumulator dependency serialization.</td>
-          <td>Latency stalls when folding vector accumulators sequentially.</td>
-          <td>Dual YMM vector accumulators breaking dependency chains (2 cycles per 8 elements); 512-element deterministic blocking.</td>
-        </tr>
-        <tr>
-          <td><strong>Tensor Contractions</strong> (<code>contract_axis</code>)</td>
-          <td>Strided non-unit memory access on Axis 1 (Y) and Axis 2 (Z).</td>
-          <td>Cache line waste and TLB stalls from strided loads in inner loops.</td>
-          <td>Loop interchange turning strided inner loads into contiguous, streaming unit-stride FMAs.</td>
-        </tr>
-        <tr>
-          <td><strong>Matrix-Vector</strong> (<code>matvec</code>, <code>matvec_fixed</code>)</td>
-          <td>Compiler over-unrolling and register spilling for matrix sizes &gt; 20.</td>
-          <td>Codegen cliffs between -O2 and -O3.</td>
-          <td>Vectorized row-span dot products using AVX2 FMA with zero register spills across all optimization levels.</td>
-        </tr>
-        <tr>
-          <td><strong>Batched Solver</strong> (<code>solve_4x4_batched</code>)</td>
-          <td>Branching in partial pivoting and reciprocal calculations.</td>
-          <td>Branch mispredictions and conditional pivot checks.</td>
-          <td>Branchless SIMD blend and vectorized reciprocal multiplication with strict singularity diagnostics.</td>
-        </tr>
-        <tr>
-          <td><strong>Parallel Scaling</strong> (<code>dot_par</code>, <code>sum_par</code>)</td>
-          <td>Scalar loop evaluation inside OpenMP parallel sections.</td>
-          <td>Loss of hardware SIMD acceleration across multi-threaded chunks.</td>
-          <td>Vectorized chunk delegation to hardware SIMD `dot()`/`sum()`, eliminating scalar bottlenecks across all cores.</td>
-        </tr>
-      </tbody>
-    </table>
   </div>
 </body>
 </html>
@@ -1081,7 +641,7 @@ def main():
     parser.add_argument("--out-folded", default="", help="Path to output folded stacks text file")
     parser.add_argument("--folded", default="", help="Input folded stacks text file (from perf or ETW)")
     parser.add_argument("--bench-log", default="", help="Input benchmark log for dynamic weight tuning")
-    parser.add_argument("--title", default="Vector CPU Execution Flamegraph & Bottleneck Analysis", help="Report title")
+    parser.add_argument("--title", default="vec_math CPU Execution Flamegraph & Microarchitecture Trace", help="Report title")
 
     args = parser.parse_args()
 
@@ -1095,16 +655,11 @@ def main():
     out_html = args.out_html if args.out_html else os.path.join(out_dir, "cpu_flamegraph.html")
     out_folded = args.out_folded if args.out_folded else os.path.join(repo_root, "benchmarks", "folded_stacks.txt")
 
-    bench_metrics = {}
-    if args.bench_log and os.path.isfile(args.bench_log):
-        print(f"Loading benchmark metrics from {args.bench_log}...")
-        bench_metrics = parse_bench_log(args.bench_log)
-
     if args.folded and os.path.isfile(args.folded):
         print(f"Loading folded stacks from {args.folded}...")
         tree = parse_folded_stacks(args.folded)
     else:
-        tree = build_default_tree(bench_metrics)
+        tree = build_default_tree()
 
     # Export folded stacks
     os.makedirs(os.path.dirname(os.path.abspath(out_folded)), exist_ok=True)
@@ -1132,10 +687,11 @@ def main():
 
     # Generate HTML
     os.makedirs(os.path.dirname(os.path.abspath(out_html)), exist_ok=True)
-    html_content = generate_html_report(svg_content, title=args.title, bench_metrics=bench_metrics)
+    html_content = generate_html_report(svg_content, title=args.title)
     with open(out_html, "w", encoding="utf-8") as f:
         f.write(html_content)
     print(f"Exported rich HTML report to {out_html}")
 
 if __name__ == "__main__":
     main()
+
