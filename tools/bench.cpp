@@ -27,6 +27,7 @@
 #include <vec_math/vector_math.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -57,7 +58,14 @@ int  g_impossible = 0;
 
 // ---------------------------------------------------------------- plumbing
 
-inline void escape_memory(void *p) { asm volatile("" : : "r"(p) : "memory"); }
+inline void escape_memory(void *p) {
+#if defined(_MSC_VER) && !defined(__clang__)
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    (void)p;
+#else
+    asm volatile("" : : "r"(p) : "memory");
+#endif
+}
 
 // Mutate a value so the compiler cannot hoist a loop body, and prove the
 // mutation is observable. 1.0 is far above one ULP for any |x| < 2^52.
