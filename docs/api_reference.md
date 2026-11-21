@@ -481,6 +481,7 @@ The DG endgame primitives provide a complete, zero-overhead foundation for high-
 | **`solve_4x4_batched`** | `void solve_4x4_batched(A_soa, b_soa, x_soa, num_elements)` | Batched $4 \times 4$ LU solver with partial pivoting across elements in SoA layout. |
 | **`transpose_aos_to_soa`** | `void transpose_aos_to_soa(aos, soa, num_tuples, tuple_size)` | Converts interleaved AoS data into Structure-of-Arrays (SoA) layout. |
 | **`transpose_soa_to_aos`** | `void transpose_soa_to_aos(soa, aos, num_tuples, tuple_size)` | Converts Structure-of-Arrays (SoA) data back to interleaved AoS format. |
+| **`contract_axis<Axis, N>`** | `void contract_axis(D, in, out, nx, ny, nz)` | Sum-factorization directional tensor contractions along $X$, $Y$, or $Z$ axis for quad/hex elements. |
 
 ---
 
@@ -862,5 +863,62 @@ transpose_aos_to_soa(aos.data(), soa.data(), nelem, 4);
 
 // SoA to AoS
 transpose_soa_to_aos(soa.data(), aos.data(), nelem, 4);
+```
+
+---
+
+### 9.9 Directional Tensor Contractions for Sum-Factorization (`contract_axis`)
+
+In high-order Discontinuous Galerkin and Spectral Element methods on tensor-product quad/hex cells, applying dense operators directly scales as $\mathcal{O}(N^{2d})$ where $d$ is the spatial dimension. **Sum-factorization** decomposes the multi-dimensional operator into 1D directional tensor contractions:
+
+$$\mathbf{u}_{,x} = (I_z \otimes I_y \otimes D_x) \mathbf{u}, \quad \mathbf{u}_{,y} = (I_z \otimes D_y \otimes I_x) \mathbf{u}, \quad \mathbf{u}_{,z} = (D_z \otimes I_y \otimes I_x) \mathbf{u}$$
+
+This reduces algorithmic arithmetic complexity from $\mathcal{O}(N^{2d})$ to $\mathcal{O}(d \cdot N^{d+1})$ ($5.3\times$ faster at $p=3$ in 3D, $21\times$ faster at $p=7$).
+
+`vec_math` provides `contract_axis` with compile-time unrolling along any designated axis:
+
+```cpp
+enum class Axis : std::size_t { X = 0, Y = 1, Z = 2 };
+
+template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
+VEC_MATH_HOST_DEVICE inline void contract_axis(
+    const MatT* D, const T* in, T* out,
+    std::size_t nx, std::size_t ny, std::size_t nz = 1);
+
+template<auto AxisParam, std::size_t N = 0, typename MatT, typename InT, typename OutT,
+         std::size_t DExt, std::size_t InExt, std::size_t OutExt>
+VEC_MATH_HOST_DEVICE inline void contract_axis(
+    std::span<MatT, DExt> D, std::span<InT, InExt> in, std::span<OutT, OutExt> out,
+    std::size_t nx, std::size_t ny, std::size_t nz = 1);
+```
+
+#### Key Characteristics:
+1. **Directional Specialization**: Axis 0 ($X$, unit stride), Axis 1 ($Y$, stride $n_x$), and Axis 2 ($Z$, stride $n_x \cdot n_y$) are specialized to maintain maximum cache locality and SIMD lane alignment.
+2. **Compile-Time Static $N$**: When $N > 0$, directional loops are fully unrolled with 4 independent accumulator chains. When $N = 0$, dynamic runtime sizes are supported.
+3. **In-Place Execution (`in == out`)**: Automatically checks pointer aliasing and uses stack buffering to allow safe in-place derivative evaluation with zero heap allocations.
+
+#### Usage Snippet:
+```cpp
+using namespace vec_math;
+
+// 3D Hex element at p=3 (N=4 points per direction, total 64 nodes)
+constexpr std::size_t N = 4;
+double D_1d[N * N]; // 1D differentiation matrix (4x4)
+double u[N * N * N]; // 3D nodal solution (64 entries)
+double du_dx[N * N * N];
+double du_dy[N * N * N];
+double du_dz[N * N * N];
+
+// Directional derivative along X: Axis::X (or 0)
+contract_axis<Axis::X, N>(D_1d, u, du_dx, N, N, N);
+
+// Directional derivative along Y: Axis::Y (or 1)
+contract_axis<Axis::Y, N>(D_1d, u, du_dy, N, N, N);
+
+// Directional derivative along Z: Axis::Z (or 2)
+contract_axis<Axis::Z, N>(D_1d, u, du_dz, N, N, N);
+
+// Safe in-place evaluation
+contract_axis<Axis::X, N>(D_1d, u, u, N, N, N);
 ```
 

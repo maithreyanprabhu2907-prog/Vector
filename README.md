@@ -249,6 +249,15 @@ vec_math::transpose_aos_to_soa(aos_data, soa_data, num_elements, 4);
 vec_math::transpose_soa_to_aos(soa_data, aos_data, num_elements, 4);
 ```
 
+#### 9. Sum-Factorization Directional Tensor Contractions (`contract_axis`)
+Applies 1D directional differentiation operators across multi-dimensional tensor-product quad/hex elements in $\mathcal{O}(d \cdot N^{d+1})$ operations instead of dense $\mathcal{O}(N^{2d})$:
+```cpp
+// 3D Hex element with N=4 (64 nodes): directional derivative along X, Y, and Z
+vec_math::contract_axis<vec_math::Axis::X, 4>(D_1d, u, du_dx, 4, 4, 4);
+vec_math::contract_axis<vec_math::Axis::Y, 4>(D_1d, u, du_dy, 4, 4, 4);
+vec_math::contract_axis<vec_math::Axis::Z, 4>(D_1d, u, du_dz, 4, 4, 4);
+```
+
 ## Compile-Time Options
 
 * **`VEC_MATH_NO_EXCEPTIONS`**: Define before including `vector_math.hpp` when building with `-fno-exceptions` to use `assert` + `std::abort()` on dimension/capacity errors instead of throwing.
@@ -404,6 +413,7 @@ Building with `-Ofast` (or MSVC `/fp:fast /O2 /openmp /arch:AVX2`) yields critic
 | **`scatter_add`** | Surface | SIMD indirect scatter-addition into residual vectors | Accumulating Riemann numerical fluxes into element residuals |
 | **`solve_4x4_batched`** | Linear Solve | Batched $4 \times 4$ LU solve with partial pivoting in SoA | Point-implicit IMEX relaxation for stiff acoustic modes |
 | **`transpose_aos_to_soa` / `transpose_soa_to_aos`** | Layout | High-throughput AoS $\leftrightarrow$ SoA multi-variable array conversions | Interfacing nodal quadrature loops with batched SIMD solves |
+| **`contract_axis<Axis, N>`** | Tensor / SF | Directional 1D tensor contraction along $X, Y, Z$ with unrolling | 2D/3D Quad/Hex sum-factorization in $\mathcal{O}(d \cdot N^{d+1})$ operations |
 
 1. **Sub-Range Spans (`std::span`)**: Zero-copy, zero-allocation operations on sub-vectors and element blocks (`elem_u <<= elem_u + dt * elem_k`, `elem_u += elem_flux`).
 2. **Fixed-Size State Vectors (`std::array`)**: 4-variable state blocks (e.g. Euler $[\rho, \rho u, \rho v, E]$) processed on the stack with zero heap allocation.
@@ -411,6 +421,7 @@ Building with `-Ofast` (or MSVC `/fp:fast /O2 /openmp /arch:AVX2`) yields critic
 4. **Reproducible Reductions (`sum_repro`, `dot_repro`)**: Invariant 512-element chunk tree accumulation ensuring bit-identical results regardless of OpenMP thread count or compiler optimizations.
 5. **Direct Buffer Write (`eval_into`)**: Evaluates expressions directly into raw pointers or device buffers without container allocations (`eval_into(ptr, n, expr)`).
 6. **Compile-Time Include Optimization**: Defining `VEC_MATH_NO_INTRINSICS` skips `<immintrin.h>`, reducing translation unit compile times by ~800 ms.
+7. **Directional Sum-Factorization (`contract_axis`)**: Directional tensor contractions along axes 0, 1, and 2 for fast spectral element/DG operator evaluation.
 
 ## Compiler Flag Recommendations
 
