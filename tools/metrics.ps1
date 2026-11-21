@@ -462,6 +462,43 @@ if ($Tier -ge 2) {
     }
 }
 
+# ----------------------------------------------------------- 13. flamegraph
+$script:FlamegraphHtml = $null
+$script:FlamegraphSvg  = $null
+Write-Host "`n13. flamegraph" -ForegroundColor Yellow
+$flamePy = Join-Path $Repo "tools\generate_flamegraph.py"
+if (-not (Test-Path $flamePy)) {
+    $flamePy = Join-Path $Upstream "tools\generate_flamegraph.py"
+}
+$Py = "python"
+if (-not (Get-Command $Py -ErrorAction SilentlyContinue)) {
+    $foundPy = Get-Command python3 -ErrorAction SilentlyContinue
+    if ($foundPy) { $Py = $foundPy.Source }
+}
+
+if ((Test-Path $flamePy) -and (Get-Command $Py -ErrorAction SilentlyContinue)) {
+    $flameHtml = Join-Path $OutDir ("{0}-{1}-flamegraph.html" -f $Stamp, $Sha)
+    $flameSvg  = Join-Path $OutDir ("{0}-{1}-flamegraph.svg" -f $Stamp, $Sha)
+    $benchLogFile = Join-Path $Tmp "bench_log.txt"
+    if ($script:BenchLog) {
+        $script:BenchLog | Set-Content $benchLogFile -Encoding utf8
+    }
+
+    $flameArgs = @($flamePy, "--repo", $Repo, "--out-html", $flameHtml, "--out-svg", $flameSvg, "--title", "vec_math CPU Flamegraph ($Sha)")
+    if (Test-Path $benchLogFile) {
+        $flameArgs += @("--bench-log", $benchLogFile)
+    }
+
+    $res = Invoke-Native $Py $flameArgs
+    if (Test-Path $flameHtml) {
+        $script:FlamegraphHtml = [System.IO.Path]::GetFileName($flameHtml)
+        $script:FlamegraphSvg  = [System.IO.Path]::GetFileName($flameSvg)
+        Add-Result "flamegraph" "interactive HTML" ("generated: {0}" -f $script:FlamegraphHtml) "PASS"
+    } else {
+        Add-Result "flamegraph" "interactive HTML" "generation failed" "WARN"
+    }
+}
+
 # ------------------------------------------------------------------- report
 $status = if ($script:AnyFail) { "FAIL" } else { "PASS" }
 $md = New-Object System.Text.StringBuilder
@@ -478,6 +515,13 @@ foreach ($r in $script:Results) {
     [void]$md.AppendLine(("| {0} | {1} | {2} | {3} | {4} |" -f $r.Gate, $r.Check, $r.Value, $r.Status, $r.Note))
 }
 [void]$md.AppendLine()
+if ($script:FlamegraphHtml) {
+    [void]$md.AppendLine("## Visualizations")
+    [void]$md.AppendLine()
+    [void]$md.AppendLine(("- [Interactive CPU Flamegraph (HTML)](./{0})" -f $script:FlamegraphHtml))
+    [void]$md.AppendLine(("- [CPU Flamegraph (SVG)](./{0})" -f $script:FlamegraphSvg))
+    [void]$md.AppendLine()
+}
 [void]$md.AppendLine("## Raw benchmark output (-O3)")
 [void]$md.AppendLine()
 [void]$md.AppendLine("``````")

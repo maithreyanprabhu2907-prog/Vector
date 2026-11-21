@@ -635,6 +635,45 @@ EOF
     fi
 fi
 
+# ----------------------------------------------------------- 13. flamegraph
+echo -e "\n\033[33m13. flamegraph\033[0m"
+FLAME_PY="${REPO}/tools/generate_flamegraph.py"
+[[ -f "$FLAME_PY" ]] || FLAME_PY="${UPSTREAM}/tools/generate_flamegraph.py"
+
+PY_CMD=""
+if command -v python3 &>/dev/null; then
+    PY_CMD="python3"
+elif command -v python &>/dev/null; then
+    PY_CMD="python"
+fi
+
+FLAME_HTML_NAME=""
+FLAME_SVG_NAME=""
+
+if [[ -f "$FLAME_PY" && -n "$PY_CMD" ]]; then
+    FLAME_HTML="${OUTDIR}/${STAMP}-${SHA}-flamegraph.html"
+    FLAME_SVG="${OUTDIR}/${STAMP}-${SHA}-flamegraph.svg"
+    BENCH_LOG_FILE="${TMP_DIR}/bench_log.txt"
+    if [[ -n "$BENCH_LOG" ]]; then
+        echo "$BENCH_LOG" > "$BENCH_LOG_FILE"
+    fi
+
+    flame_args=("$FLAME_PY" "--repo" "$REPO" "--out-html" "$FLAME_HTML" "--out-svg" "$FLAME_SVG" "--title" "vec_math CPU Flamegraph (${SHA})")
+    if [[ -f "$BENCH_LOG_FILE" ]]; then
+        flame_args+=("--bench-log" "$BENCH_LOG_FILE")
+    fi
+
+    if $PY_CMD "${flame_args[@]}" &>/dev/null; then
+        if [[ -f "$FLAME_HTML" ]]; then
+            FLAME_HTML_NAME="$(basename "$FLAME_HTML")"
+            FLAME_SVG_NAME="$(basename "$FLAME_SVG")"
+            add_result "flamegraph" "interactive HTML" "generated: ${FLAME_HTML_NAME}" "PASS"
+        fi
+    else
+        add_result "flamegraph" "interactive HTML" "generation failed" "WARN"
+    fi
+fi
+
 # ------------------------------------------------------------------- report
 OVERALL_STATUS="PASS"
 if [[ $ANY_FAIL -eq 1 ]]; then OVERALL_STATUS="FAIL"; fi
@@ -653,6 +692,13 @@ if [[ $ANY_FAIL -eq 1 ]]; then OVERALL_STATUS="FAIL"; fi
         echo "| ${RESULTS_GATE[$i]} | ${RESULTS_NAME[$i]} | ${RESULTS_VALUE[$i]} | ${RESULTS_STATUS[$i]} | ${RESULTS_NOTE[$i]} |"
     done
     echo ""
+    if [[ -n "$FLAME_HTML_NAME" ]]; then
+        echo "## Visualizations"
+        echo ""
+        echo "- [Interactive CPU Flamegraph (HTML)](./${FLAME_HTML_NAME})"
+        echo "- [CPU Flamegraph (SVG)](./${FLAME_SVG_NAME})"
+        echo ""
+    fi
     echo "## Raw benchmark output (-O3)"
     echo ""
     echo '```'
