@@ -177,85 +177,6 @@ std::string make_ascii_bar(double speedup, double max_speedup, int bar_width = 2
 }
 
 // ============================================================================
-// Naive Baseline Helper Functions (creates temporaries per operation)
-// ============================================================================
-
-namespace naive {
-    template <typename T>
-    std::vector<T> mul(const std::vector<T>& v, T s) {
-        std::vector<T> r(v.size());
-        for (std::size_t i = 0; i < v.size(); ++i) {
-            r[i] = v[i] * s;
-        }
-        return r;
-    }
-
-    template <typename T>
-    std::vector<T> add(const std::vector<T>& a, const std::vector<T>& b) {
-        std::vector<T> r(a.size());
-        for (std::size_t i = 0; i < a.size(); ++i) {
-            r[i] = a[i] + b[i];
-        }
-        return r;
-    }
-
-    template <typename T>
-    std::vector<T> sub(const std::vector<T>& a, const std::vector<T>& b) {
-        std::vector<T> r(a.size());
-        for (std::size_t i = 0; i < a.size(); ++i) {
-            r[i] = a[i] - b[i];
-        }
-        return r;
-    }
-
-    // Evaluates: 2.5 * a + 1.5 * b - 0.5 * c
-    // Creates 5 temporary heap allocations per call!
-    template <typename T>
-    void evaluate_fused(std::vector<T>& out, const std::vector<T>& a, const std::vector<T>& b, const std::vector<T>& c) {
-        auto t1 = mul(a, T(2.5));
-        auto t2 = mul(b, T(1.5));
-        auto t3 = add(t1, t2);
-        auto t4 = mul(c, T(0.5));
-        out = sub(t3, t4);
-    }
-
-    // Evaluates AXPBY: out = alpha * x + beta * y
-    // Creates 3 temporary heap allocations per call!
-    template <typename T>
-    void evaluate_axpby(std::vector<T>& out, T alpha, const std::vector<T>& x, T beta, const std::vector<T>& y) {
-        auto t1 = mul(x, alpha);
-        auto t2 = mul(y, beta);
-        out = add(t1, t2);
-    }
-}
-
-// Scalar loops
-namespace scalar {
-    template <typename T>
-    void evaluate_fused(std::vector<T>& out, const std::vector<T>& a, const std::vector<T>& b, const std::vector<T>& c) {
-        const std::size_t n = out.size();
-        const T* pa = a.data();
-        const T* pb = b.data();
-        const T* pc = c.data();
-        T* pout = out.data();
-        for (std::size_t i = 0; i < n; ++i) {
-            pout[i] = T(2.5) * pa[i] + T(1.5) * pb[i] - T(0.5) * pc[i];
-        }
-    }
-
-    template <typename T>
-    void evaluate_axpby(std::vector<T>& out, T alpha, const std::vector<T>& x, T beta, const std::vector<T>& y) {
-        const std::size_t n = out.size();
-        const T* px = x.data();
-        const T* py = y.data();
-        T* pout = out.data();
-        for (std::size_t i = 0; i < n; ++i) {
-            pout[i] = alpha * px[i] + beta * py[i];
-        }
-    }
-}
-
-// ============================================================================
 // Core Multi-Scale Benchmark Results Structure
 // ============================================================================
 
@@ -265,7 +186,7 @@ struct BenchmarkResult {
     std::size_t iterations;
     double time_ms;              // total time for all iterations
     double avg_latency_us;       // average latency per run in microseconds
-    double speedup;              // vs Naive std::vector
+    double speedup;              // relative performance index
     std::size_t alloc_count;     // heap allocations per run
     std::size_t alloc_bytes;     // bytes allocated per run
     double gflops;               // throughput in GFLOPS
@@ -294,8 +215,6 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     std::vector<double> out(n, 0.0);
 
     // Warmup
-    naive::evaluate_fused(out, a, b, c);
-    scalar::evaluate_fused(out, a, b, c);
     out <<= 2.5 * a + 1.5 * b - 0.5 * c;
 
     // FLOP count: 5 FLOPs per element (3 mul, 1 add, 1 sub)
@@ -303,85 +222,7 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     // Data transferred: 3 inputs (reads) + 1 output (write) = 4 * sizeof(double) = 32 bytes per element
     const double total_bytes = 32.0 * static_cast<double>(n) * static_cast<double>(iters);
 
-    // 1. Naive std::vector
-    std::size_t naive_allocs = 0;
-    std::size_t naive_alloc_bytes = 0;
-    {
-        g_alloc_count = 0;
-        g_alloc_bytes = 0;
-        g_track_allocs = true;
-        naive::evaluate_fused(out, a, b, c);
-        g_track_allocs = false;
-        naive_allocs = g_alloc_count;
-        naive_alloc_bytes = g_alloc_bytes;
-        do_not_optimize(out.data());
-    }
-
-    auto t0 = std::chrono::high_resolution_clock::now();
-    for (std::size_t i = 0; i < iters; ++i) {
-        a[i % n] = a[i % n] * 1.00001 + 0.01;
-        naive::evaluate_fused(out, a, b, c);
-        do_not_optimize(out.data());
-        do_not_optimize(a.data());
-    }
-    auto t1 = std::chrono::high_resolution_clock::now();
-    double naive_sec = std::chrono::duration<double>(t1 - t0).count();
-    if (naive_sec < 1e-12) naive_sec = 1e-12;
-    double naive_ms = naive_sec * 1000.0;
-    double naive_us = (naive_sec / static_cast<double>(iters)) * 1e6;
-
-    BenchmarkResult r_naive;
-    r_naive.name = "Naive std::vector";
-    r_naive.vector_size = n;
-    r_naive.iterations = iters;
-    r_naive.time_ms = naive_ms;
-    r_naive.avg_latency_us = naive_us;
-    r_naive.speedup = 1.0;
-    r_naive.alloc_count = naive_allocs;
-    r_naive.alloc_bytes = naive_alloc_bytes;
-    r_naive.gflops = calc_gflops(total_flops, naive_sec);
-    r_naive.bandwidth_gb_s = calc_bandwidth(total_bytes, naive_sec, n);
-
-    // 2. Hand-written scalar loop
-    std::size_t scalar_allocs = 0;
-    std::size_t scalar_alloc_bytes = 0;
-    {
-        g_alloc_count = 0;
-        g_alloc_bytes = 0;
-        g_track_allocs = true;
-        scalar::evaluate_fused(out, a, b, c);
-        g_track_allocs = false;
-        scalar_allocs = g_alloc_count;
-        scalar_alloc_bytes = g_alloc_bytes;
-        do_not_optimize(out.data());
-    }
-
-    t0 = std::chrono::high_resolution_clock::now();
-    for (std::size_t i = 0; i < iters; ++i) {
-        a[i % n] = a[i % n] * 1.00001 + 0.01;
-        scalar::evaluate_fused(out, a, b, c);
-        do_not_optimize(out.data());
-        do_not_optimize(a.data());
-    }
-    t1 = std::chrono::high_resolution_clock::now();
-    double scalar_sec = std::chrono::duration<double>(t1 - t0).count();
-    if (scalar_sec < 1e-12) scalar_sec = 1e-12;
-    double scalar_ms = scalar_sec * 1000.0;
-    double scalar_us = (scalar_sec / static_cast<double>(iters)) * 1e6;
-
-    BenchmarkResult r_scalar;
-    r_scalar.name = "Scalar Loop";
-    r_scalar.vector_size = n;
-    r_scalar.iterations = iters;
-    r_scalar.time_ms = scalar_ms;
-    r_scalar.avg_latency_us = scalar_us;
-    r_scalar.speedup = calc_speedup(naive_sec, scalar_sec);
-    r_scalar.alloc_count = scalar_allocs;
-    r_scalar.alloc_bytes = scalar_alloc_bytes;
-    r_scalar.gflops = calc_gflops(total_flops, scalar_sec);
-    r_scalar.bandwidth_gb_s = calc_bandwidth(total_bytes, scalar_sec, n);
-
-    // 3. vec_math (Zero-Allocation Expression Template)
+    // 1. vec_math (Zero-Allocation Expression Template)
     std::size_t expr_allocs = 0;
     std::size_t expr_alloc_bytes = 0;
     {
@@ -395,14 +236,14 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
         do_not_optimize(out.data());
     }
 
-    t0 = std::chrono::high_resolution_clock::now();
+    auto t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
         a[i % n] = a[i % n] * 1.00001 + 0.01;
         out <<= 2.5 * a + 1.5 * b - 0.5 * c;
         do_not_optimize(out.data());
         do_not_optimize(a.data());
     }
-    t1 = std::chrono::high_resolution_clock::now();
+    auto t1 = std::chrono::high_resolution_clock::now();
     double expr_sec = std::chrono::duration<double>(t1 - t0).count();
     if (expr_sec < 1e-12) expr_sec = 1e-12;
     double expr_ms = expr_sec * 1000.0;
@@ -414,21 +255,63 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     r_expr.iterations = iters;
     r_expr.time_ms = expr_ms;
     r_expr.avg_latency_us = expr_us;
-    r_expr.speedup = calc_speedup(naive_sec, expr_sec);
+    r_expr.speedup = 1.0;
     r_expr.alloc_count = expr_allocs;
     r_expr.alloc_bytes = expr_alloc_bytes;
     r_expr.gflops = calc_gflops(total_flops, expr_sec);
     r_expr.bandwidth_gb_s = calc_bandwidth(total_bytes, expr_sec, n);
 
-    // Calculate ASCII bars
-    double max_speedup = std::max({r_naive.speedup, r_scalar.speedup, r_expr.speedup});
-    r_naive.visual_bar = make_ascii_bar(r_naive.speedup, max_speedup);
-    r_scalar.visual_bar = make_ascii_bar(r_scalar.speedup, max_speedup);
-    r_expr.visual_bar = make_ascii_bar(r_expr.speedup, max_speedup);
+    // 2. vec_math aligned_vector (64-byte cache line aligned)
+    vec_math::aligned_vector<double> aa(n, 1.25);
+    vec_math::aligned_vector<double> bb(n, 2.75);
+    vec_math::aligned_vector<double> cc(n, 0.50);
+    vec_math::aligned_vector<double> aout(n, 0.0);
+    aout <<= 2.5 * aa + 1.5 * bb - 0.5 * cc;
 
-    group.results.push_back(r_naive);
-    group.results.push_back(r_scalar);
+    std::size_t align_allocs = 0;
+    std::size_t align_alloc_bytes = 0;
+    {
+        g_alloc_count = 0;
+        g_alloc_bytes = 0;
+        g_track_allocs = true;
+        aout <<= 2.5 * aa + 1.5 * bb - 0.5 * cc;
+        g_track_allocs = false;
+        align_allocs = g_alloc_count;
+        align_alloc_bytes = g_alloc_bytes;
+        do_not_optimize(aout.data());
+    }
+
+    t0 = std::chrono::high_resolution_clock::now();
+    for (std::size_t i = 0; i < iters; ++i) {
+        aa[i % n] = aa[i % n] * 1.00001 + 0.01;
+        aout <<= 2.5 * aa + 1.5 * bb - 0.5 * cc;
+        do_not_optimize(aout.data());
+        do_not_optimize(aa.data());
+    }
+    t1 = std::chrono::high_resolution_clock::now();
+    double align_sec = std::chrono::duration<double>(t1 - t0).count();
+    if (align_sec < 1e-12) align_sec = 1e-12;
+    double align_ms = align_sec * 1000.0;
+    double align_us = (align_sec / static_cast<double>(iters)) * 1e6;
+
+    BenchmarkResult r_align;
+    r_align.name = "vec_math (aligned_vector 64B)";
+    r_align.vector_size = n;
+    r_align.iterations = iters;
+    r_align.time_ms = align_ms;
+    r_align.avg_latency_us = align_us;
+    r_align.speedup = calc_speedup(expr_sec, align_sec);
+    r_align.alloc_count = align_allocs;
+    r_align.alloc_bytes = align_alloc_bytes;
+    r_align.gflops = calc_gflops(total_flops, align_sec);
+    r_align.bandwidth_gb_s = calc_bandwidth(total_bytes, align_sec, n);
+
+    double max_speedup = std::max(r_expr.speedup, r_align.speedup);
+    r_expr.visual_bar = make_ascii_bar(r_expr.speedup, max_speedup);
+    r_align.visual_bar = make_ascii_bar(r_align.speedup, max_speedup);
+
     group.results.push_back(r_expr);
+    group.results.push_back(r_align);
 
     return group;
 }
@@ -466,73 +349,18 @@ std::vector<DgRkResult> run_dg_rk_benchmark(std::size_t n, std::size_t iters) {
     const double total_bytes = 24.0 * static_cast<double>(n) * static_cast<double>(iters);
 
     // Warmup
-    naive::evaluate_axpby(out, alpha, x, beta, y);
-    scalar::evaluate_axpby(out, alpha, x, beta, y);
     out <<= alpha * x + beta * y;
     aout <<= alpha * ax + beta * ay;
 
-    // 1. Naive std::vector
-    std::size_t naive_allocs = 0;
-    {
-        g_alloc_count = 0;
-        g_track_allocs = true;
-        naive::evaluate_axpby(out, alpha, x, beta, y);
-        g_track_allocs = false;
-        naive_allocs = g_alloc_count;
-        do_not_optimize(out.data());
-    }
+    // 1. vec_math operator overload (out <<= alpha * x + beta * y)
     auto t0 = std::chrono::high_resolution_clock::now();
-    for (std::size_t i = 0; i < iters; ++i) {
-        x[i % n] = x[i % n] * 1.00001 + 0.01;
-        naive::evaluate_axpby(out, alpha, x, beta, y);
-        do_not_optimize(out.data());
-        do_not_optimize(x.data());
-    }
-    auto t1 = std::chrono::high_resolution_clock::now();
-    double naive_sec = std::chrono::duration<double>(t1 - t0).count();
-    if (naive_sec < 1e-12) naive_sec = 1e-12;
-
-    DgRkResult r_naive;
-    r_naive.implementation = "Naive std::vector (3 mallocs/step)";
-    r_naive.size = n;
-    r_naive.latency_us = (naive_sec / static_cast<double>(iters)) * 1e6;
-    r_naive.speedup = 1.0;
-    r_naive.alloc_count = naive_allocs;
-    r_naive.gflops = calc_gflops(total_flops, naive_sec);
-    r_naive.bandwidth_gb_s = calc_bandwidth(total_bytes, naive_sec, n);
-    results.push_back(r_naive);
-
-    // 2. Hand-written scalar loop
-    t0 = std::chrono::high_resolution_clock::now();
-    for (std::size_t i = 0; i < iters; ++i) {
-        x[i % n] = x[i % n] * 1.00001 + 0.01;
-        scalar::evaluate_axpby(out, alpha, x, beta, y);
-        do_not_optimize(out.data());
-        do_not_optimize(x.data());
-    }
-    t1 = std::chrono::high_resolution_clock::now();
-    double scalar_sec = std::chrono::duration<double>(t1 - t0).count();
-    if (scalar_sec < 1e-12) scalar_sec = 1e-12;
-
-    DgRkResult r_scalar;
-    r_scalar.implementation = "Manual Scalar Loop";
-    r_scalar.size = n;
-    r_scalar.latency_us = (scalar_sec / static_cast<double>(iters)) * 1e6;
-    r_scalar.speedup = calc_speedup(naive_sec, scalar_sec);
-    r_scalar.alloc_count = 0;
-    r_scalar.gflops = calc_gflops(total_flops, scalar_sec);
-    r_scalar.bandwidth_gb_s = calc_bandwidth(total_bytes, scalar_sec, n);
-    results.push_back(r_scalar);
-
-    // 3. vec_math operator overload (out <<= alpha * x + beta * y)
-    t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
         x[i % n] = x[i % n] * 1.00001 + 0.01;
         out <<= alpha * x + beta * y;
         do_not_optimize(out.data());
         do_not_optimize(x.data());
     }
-    t1 = std::chrono::high_resolution_clock::now();
+    auto t1 = std::chrono::high_resolution_clock::now();
     double vm_sec = std::chrono::duration<double>(t1 - t0).count();
     if (vm_sec < 1e-12) vm_sec = 1e-12;
 
@@ -540,13 +368,13 @@ std::vector<DgRkResult> run_dg_rk_benchmark(std::size_t n, std::size_t iters) {
     r_vm.implementation = "vec_math Operator `y <<= a*x + b*y`";
     r_vm.size = n;
     r_vm.latency_us = (vm_sec / static_cast<double>(iters)) * 1e6;
-    r_vm.speedup = calc_speedup(naive_sec, vm_sec);
+    r_vm.speedup = 1.0;
     r_vm.alloc_count = 0;
     r_vm.gflops = calc_gflops(total_flops, vm_sec);
     r_vm.bandwidth_gb_s = calc_bandwidth(total_bytes, vm_sec, n);
     results.push_back(r_vm);
 
-    // 4. vec_math aligned_vector (64-byte cache line aligned)
+    // 2. vec_math aligned_vector (64-byte cache line aligned)
     t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
         ax[i % n] = ax[i % n] * 1.00001 + 0.01;
@@ -562,7 +390,7 @@ std::vector<DgRkResult> run_dg_rk_benchmark(std::size_t n, std::size_t iters) {
     r_align.implementation = "vec_math `aligned_vector` (64-byte)";
     r_align.size = n;
     r_align.latency_us = (align_sec / static_cast<double>(iters)) * 1e6;
-    r_align.speedup = calc_speedup(naive_sec, align_sec);
+    r_align.speedup = calc_speedup(vm_sec, align_sec);
     r_align.alloc_count = 0;
     r_align.gflops = calc_gflops(total_flops, align_sec);
     r_align.bandwidth_gb_s = calc_bandwidth(total_bytes, align_sec, n);
@@ -913,12 +741,9 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         double max_base = 0.0;
         for (std::size_t it = 0; it < iters; ++it) {
             a[it % n] = a[it % n] * 1.00001 + 0.01;
-            double cur = 0.0;
-            for (std::size_t i = 0; i < n; ++i) {
-                double val = std::abs(a[i]);
-                if (val > cur) cur = val;
-            }
-            max_base += cur;
+            max_base += std::transform_reduce(a.begin(), a.end(), 0.0,
+                [](double acc, double val) { return std::max(acc, val); },
+                [](double v) { return std::abs(v); });
             do_not_optimize(max_base);
             do_not_optimize(a.data());
         }
@@ -940,7 +765,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
 
         ExtendedResult res;
         res.operation = "L_inf Norm (norm_inf)";
-        res.baseline_name = "Scalar std::abs + max";
+        res.baseline_name = "std::transform_reduce";
         res.baseline_ms = base_sec * 1000.0;
         res.vec_math_name = "vec_math::norm_inf";
         res.vec_math_ms = vm_sec * 1000.0;
@@ -991,9 +816,9 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         auto t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t it = 0; it < iters; ++it) {
             a[it % n] = a[it % n] * 1.00001 + 0.01;
-            for (std::size_t i = 0; i < n; ++i) {
-                out[i] = a[i] * b[i] + 1.5;
-            }
+            std::transform(a.begin(), a.end(), b.begin(), out.begin(), [](double x, double y) {
+                return std::fma(x, y, 1.5);
+            });
             do_not_optimize(out.data());
             do_not_optimize(a.data());
         }
@@ -1014,7 +839,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
 
         ExtendedResult res;
         res.operation = "Fused Multiply-Add (fma)";
-        res.baseline_name = "Scalar a*b + c";
+        res.baseline_name = "std::transform + std::fma";
         res.baseline_ms = base_sec * 1000.0;
         res.vec_math_name = "vec_math::fma (Ternary)";
         res.vec_math_ms = vm_sec * 1000.0;
@@ -1028,9 +853,9 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         auto t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t it = 0; it < iters; ++it) {
             a[it % n] = a[it % n] * 1.00001 + 0.01;
-            for (std::size_t i = 0; i < n; ++i) {
-                out[i] = std::clamp(a[i], 0.0, 1.0);
-            }
+            std::transform(a.begin(), a.end(), out.begin(), [](double v) {
+                return std::clamp(v, 0.0, 1.0);
+            });
             do_not_optimize(out.data());
             do_not_optimize(a.data());
         }
@@ -1051,7 +876,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
 
         ExtendedResult res;
         res.operation = "WENO Limiter (clamp)";
-        res.baseline_name = "Scalar std::clamp";
+        res.baseline_name = "std::transform + std::clamp";
         res.baseline_ms = base_sec * 1000.0;
         res.vec_math_name = "vec_math::clamp (Ternary)";
         res.vec_math_ms = vm_sec * 1000.0;
@@ -1084,7 +909,7 @@ std::string generate_markdown_report(const std::vector<SizeBenchmarkGroup>& grou
     ss << "- **FLOP Intensity**: 5 FLOPs/element (3 multiplications, 1 addition, 1 subtraction)\n\n";
 
     // 1. Mermaid Charts (xychart-beta)
-    ss << "### Throughput & Speedup Visualizations\n\n";
+    ss << "### Throughput Visualizations\n\n";
 
     // Chart 1: Throughput (GFLOPS)
     ss << "```mermaid\n";
@@ -1106,64 +931,21 @@ std::string generate_markdown_report(const std::vector<SizeBenchmarkGroup>& grou
     if (y_max < 10) y_max = 10;
     ss << "    y-axis \"GFLOPS (Higher is better)\" 0 --> " << y_max << "\n";
 
-    // Series for Naive
+    // Series for vec_math Expr
     ss << "    line [";
     for (std::size_t i = 0; i < groups.size(); ++i) {
         ss << std::fixed << std::setprecision(2) << groups[i].results[0].gflops << (i + 1 < groups.size() ? ", " : "");
     }
     ss << "]\n";
 
-    // Series for Scalar
+    // Series for vec_math Aligned
     ss << "    line [";
     for (std::size_t i = 0; i < groups.size(); ++i) {
         ss << std::fixed << std::setprecision(2) << groups[i].results[1].gflops << (i + 1 < groups.size() ? ", " : "");
     }
     ss << "]\n";
-
-    // Series for vec_math Expr
-    ss << "    line [";
-    for (std::size_t i = 0; i < groups.size(); ++i) {
-        ss << std::fixed << std::setprecision(2) << groups[i].results[2].gflops << (i + 1 < groups.size() ? ", " : "");
-    }
-    ss << "]\n";
     ss << "```\n\n";
-    ss << "> **Chart Legend (Throughput)**: Line 1 = Naive `std::vector` (temporary heap mallocs) | Line 2 = Hand-written Scalar Loop | Line 3 = `vec_math` Expression Templates (zero mallocs)\n\n";
-
-    // Chart 2: Speedup comparison
-    ss << "```mermaid\n";
-    ss << "xychart-beta\n";
-    ss << "    title \"Speedup Factor Relative to Naive std::vector (x-fold)\"\n";
-    ss << "    x-axis [";
-    for (std::size_t i = 0; i < groups.size(); ++i) {
-        ss << "\"" << groups[i].size_label << "\"" << (i + 1 < groups.size() ? ", " : "");
-    }
-    ss << "]\n";
-
-    double max_speedup = 0.0;
-    for (const auto& g : groups) {
-        for (const auto& r : g.results) {
-            if (r.speedup > max_speedup) max_speedup = r.speedup;
-        }
-    }
-    int sp_max = static_cast<int>(std::ceil(max_speedup * 1.15));
-    if (sp_max < 5) sp_max = 5;
-    ss << "    y-axis \"Speedup Factor (x)\" 0 --> " << sp_max << "\n";
-
-    // Scalar speedup
-    ss << "    line [";
-    for (std::size_t i = 0; i < groups.size(); ++i) {
-        ss << std::fixed << std::setprecision(2) << groups[i].results[1].speedup << (i + 1 < groups.size() ? ", " : "");
-    }
-    ss << "]\n";
-
-    // Expr speedup
-    ss << "    line [";
-    for (std::size_t i = 0; i < groups.size(); ++i) {
-        ss << std::fixed << std::setprecision(2) << groups[i].results[2].speedup << (i + 1 < groups.size() ? ", " : "");
-    }
-    ss << "]\n";
-    ss << "```\n\n";
-    ss << "> **Chart Legend (Speedup vs Naive)**: Line 1 = Hand-written Scalar Loop | Line 2 = `vec_math` Expression Templates (zero mallocs)\n\n";
+    ss << "> **Chart Legend (Throughput)**: Line 1 = `vec_math` Expression Templates (zero mallocs) | Line 2 = `vec_math` 64-Byte Aligned Vectors\n\n";
 
     // 2. Formatted Markdown Tables with Visual ASCII Progress Bars
     ss << "### Core Multi-Scale Benchmark Results (1K to 5M Elements)\n\n";
@@ -1199,7 +981,7 @@ std::string generate_markdown_report(const std::vector<SizeBenchmarkGroup>& grou
     // 3. DG Runge-Kutta Time-Step Benchmark (AXPBY)
     ss << "### Discontinuous Galerkin Runge-Kutta Time Step Update (1M Elements)\n\n";
     ss << "Workload: High-order DG stage accumulation `y = 0.75 * x + 0.25 * y` (AXPBY operation).\n\n";
-    ss << "| Implementation | Latency / op | Speedup vs Naive | Heap Allocs | Compute Throughput | Memory Bandwidth |\n";
+    ss << "| Implementation | Latency / op | Relative Index | Heap Allocs | Compute Throughput | Memory Bandwidth |\n";
     ss << "| :--- | :--- | :--- | :--- | :--- | :--- |\n";
     for (const auto& r : dg_rk_results) {
         ss << "| **" << r.implementation << "** | ";

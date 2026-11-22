@@ -1,4 +1,4 @@
-﻿# tools/metrics.ps1 — run the per-commit measurement protocol against a vec_math checkout
+# tools/metrics.ps1 — run the per-commit measurement protocol against a vec_math checkout
 #
 #   .\tools\metrics.ps1                 # Tier 1 (default, ~8 min)
 #   .\tools\metrics.ps1 -Tier 0         # Tier 0  (~2 min, per commit)

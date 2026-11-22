@@ -25,7 +25,6 @@ CATEGORY_COLORS = {
     "main": "#dd6b20",
     "runtime": "#718096",
     "bench_size": "#ed8936",
-    "naive_heap": "#e53e3e",       # Red: heap allocation bottleneck
     "alloc": "#d53f8c",            # Magenta: malloc/free
     "kernel": "#805ad5",           # Purple: page faults / OS scheduling
     "compute": "#f6ad55",          # Orange: general compute
@@ -33,7 +32,6 @@ CATEGORY_COLORS = {
     "cache": "#48bb78",            # Light green: L1/L2 in-cache
     "mem_traffic": "#3182ce",      # Blue: DRAM bandwidth ceiling
     "safety": "#319795",           # Teal: overlap/aliasing bounds check
-    "scalar": "#dd6b20",           # Amber: scalar loop baseline
     "parallel": "#00b4d8",         # Cyan-blue: OpenMP multi-threading
     "parallel_sync": "#5a189a",    # Dark purple: OpenMP barrier & fork/join
     "dg_kit": "#e65100",           # Orange: DG math kit
@@ -123,7 +121,7 @@ def parse_folded_stacks(filepath):
 def build_default_tree(bench_metrics=None):
     """
     Constructs the canonical hierarchical execution tree for vec_math pure engine profile.
-    Only includes vec_math's zero-allocation kernels (no naive heap, no scalar loop baselines).
+    Only includes vec_math's zero-allocation kernels.
     """
     tree = {
         "name": "all (vec_math Pure Implementation)",
