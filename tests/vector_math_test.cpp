@@ -628,6 +628,7 @@ int main() {
     }
     assert(caught_assign_stream_cap);
 
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
     bool caught_assign_par_cap = false;
     try {
         std::vector<double> tiny;
@@ -636,6 +637,7 @@ int main() {
         caught_assign_par_cap = true;
     }
     assert(caught_assign_par_cap);
+#endif
 
     bool caught_min_val_empty = false;
     try {
@@ -855,7 +857,7 @@ int main() {
     // 12. KEISAN_NO_INTRINSICS compilation check
     {
 #if defined(KEISAN_NO_INTRINSICS)
-#if defined(KEISAN_HAS_AVX2_FMA) || defined(KEISAN_HAS_X86_INTRIN)
+#if defined(KEISAN_HAS_X86_INTRIN)
         static_assert(false, "KEISAN_NO_INTRINSICS violated: intrinsics detected");
 #endif
 #endif

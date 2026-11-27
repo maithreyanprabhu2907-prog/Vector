@@ -8,12 +8,12 @@
  * Author: Maithreyan (maithreyanprabu2907-prog)
  *
  * Architecture & Modules:
- *   - vcore   : TriviallyCopyable expression AST, fused assign / assign_stream / assign_par, fma, clamp.
- *   - vmem    : 64B-aligned aligned_vector, StridedSpan, WorkspaceArena, KEISAN_STRICT_ZERO_MALLOC.
- *   - vreduce : Portable std::simd sum/dot/norms (FAST) & bit-identical pairwise tree reductions (REPRO).
- *   - vdg     : matvec[_fixed], 3D sum-factorization contract_axis, std::simd solve_nxn_batched<N>,
+ *   - kcore   : TriviallyCopyable expression AST, fused assign / assign_stream / assign_par, fma, clamp.
+ *   - kmem    : 64B-aligned aligned_vector, StridedSpan, WorkspaceArena, KEISAN_STRICT_ZERO_MALLOC.
+ *   - kreduce : Portable std::simd sum/dot/norms (FAST) & bit-identical pairwise tree reductions (REPRO).
+ *   - ktensor : matvec[_fixed], 3D sum-factorization contract_axis, std::simd solve_nxn_batched<N>,
  *               gather / scatter_add, broadcast_multiply, and AoS <-> SoA transpositions.
- *   - vsimd   : C++26 <simd> (AVX2+FMA, AVX-512, ARM NEON/SVE), constexpr (if !consteval),
+ *   - ksimd   : C++26 <simd> (AVX2+FMA, AVX-512, ARM NEON/SVE), constexpr (if !consteval),
  *               and headerless SYCL device compatibility (KEISAN_HOST_DEVICE).
  */
 
@@ -496,6 +496,14 @@ namespace keisan {
             [[nodiscard]] KEISAN_HD_INLINE constexpr std::size_t size() const noexcept { return size_; }
             [[nodiscard]] KEISAN_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept { return ptr_[i]; }
             [[nodiscard]] KEISAN_HD_INLINE constexpr const value_type* data() const noexcept { return ptr_; }
+
+#if defined(KEISAN_HAS_STD_SIMD)
+            template<typename V>
+            [[nodiscard]] KEISAN_FORCE_INLINE V eval_simd(std::size_t i) const noexcept {
+                using Elem = std::remove_const_t<value_type>;
+                return std::simd::unchecked_load<V>(std::span<const Elem>(ptr_ + i, V::size()));
+            }
+#endif
         };
 
         template<Scalar S>
@@ -513,6 +521,13 @@ namespace keisan {
             explicit constexpr ScalarVal(S s) noexcept : val(s) {}
 
             [[nodiscard]] KEISAN_HD_INLINE constexpr S operator[](std::size_t) const noexcept { return val; }
+
+#if defined(KEISAN_HAS_STD_SIMD)
+            template<typename V>
+            [[nodiscard]] KEISAN_FORCE_INLINE V eval_simd(std::size_t) const noexcept {
+                return V(static_cast<typename V::value_type>(val));
+            }
+#endif
         };
 
         template<typename T>
@@ -585,6 +600,21 @@ namespace keisan {
                 return static_cast<value_type>(op(lhs[i], rhs[i]));
             }
 
+#if defined(KEISAN_HAS_STD_SIMD)
+            template<typename V>
+            [[nodiscard]] KEISAN_FORCE_INLINE V eval_simd(std::size_t i) const noexcept {
+                const V l = lhs.template eval_simd<V>(i);
+                const V r = rhs.template eval_simd<V>(i);
+                if constexpr (std::is_same_v<Op, OpMin>) {
+                    return std::simd::select(l < r, l, r);
+                } else if constexpr (std::is_same_v<Op, OpMax>) {
+                    return std::simd::select(l > r, l, r);
+                } else {
+                    return op(l, r);
+                }
+            }
+#endif
+
             template<typename Alloc = std::allocator<value_type>>
             [[nodiscard]] std::vector<value_type, Alloc> eval(const Alloc &alloc = Alloc{}) const {
                 std::vector<value_type, Alloc> result(size(), alloc);
@@ -620,6 +650,18 @@ namespace keisan {
             [[nodiscard]] KEISAN_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept {
                 return static_cast<value_type>(op(operand[i]));
             }
+
+#if defined(KEISAN_HAS_STD_SIMD)
+            template<typename V>
+            [[nodiscard]] KEISAN_FORCE_INLINE V eval_simd(std::size_t i) const noexcept {
+                const V v = operand.template eval_simd<V>(i);
+                if constexpr (std::is_same_v<Op, OpAbs>) {
+                    return std::simd::select(v < V(typename V::value_type{0}), -v, v);
+                } else {
+                    return op(v);
+                }
+            }
+#endif
 
             template<typename Alloc = std::allocator<value_type>>
             [[nodiscard]] std::vector<value_type, Alloc> eval(const Alloc &alloc = Alloc{}) const {
@@ -685,6 +727,20 @@ namespace keisan {
             [[nodiscard]] KEISAN_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept {
                 return static_cast<value_type>(op(a[i], b[i], c[i]));
             }
+
+#if defined(KEISAN_HAS_STD_SIMD)
+            template<typename V>
+            [[nodiscard]] KEISAN_FORCE_INLINE V eval_simd(std::size_t i) const noexcept {
+                const V va = a.template eval_simd<V>(i);
+                const V vb = b.template eval_simd<V>(i);
+                const V vc = c.template eval_simd<V>(i);
+                if constexpr (std::is_same_v<Op, OpClamp>) {
+                    return std::simd::select(va < vb, vb, std::simd::select(va > vc, vc, va));
+                } else {
+                    return op(va, vb, vc);
+                }
+            }
+#endif
 
             template<typename Alloc = std::allocator<value_type>>
             [[nodiscard]] std::vector<value_type, Alloc> eval(const Alloc &alloc = Alloc{}) const {
@@ -756,6 +812,45 @@ namespace keisan {
                    has_partial_overlap(expr.b, dst_begin, dst_end) ||
                    has_partial_overlap(expr.c, dst_begin, dst_end);
         }
+
+#if defined(KEISAN_HAS_STD_SIMD)
+        template<typename Expr, typename V>
+        struct can_eval_simd : std::false_type {};
+
+        template<typename Expr, typename V>
+        inline constexpr bool can_eval_simd_v = can_eval_simd<std::remove_cvref_t<Expr>, V>::value;
+
+        template<typename Vec, typename V>
+        struct can_eval_simd<VecRef<Vec>, V>
+            : std::bool_constant<std::is_same_v<std::remove_const_t<typename VecRef<Vec>::value_type>, typename V::value_type>> {};
+
+        template<typename S, typename V>
+        struct can_eval_simd<ScalarVal<S>, V>
+            : std::bool_constant<std::is_arithmetic_v<S> && !std::is_same_v<S, bool>> {};
+
+        template<typename Op, typename Arg, typename V>
+        struct can_eval_simd<UnaryExpr<Op, Arg>, V>
+            : std::bool_constant<
+                can_eval_simd_v<Arg, V> &&
+                (std::is_same_v<Op, OpAbs> || requires(const Op& o, const V& v) { { o(v) } -> std::convertible_to<V>; })
+            > {};
+
+        template<typename Op, typename Lhs, typename Rhs, typename V>
+        struct can_eval_simd<BinExpr<Op, Lhs, Rhs>, V>
+            : std::bool_constant<
+                can_eval_simd_v<Lhs, V> && can_eval_simd_v<Rhs, V> &&
+                (std::is_same_v<Op, OpMin> || std::is_same_v<Op, OpMax> ||
+                 requires(const Op& o, const V& l, const V& r) { { o(l, r) } -> std::convertible_to<V>; })
+            > {};
+
+        template<typename Op, typename A, typename B, typename C, typename V>
+        struct can_eval_simd<TernaryExpr<Op, A, B, C>, V>
+            : std::bool_constant<
+                can_eval_simd_v<A, V> && can_eval_simd_v<B, V> && can_eval_simd_v<C, V> &&
+                (std::is_same_v<Op, OpClamp> ||
+                 requires(const Op& o, const V& a, const V& b, const V& c) { { o(a, b, c) } -> std::convertible_to<V>; })
+            > {};
+#endif
     }
 
     template<typename T, VectorOperand Src>
@@ -797,6 +892,24 @@ namespace keisan {
 #endif
         }
 
+#if defined(KEISAN_HAS_STD_SIMD)
+        if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+            using V = std::simd::vec<T>;
+            if constexpr (detail::can_eval_simd_v<decltype(storage), V>) {
+                constexpr std::size_t W = V::size();
+                std::size_t i = 0;
+                for (; i + W <= n; i += W) {
+                    const V v = storage.template eval_simd<V>(i);
+                    std::simd::unchecked_store(v, std::span<T>(dst + i, W));
+                }
+                for (; i < n; ++i) {
+                    dst[i] = static_cast<T>(storage[i]);
+                }
+                return;
+            }
+        }
+#endif
+
         KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < n; ++i) {
             dst[i] = static_cast<T>(storage[i]);
@@ -808,65 +921,86 @@ namespace keisan {
         // Optimized Compound Application Kernels (8x/4x unrolled with SIMD pragmas)
         // ============================================================================
 
-        template<typename T, typename Alloc, Scalar S, typename CompoundFn>
-        KEISAN_FORCE_INLINE void apply_scalar_inplace(std::vector<T, Alloc> &dst, const S &scalar, CompoundFn fn) noexcept {
-            const std::size_t n = dst.size();
-            T * p = dst.data();
+        template<typename T, Scalar S, typename CompoundFn>
+        KEISAN_FORCE_INLINE void apply_scalar_inplace_ptr(T * p, std::size_t n, const S &scalar, CompoundFn fn) noexcept {
             const T s = static_cast<T>(scalar);
-
+#if defined(KEISAN_HAS_STD_SIMD)
+            if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+                using V = std::simd::vec<T>;
+                if constexpr (requires(V &va, const V &vb) { fn(va, vb); }) {
+                    constexpr std::size_t W = V::size();
+                    const V vs(s);
+                    std::size_t i = 0;
+                    for (; i + W <= n; i += W) {
+                        V va = std::simd::unchecked_load<V>(std::span<const T>(p + i, W));
+                        fn(va, vs);
+                        std::simd::unchecked_store(va, std::span<T>(p + i, W));
+                    }
+                    for (; i < n; ++i) { fn(p[i], s); }
+                    return;
+                }
+            }
+#endif
             KEISAN_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) { fn(p[i], s); }
+        }
+
+        template<typename T, VectorOperand Src, typename CompoundFn>
+        KEISAN_FORCE_INLINE void apply_vec_inplace_ptr(T * p, std::size_t n, const Src &src, CompoundFn fn) {
+            auto storage = make_operand(src);
+#if defined(KEISAN_HAS_STD_SIMD)
+            if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+                using V = std::simd::vec<T>;
+                if constexpr (can_eval_simd_v<decltype(storage), V> &&
+                              requires(V &va, const V &vb) { fn(va, vb); }) {
+                    constexpr std::size_t W = V::size();
+                    std::size_t i = 0;
+                    for (; i + W <= n; i += W) {
+                        V va = std::simd::unchecked_load<V>(std::span<const T>(p + i, W));
+                        const V vb = storage.template eval_simd<V>(i);
+                        fn(va, vb);
+                        std::simd::unchecked_store(va, std::span<T>(p + i, W));
+                    }
+                    for (; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
+                    return;
+                }
+            }
+#endif
+            KEISAN_PRAGMA_SIMD
+            for (std::size_t i = 0; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
+        }
+
+        template<typename T, typename Alloc, Scalar S, typename CompoundFn>
+        KEISAN_FORCE_INLINE void apply_scalar_inplace(std::vector<T, Alloc> &dst, const S &scalar, CompoundFn fn) noexcept {
+            apply_scalar_inplace_ptr(dst.data(), dst.size(), scalar, fn);
         }
 
         template<typename T, typename Alloc, VectorOperand Src, typename CompoundFn>
         KEISAN_FORCE_INLINE void apply_vec_inplace(std::vector<T, Alloc> &dst, const Src &src, CompoundFn fn) {
             KEISAN_CHECK_SIZE_EQ(dst.size(), src.size(), "keisan: vector size mismatch in compound assignment");
-            const std::size_t n = dst.size();
-            T * p = dst.data();
-            auto storage = make_operand(src);
-
-            KEISAN_PRAGMA_SIMD
-            for (std::size_t i = 0; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
+            apply_vec_inplace_ptr(dst.data(), dst.size(), src, fn);
         }
 
         template<typename T, std::size_t Extent, Scalar S, typename CompoundFn>
         KEISAN_FORCE_INLINE void apply_scalar_inplace(std::span<T, Extent> dst, const S &scalar, CompoundFn fn) noexcept {
-            const std::size_t n = dst.size();
-            T * p = dst.data();
-            const T s = static_cast<T>(scalar);
-
-            KEISAN_PRAGMA_SIMD
-            for (std::size_t i = 0; i < n; ++i) { fn(p[i], s); }
+            apply_scalar_inplace_ptr(dst.data(), dst.size(), scalar, fn);
         }
 
         template<typename T, std::size_t Extent, VectorOperand Src, typename CompoundFn>
         KEISAN_FORCE_INLINE void apply_vec_inplace(std::span<T, Extent> dst, const Src &src, CompoundFn fn) {
             KEISAN_CHECK_SIZE_EQ(dst.size(), src.size(), "keisan: span size mismatch in compound assignment");
-            const std::size_t n = dst.size();
-            T * p = dst.data();
-            auto storage = make_operand(src);
-
-            KEISAN_PRAGMA_SIMD
-            for (std::size_t i = 0; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
+            apply_vec_inplace_ptr(dst.data(), dst.size(), src, fn);
         }
 
         template<typename T, std::size_t N, Scalar S, typename CompoundFn>
         KEISAN_FORCE_INLINE void apply_scalar_inplace(std::array<T, N> &dst, const S &scalar, CompoundFn fn) noexcept {
-            T * p = dst.data();
-            const T s = static_cast<T>(scalar);
-
-            KEISAN_PRAGMA_SIMD
-            for (std::size_t i = 0; i < N; ++i) { fn(p[i], s); }
+            apply_scalar_inplace_ptr(dst.data(), N, scalar, fn);
         }
 
         template<typename T, std::size_t N, VectorOperand Src, typename CompoundFn>
         KEISAN_FORCE_INLINE void apply_vec_inplace(std::array<T, N> &dst, const Src &src, CompoundFn fn) {
             KEISAN_CHECK_SIZE_EQ(N, src.size(), "keisan: array size mismatch in compound assignment");
-            T * p = dst.data();
-            auto storage = make_operand(src);
-
-            KEISAN_PRAGMA_SIMD
-            for (std::size_t i = 0; i < N; ++i) { fn(p[i], static_cast<T>(storage[i])); }
+            apply_vec_inplace_ptr(dst.data(), N, src, fn);
         }
 
         template<typename T, typename Alloc, VectorOperand Src>
@@ -922,147 +1056,147 @@ namespace keisan {
         // Compound assignment operators for std::vector
         template<typename T, typename Alloc, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::vector<T, Alloc> &operator+=(std::vector<T, Alloc> &lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a += b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a += b; });
             return lhs;
         }
 
         template<typename T, typename Alloc, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::vector<T, Alloc> &operator+=(std::vector<T, Alloc> &lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a += s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a += s; });
             return lhs;
         }
 
         template<typename T, typename Alloc, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::vector<T, Alloc> &operator-=(std::vector<T, Alloc> &lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a -= b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a -= b; });
             return lhs;
         }
 
         template<typename T, typename Alloc, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::vector<T, Alloc> &operator-=(std::vector<T, Alloc> &lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a -= s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a -= s; });
             return lhs;
         }
 
         template<typename T, typename Alloc, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::vector<T, Alloc> &operator*=(std::vector<T, Alloc> &lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a *= b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a *= b; });
             return lhs;
         }
 
         template<typename T, typename Alloc, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::vector<T, Alloc> &operator*=(std::vector<T, Alloc> &lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a *= s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a *= s; });
             return lhs;
         }
 
         template<typename T, typename Alloc, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::vector<T, Alloc> &operator/=(std::vector<T, Alloc> &lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a /= b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a /= b; });
             return lhs;
         }
 
         template<typename T, typename Alloc, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::vector<T, Alloc> &operator/=(std::vector<T, Alloc> &lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a /= s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a /= s; });
             return lhs;
         }
 
         // Compound assignment operators for std::span
         template<typename T, std::size_t Extent, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::span<T, Extent> operator+=(std::span<T, Extent> lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a += b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a += b; });
             return lhs;
         }
 
         template<typename T, std::size_t Extent, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::span<T, Extent> operator+=(std::span<T, Extent> lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a += s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a += s; });
             return lhs;
         }
 
         template<typename T, std::size_t Extent, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::span<T, Extent> operator-=(std::span<T, Extent> lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a -= b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a -= b; });
             return lhs;
         }
 
         template<typename T, std::size_t Extent, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::span<T, Extent> operator-=(std::span<T, Extent> lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a -= s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a -= s; });
             return lhs;
         }
 
         template<typename T, std::size_t Extent, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::span<T, Extent> operator*=(std::span<T, Extent> lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a *= b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a *= b; });
             return lhs;
         }
 
         template<typename T, std::size_t Extent, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::span<T, Extent> operator*=(std::span<T, Extent> lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a *= s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a *= s; });
             return lhs;
         }
 
         template<typename T, std::size_t Extent, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::span<T, Extent> operator/=(std::span<T, Extent> lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a /= b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a /= b; });
             return lhs;
         }
 
         template<typename T, std::size_t Extent, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::span<T, Extent> operator/=(std::span<T, Extent> lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a /= s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a /= s; });
             return lhs;
         }
 
         // Compound assignment operators for std::array
         template<typename T, std::size_t N, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::array<T, N> &operator+=(std::array<T, N> &lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a += b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a += b; });
             return lhs;
         }
 
         template<typename T, std::size_t N, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::array<T, N> &operator+=(std::array<T, N> &lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a += s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a += s; });
             return lhs;
         }
 
         template<typename T, std::size_t N, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::array<T, N> &operator-=(std::array<T, N> &lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a -= b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a -= b; });
             return lhs;
         }
 
         template<typename T, std::size_t N, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::array<T, N> &operator-=(std::array<T, N> &lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a -= s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a -= s; });
             return lhs;
         }
 
         template<typename T, std::size_t N, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::array<T, N> &operator*=(std::array<T, N> &lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a *= b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a *= b; });
             return lhs;
         }
 
         template<typename T, std::size_t N, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::array<T, N> &operator*=(std::array<T, N> &lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a *= s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a *= s; });
             return lhs;
         }
 
         template<typename T, std::size_t N, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
         inline std::array<T, N> &operator/=(std::array<T, N> &lhs, const Rhs &rhs) {
-            detail::apply_vec_inplace(lhs, rhs, [](T &a, const T &b) noexcept { a /= b; });
+            detail::apply_vec_inplace(lhs, rhs, [](auto &a, const auto &b) noexcept { a /= b; });
             return lhs;
         }
 
         template<typename T, std::size_t N, Scalar S> requires detail::is_valid_numeric_v<T>
         inline std::array<T, N> &operator/=(std::array<T, N> &lhs, const S &scalar) noexcept {
-            detail::apply_scalar_inplace(lhs, scalar, [](T &a, const T &s) noexcept { a /= s; });
+            detail::apply_scalar_inplace(lhs, scalar, [](auto &a, const auto &s) noexcept { a /= s; });
             return lhs;
         }
 
@@ -1190,7 +1324,7 @@ namespace keisan {
 
         template<VectorOperand Lhs, typename T, typename Alloc> requires detail::is_valid_numeric_v<T>
         [[nodiscard]] inline std::vector<T, Alloc> operator-(const Lhs &lhs, std::vector<T, Alloc> &&rhs) {
-            detail::apply_vec_inplace(rhs, lhs, [](T &r, const T &l) noexcept { r = l - r; });
+            detail::apply_vec_inplace(rhs, lhs, [](auto &r, const auto &l) noexcept { r = l - r; });
             return std::move(rhs);
         }
 
@@ -1208,7 +1342,7 @@ namespace keisan {
 
         template<Scalar S, typename T, typename Alloc> requires detail::is_valid_numeric_v<T>
         [[nodiscard]] inline std::vector<T, Alloc> operator-(const S &scalar, std::vector<T, Alloc> &&rhs) noexcept {
-            detail::apply_scalar_inplace(rhs, scalar, [](T &r, const T &s) noexcept { r = s - r; });
+            detail::apply_scalar_inplace(rhs, scalar, [](auto &r, const auto &s) noexcept { r = s - r; });
             return std::move(rhs);
         }
 
@@ -1250,7 +1384,7 @@ namespace keisan {
 
         template<VectorOperand Lhs, typename T, typename Alloc> requires detail::is_valid_numeric_v<T>
         [[nodiscard]] inline std::vector<T, Alloc> operator/(const Lhs &lhs, std::vector<T, Alloc> &&rhs) {
-            detail::apply_vec_inplace(rhs, lhs, [](T &r, const T &l) noexcept { r = l / r; });
+            detail::apply_vec_inplace(rhs, lhs, [](auto &r, const auto &l) noexcept { r = l / r; });
             return std::move(rhs);
         }
 
@@ -1268,7 +1402,7 @@ namespace keisan {
 
         template<Scalar S, typename T, typename Alloc> requires detail::is_valid_numeric_v<T>
         [[nodiscard]] inline std::vector<T, Alloc> operator/(const S &scalar, std::vector<T, Alloc> &&rhs) noexcept {
-            detail::apply_scalar_inplace(rhs, scalar, [](T &r, const T &s) noexcept { r = s / r; });
+            detail::apply_scalar_inplace(rhs, scalar, [](auto &r, const auto &s) noexcept { r = s / r; });
             return std::move(rhs);
         }
     }
@@ -2208,10 +2342,11 @@ namespace keisan {
                     const V sing_tol = max_abs * V(rel_eps);
 
                     for (std::size_t i = 0; i < N; ++i) {
+                        V abs_i = std::simd::select(a[i][i] < V(T{0}), -a[i][i], a[i][i]);
                         for (std::size_t k = i + 1; k < N; ++k) {
                             const V abs_k = std::simd::select(a[k][i] < V(T{0}), -a[k][i], a[k][i]);
-                            const V abs_i = std::simd::select(a[i][i] < V(T{0}), -a[i][i], a[i][i]);
                             const M do_swap = abs_k > abs_i;
+                            abs_i = std::simd::select(do_swap, abs_k, abs_i);
                             for (std::size_t c = i; c < N; ++c) {
                                 const V ai = a[i][c];
                                 const V ak = a[k][c];
@@ -2225,8 +2360,7 @@ namespace keisan {
                         }
 
                         const V diag = a[i][i];
-                        const V abs_diag = std::simd::select(diag < V(T{0}), -diag, diag);
-                        const M is_sing = !(abs_diag > sing_tol);
+                        const M is_sing = !(abs_i > sing_tol);
                         any_singular = any_singular || is_sing;
                         const V safe_diag = std::simd::select(is_sing, V(T{1}), diag);
                         const V inv_diag = V(T{1}) / safe_diag;
@@ -2241,18 +2375,34 @@ namespace keisan {
                         }
                     }
 
-                    V sol[N];
-                    for (std::size_t idx = N; idx > 0; --idx) {
-                        const std::size_t r = idx - 1;
-                        V acc = rhs[r];
-                        for (std::size_t c = r + 1; c < N; ++c) {
-                            acc -= a[r][c] * sol[c];
+                    if constexpr (N >= 6) {
+                        // Reuse rhs[] in-place for the solution to save N vector registers
+                        for (std::size_t idx = N; idx > 0; --idx) {
+                            const std::size_t r = idx - 1;
+                            V acc = rhs[r];
+                            for (std::size_t c = r + 1; c < N; ++c) {
+                                acc -= a[r][c] * rhs[c];
+                            }
+                            rhs[r] = acc / a[r][r];
                         }
-                        sol[r] = acc / a[r][r];
-                    }
 
-                    for (std::size_t r = 0; r < N; ++r) {
-                        std::simd::unchecked_store(sol[r], std::span<T>(x_soa[r] + e, W));
+                        for (std::size_t r = 0; r < N; ++r) {
+                            std::simd::unchecked_store(rhs[r], std::span<T>(x_soa[r] + e, W));
+                        }
+                    } else {
+                        V sol[N];
+                        for (std::size_t idx = N; idx > 0; --idx) {
+                            const std::size_t r = idx - 1;
+                            V acc = rhs[r];
+                            for (std::size_t c = r + 1; c < N; ++c) {
+                                acc -= a[r][c] * sol[c];
+                            }
+                            sol[r] = acc / a[r][r];
+                        }
+
+                        for (std::size_t r = 0; r < N; ++r) {
+                            std::simd::unchecked_store(sol[r], std::span<T>(x_soa[r] + e, W));
+                        }
                     }
                 }
 
@@ -2381,6 +2531,65 @@ namespace keisan {
     };
 
     namespace detail {
+        template<typename T>
+        KEISAN_HOST_DEVICE KEISAN_FORCE_INLINE void scale_slice(
+            T* KEISAN_RESTRICT dst,
+            const T* KEISAN_RESTRICT src,
+            T alpha,
+            std::size_t len
+        ) noexcept {
+#if defined(KEISAN_HAS_STD_SIMD)
+            if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+                using V = std::simd::vec<T>;
+                constexpr std::size_t W = V::size();
+                const V va(alpha);
+                std::size_t idx = 0;
+                for (; idx + W <= len; idx += W) {
+                    const V vs = std::simd::unchecked_load<V>(std::span<const T>(src + idx, W));
+                    std::simd::unchecked_store(va * vs, std::span<T>(dst + idx, W));
+                }
+                for (; idx < len; ++idx) {
+                    dst[idx] = alpha * src[idx];
+                }
+                return;
+            }
+#endif
+            KEISAN_PRAGMA_SIMD
+            for (std::size_t idx = 0; idx < len; ++idx) {
+                dst[idx] = alpha * src[idx];
+            }
+        }
+
+        template<typename T>
+        KEISAN_HOST_DEVICE KEISAN_FORCE_INLINE void axpy_slice(
+            T* KEISAN_RESTRICT dst,
+            const T* KEISAN_RESTRICT src,
+            T alpha,
+            std::size_t len
+        ) noexcept {
+#if defined(KEISAN_HAS_STD_SIMD)
+            if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+                using V = std::simd::vec<T>;
+                constexpr std::size_t W = V::size();
+                const V va(alpha);
+                std::size_t idx = 0;
+                for (; idx + W <= len; idx += W) {
+                    const V vd = std::simd::unchecked_load<V>(std::span<const T>(dst + idx, W));
+                    const V vs = std::simd::unchecked_load<V>(std::span<const T>(src + idx, W));
+                    std::simd::unchecked_store(vd + va * vs, std::span<T>(dst + idx, W));
+                }
+                for (; idx < len; ++idx) {
+                    dst[idx] += alpha * src[idx];
+                }
+                return;
+            }
+#endif
+            KEISAN_PRAGMA_SIMD
+            for (std::size_t idx = 0; idx < len; ++idx) {
+                dst[idx] += alpha * src[idx];
+            }
+        }
+
         template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
         KEISAN_HOST_DEVICE inline void contract_axis_noalias(
             const MatT* KEISAN_RESTRICT D,
@@ -2422,19 +2631,9 @@ namespace keisan {
                     for (std::size_t j = 0; j < dim_y; ++j) {
                         T* KEISAN_RESTRICT out_row = out_k + j * nx;
                         const MatT* KEISAN_RESTRICT row = D + j * dim_y;
-                        const T d0 = static_cast<T>(row[0]);
-                        const T* KEISAN_RESTRICT in_0 = in_k;
-                        KEISAN_PRAGMA_SIMD
-                        for (std::size_t i = 0; i < nx; ++i) {
-                            out_row[i] = d0 * in_0[i];
-                        }
+                        scale_slice(out_row, in_k, static_cast<T>(row[0]), nx);
                         for (std::size_t q = 1; q < dim_y; ++q) {
-                            const T dq = static_cast<T>(row[q]);
-                            const T* KEISAN_RESTRICT in_q = in_k + q * nx;
-                            KEISAN_PRAGMA_SIMD
-                            for (std::size_t i = 0; i < nx; ++i) {
-                                out_row[i] += dq * in_q[i];
-                            }
+                            axpy_slice(out_row, in_k + q * nx, static_cast<T>(row[q]), nx);
                         }
                     }
                 }
@@ -2444,18 +2643,9 @@ namespace keisan {
                 for (std::size_t k = 0; k < dim_z; ++k) {
                     T* KEISAN_RESTRICT out_plane = out + k * nxy;
                     const MatT* KEISAN_RESTRICT row = D + k * dim_z;
-                    const T d0 = static_cast<T>(row[0]);
-                    KEISAN_PRAGMA_SIMD
-                    for (std::size_t p = 0; p < nxy; ++p) {
-                        out_plane[p] = d0 * in[p];
-                    }
+                    scale_slice(out_plane, in, static_cast<T>(row[0]), nxy);
                     for (std::size_t r = 1; r < dim_z; ++r) {
-                        const T dr = static_cast<T>(row[r]);
-                        const T* KEISAN_RESTRICT in_r = in + r * nxy;
-                        KEISAN_PRAGMA_SIMD
-                        for (std::size_t p = 0; p < nxy; ++p) {
-                            out_plane[p] += dr * in_r[p];
-                        }
+                        axpy_slice(out_plane, in + r * nxy, static_cast<T>(row[r]), nxy);
                     }
                 }
             }
@@ -2540,12 +2730,18 @@ namespace keisan {
     template<typename T, typename Alloc, VectorOperand Src>
     inline void assign_par(std::vector<T, Alloc> &dst, const Src &src) {
         const std::size_t n = src.size();
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
         if (dst.capacity() < n) [[unlikely]] {
             KEISAN_THROW_OR_ABORT(std::length_error,
                                     "keisan: destination capacity < source size in assign_par");
         }
+#endif
         dst.resize(n);
         if (n == 0) return;
+        if (n < 16384) {
+            assign(dst, src);
+            return;
+        }
 
         T * KEISAN_RESTRICT p = dst.data();
         auto storage = detail::make_operand(src);
@@ -2708,11 +2904,43 @@ namespace keisan {
     template<VectorOperand Op>
     [[nodiscard]] constexpr auto min_val(const Op &op_in) {
         auto op = detail::make_operand(op_in);
-        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        using value_type = std::remove_const_t<typename detail::operand_storage_t<Op>::value_type>;
         const std::size_t n = op.size();
         if (n == 0) [[unlikely]] {
             KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: min_val called on empty operand");
         }
+#if defined(KEISAN_HAS_STD_SIMD)
+        if !consteval {
+            if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } &&
+                          (std::is_same_v<value_type, double> || std::is_same_v<value_type, float>)) {
+                using V = std::simd::vec<value_type>;
+                constexpr std::size_t W = V::size();
+                const value_type* KEISAN_RESTRICT p = op.data();
+                V vmin0(p[0]);
+                V vmin1(p[0]);
+                std::size_t i = 0;
+                for (; i + 2 * W <= n; i += 2 * W) {
+                    const V v0 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i, W));
+                    vmin0 = std::simd::select(v0 < vmin0, v0, vmin0);
+                    const V v1 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i + W, W));
+                    vmin1 = std::simd::select(v1 < vmin1, v1, vmin1);
+                }
+                for (; i + W <= n; i += W) {
+                    const V v0 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i, W));
+                    vmin0 = std::simd::select(v0 < vmin0, v0, vmin0);
+                }
+                vmin0 = std::simd::select(vmin1 < vmin0, vmin1, vmin0);
+                value_type res = p[0];
+                for (std::size_t k = 0; k < W; ++k) {
+                    if (vmin0[k] < res) { res = vmin0[k]; }
+                }
+                for (; i < n; ++i) {
+                    if (p[i] < res) { res = p[i]; }
+                }
+                return res;
+            }
+        }
+#endif
         value_type res = static_cast<value_type>(op[0]);
         KEISAN_PRAGMA_SIMD
         for (std::size_t i = 1; i < n; ++i) {
@@ -2725,11 +2953,43 @@ namespace keisan {
     template<VectorOperand Op>
     [[nodiscard]] constexpr auto max_val(const Op &op_in) {
         auto op = detail::make_operand(op_in);
-        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        using value_type = std::remove_const_t<typename detail::operand_storage_t<Op>::value_type>;
         const std::size_t n = op.size();
         if (n == 0) [[unlikely]] {
             KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: max_val called on empty operand");
         }
+#if defined(KEISAN_HAS_STD_SIMD)
+        if !consteval {
+            if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } &&
+                          (std::is_same_v<value_type, double> || std::is_same_v<value_type, float>)) {
+                using V = std::simd::vec<value_type>;
+                constexpr std::size_t W = V::size();
+                const value_type* KEISAN_RESTRICT p = op.data();
+                V vmax0(p[0]);
+                V vmax1(p[0]);
+                std::size_t i = 0;
+                for (; i + 2 * W <= n; i += 2 * W) {
+                    const V v0 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i, W));
+                    vmax0 = std::simd::select(v0 > vmax0, v0, vmax0);
+                    const V v1 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i + W, W));
+                    vmax1 = std::simd::select(v1 > vmax1, v1, vmax1);
+                }
+                for (; i + W <= n; i += W) {
+                    const V v0 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i, W));
+                    vmax0 = std::simd::select(v0 > vmax0, v0, vmax0);
+                }
+                vmax0 = std::simd::select(vmax1 > vmax0, vmax1, vmax0);
+                value_type res = p[0];
+                for (std::size_t k = 0; k < W; ++k) {
+                    if (vmax0[k] > res) { res = vmax0[k]; }
+                }
+                for (; i < n; ++i) {
+                    if (p[i] > res) { res = p[i]; }
+                }
+                return res;
+            }
+        }
+#endif
         value_type res = static_cast<value_type>(op[0]);
         KEISAN_PRAGMA_SIMD
         for (std::size_t i = 1; i < n; ++i) {
@@ -2746,6 +3006,43 @@ namespace keisan {
         using ResType = std::conditional_t<std::is_floating_point_v<Val>, Val, double>;
         const std::size_t n = op.size();
         if (n == 0) { return ResType{0}; }
+#if defined(KEISAN_HAS_STD_SIMD)
+        if !consteval {
+            if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } &&
+                          (std::is_same_v<Val, double> || std::is_same_v<Val, float>)) {
+                using V = std::simd::vec<Val>;
+                constexpr std::size_t W = V::size();
+                const Val* KEISAN_RESTRICT p = op.data();
+                V vmax0(Val{0});
+                V vmax1(Val{0});
+                std::size_t i = 0;
+                auto vabs = [](const V& x) noexcept {
+                    return std::simd::select(x < V(Val{0}), -x, x);
+                };
+                for (; i + 2 * W <= n; i += 2 * W) {
+                    const V a0 = vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i, W)));
+                    vmax0 = std::simd::select((a0 > vmax0) || (a0 != a0), a0, vmax0);
+                    const V a1 = vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i + W, W)));
+                    vmax1 = std::simd::select((a1 > vmax1) || (a1 != a1), a1, vmax1);
+                }
+                for (; i + W <= n; i += W) {
+                    const V a0 = vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i, W)));
+                    vmax0 = std::simd::select((a0 > vmax0) || (a0 != a0), a0, vmax0);
+                }
+                vmax0 = std::simd::select((vmax1 > vmax0) || (vmax1 != vmax1), vmax1, vmax0);
+                Val res{0};
+                for (std::size_t k = 0; k < W; ++k) {
+                    const Val v = vmax0[k];
+                    if (std::isnan(v) || v > res) { res = v; }
+                }
+                for (; i < n; ++i) {
+                    const Val v = std::abs(p[i]);
+                    if (std::isnan(v) || v > res) { res = v; }
+                }
+                return res;
+            }
+        }
+#endif
         ResType res{0};
         KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < n; ++i) {
@@ -2758,10 +3055,38 @@ namespace keisan {
     template<VectorOperand Op>
     [[nodiscard]] inline auto norm_l1(const Op &op_in) {
         auto op = detail::make_operand(op_in);
-        using Val = typename detail::operand_storage_t<Op>::value_type;
+        using Val = std::remove_const_t<typename detail::operand_storage_t<Op>::value_type>;
         using ResType = std::conditional_t<std::is_floating_point_v<Val>, Val, double>;
         const std::size_t n = op.size();
         if (n == 0) { return ResType{0}; }
+#if defined(KEISAN_HAS_STD_SIMD)
+        if !consteval {
+            if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } &&
+                          (std::is_same_v<Val, double> || std::is_same_v<Val, float>)) {
+                using V = std::simd::vec<Val>;
+                constexpr std::size_t W = V::size();
+                const Val* KEISAN_RESTRICT p = op.data();
+                V acc0(Val{0});
+                V acc1(Val{0});
+                std::size_t i = 0;
+                auto vabs = [](const V& x) noexcept {
+                    return std::simd::select(x < V(Val{0}), -x, x);
+                };
+                for (; i + 2 * W <= n; i += 2 * W) {
+                    acc0 += vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i, W)));
+                    acc1 += vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i + W, W)));
+                }
+                for (; i + W <= n; i += W) {
+                    acc0 += vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i, W)));
+                }
+                Val total = std::simd::reduce(acc0 + acc1);
+                for (; i < n; ++i) {
+                    total += std::abs(p[i]);
+                }
+                return total;
+            }
+        }
+#endif
         ResType total{0};
         KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < n; ++i) {

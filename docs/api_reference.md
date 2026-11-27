@@ -5,12 +5,12 @@
 
 ---
 
-## 1. `vcore` — Expression Engine, Math Ops & Evaluators
+## 1. `kcore` — Expression Engine, Math Ops & Evaluators
 
 ### `eval_into(T* dst, std::size_t n, const Src& src)`
 - **Signature**: `template<typename T, VectorOperand Src> KEISAN_HD_INLINE void eval_into(T* dst, std::size_t n, const Src& src)`
-- **Behavior**: Evaluates a lazy `VectorOperand` (expression tree, `VecRef`, or `StridedSpan`) into `dst[0..n)`.
-- **Architectural Rationale**: Isolates the hot loop behind a raw pointer + size boundary so it works identically inside `std::vector`, `std::span`, `std::array`, and SYCL `parallel_for` device kernels without carrying container metadata.
+- **Behavior**: Evaluates a lazy `VectorOperand` (expression tree, `VecRef`, or `StridedSpan`) into `dst[0..n)`. At runtime (`if !consteval`), when `KEISAN_NO_INTRINSICS` is not defined and `detail::can_eval_simd_v<Src, T>` holds (contiguous `double`/`float` expressions with no `StridedSpan`), it dispatches to `eval_simd<V>(i)` on `VecRef`, `ScalarVal`, `UnaryExpr` (including `OpAbs`), `BinExpr` (including `OpMin`/`OpMax`), and `TernaryExpr` (including `OpClamp`/`OpFma`) to evaluate full `std::simd::vec` registers before a scalar tail.
+- **Architectural Rationale**: Isolates the hot loop behind a raw pointer + size boundary so it works identically inside `std::vector`, `std::span`, `std::array`, and SYCL `parallel_for` device kernels without carrying container metadata, while `eval_simd` guarantees explicit vectorization of complex fused expressions.
 - **Invariants & Pitfalls**: Caller must ensure `dst` has at least `n` elements and `src.size() == n` (checked by higher-level `assign`).
 
 ### `assign(std::vector<T, Alloc>& dst, const Src& src)`
@@ -23,11 +23,11 @@
 - **Pitfalls**: Requires 32-byte alignment for AVX (`aligned_vector<double>` / `aligned_vector<float>` handles this automatically). For small L1/L2-resident arrays, `assign()` is faster because it keeps `dst` hot in cache.
 
 ### `assign_par(std::vector<T, Alloc>& dst, const Src& src)`
-- **Behavior**: Evaluates `src` into `dst` across OpenMP threads (`#pragma omp parallel for`) when compiled with `_OPENMP`.
-- **Architectural Rationale**: Memory-bandwidth-bound kernels saturate a single core's memory controller around ~45–60 GB/s; multi-core OpenMP scaling helps on multi-socket/NUMA or compute-heavy transcendental expressions (`sin`, `cos`, `exp`, `pow`).
+- **Behavior**: Resizes `dst` to `n` if needed (unless `KEISAN_STRICT_ZERO_MALLOC` is defined, in which case `dst.capacity() < n` throws `std::bad_alloc`), validates operand sizes, and evaluates `src` into `dst` across OpenMP threads (`#pragma omp parallel for`) when compiled with `_OPENMP`. For small vectors (`n < 16384`), it delegates directly to `assign(dst, src)` to avoid OpenMP fork/join overhead.
+- **Architectural Rationale**: Memory-bandwidth-bound kernels saturate a single core's memory controller around ~45–60 GB/s; multi-core OpenMP scaling helps on multi-socket/NUMA or compute-heavy transcendental expressions (`sin`, `cos`, `exp`, `pow`), while the `n < 16384` serial threshold keeps small L1/L2 operations fast.
 
 ### Compound Assignment (`+=`, `-=`, `*=`, `/=`)
-- **Behavior**: In-place elementwise updates on `std::vector`, `std::span`, and `std::array` against any `VectorOperand` or `Scalar`.
+- **Behavior**: In-place elementwise updates on `std::vector`, `std::span`, and `std::array` against any `VectorOperand` or `Scalar`. Under `if !consteval` and `!KEISAN_NO_INTRINSICS`, contiguous `double`/`float` operands execute in `std::simd::vec` registers via `eval_simd` inside `apply_scalar_inplace` / `apply_vec_inplace`.
 - **Architectural Rationale**: `u += dt * rhs` evaluates without allocating a temporary `dt * rhs` vector and handles self-aliasing (`u += u * 0.5`).
 
 ### `fma(a, b, c)` & `clamp(v, lo, hi)`
@@ -39,7 +39,7 @@
 
 ---
 
-## 2. `vmem` — Zero-Allocation Memory & Views
+## 2. `kmem` — Zero-Allocation Memory & Views
 
 ### `aligned_allocator<T, Alignment = 64>` & `aligned_vector<T>`
 - **Behavior**: C++20/26 stateful-free allocator using `std::aligned_alloc` (POSIX) / `_aligned_malloc` (Windows) with 64-byte cache-line alignment. `aligned_vector<T>` is `std::vector<T, aligned_allocator<T, 64>>`.
@@ -56,7 +56,7 @@
 
 ---
 
-## 3. `vreduce` — Reductions, Norms & Reproducibility
+## 3. `kreduce` — Reductions, Norms & Reproducibility
 
 ### `ReductionPolicy` (`FAST`, `REPRO`, `DETERMINISTIC`)
 - **`FAST`** (default): Uses dual-accumulator `std::simd::vec<T>` (`acc0`, `acc1`) + `std::simd::reduce` for maximum throughput. Non-associative across different SIMD widths.
@@ -73,14 +73,14 @@
 - **Architectural Rationale**: Same dual-accumulator `std::simd` FMA pattern as `sum()`, with `dot_par` delegating thread slices to `dot()`.
 
 ### `norm(op)`, `norm_sq(op)`, `norm_l1(op)`, `norm_inf(op)`
-- **Behavior**: Computes $\|x\|_2 = \sqrt{\text{norm\_sq}(x)}$, $\|x\|_2^2$, $\|x\|_1$, and $\|x\|_\infty = \max_i |x_i|$ (with `std::isnan(val) || val > res` so `NaN` is never silently dropped).
+- **Behavior**: Computes $\|x\|_2 = \sqrt{\text{norm\_sq}(x)}$, $\|x\|_2^2$, $\|x\|_1$, and $\|x\|_\infty = \max_i |x_i|$ (with `std::isnan(val) || val > res` so `NaN` is never silently dropped). At runtime (`if !consteval`) for contiguous `double`/`float` operands (`!is_strided_span_v`, without `KEISAN_NO_INTRINSICS`), `norm_l1` uses dual-accumulator `std::simd::vec` loops and `norm_inf` uses `std::simd::select` / `std::simd::reduce` with explicit lane-wise `NaN` propagation (`a != a`). `norm_l1` also accepts `StridedSpan<const T>` via `std::remove_const_t`.
 
 ### `min_val(op)` / `max_val(op)`
-- **Behavior**: Returns minimum / maximum element; throws `std::invalid_argument` on empty input.
+- **Behavior**: Returns minimum / maximum element; throws `std::invalid_argument` on empty input. Uses `std::simd::vec` with `std::simd::select` and `std::simd::reduce` at runtime for contiguous `double`/`float` operands.
 
 ---
 
-## 4. `vdg` — Discontinuous Galerkin & Tensor Kernels
+## 4. `ktensor` — Matrices, Tensors & Batched Solvers
 
 ### `matvec(A, x, y, rows, cols)` & `matvec_transposed(A, x, y, rows, cols)`
 - **Behavior**: Row-major dense matrix-vector product $y = Ax$ and $y = A^T x$.
@@ -93,14 +93,14 @@
 - **Architectural Rationale**: Known polynomial dimensions ($N_p = 10, 20, 36, 64$) let GCC 16 unroll and register-allocate inner loops, reaching ~37–43 GFLOPS on AVX2+FMA.
 
 ### `contract_axis<AxisParam, N>(D, in, out, nx, ny, nz)`
-- **Behavior**: 3D tensor-product sum-factorization contraction along `Axis::X`, `Axis::Y`, or `Axis::Z` (supports raw pointers and `std::span`, with optional compile-time `N` for unrolling).
-- **Architectural Rationale**: Replaces $O(N^6)$ 3D dense operator application with three $O(N^4)$ 1D contractions. `Axis::Y` and `Axis::Z` place the `nx` (`i`/`p`) dimension innermost so all loads/stores are unit-stride (`KEISAN_RESTRICT` via `detail::contract_axis_noalias`).
+- **Behavior**: 3D tensor-product sum-factorization contraction along `Axis::X`, `Axis::Y`, or `Axis::Z` (supports raw pointers and `std::span`, with optional compile-time `N` for unrolling). `Axis::Y` (`nx` inner loop) and `Axis::Z` (`nxy` inner loop) are explicitly vectorized with `std::simd::vec` via `detail::scale_slice` and `detail::axpy_slice` for contiguous `double`/`float`.
+- **Architectural Rationale**: Replaces $O(N^6)$ 3D dense operator application with three $O(N^4)$ 1D contractions. `Axis::Y` and `Axis::Z` place the `nx` (`i`/`p`) dimension innermost so all loads/stores are unit-stride (`KEISAN_RESTRICT` via `detail::contract_axis_noalias`) and vectorize cleanly with `std::simd::vec`.
 
 ### `solve_nxn_batched<N>(A_soa, b_soa, x_soa, num_elements)` & `solve_4x4_batched(...)`
 - **Behavior**: Solves `num_elements` independent $N\times N$ linear systems stored in Structure-of-Arrays (SoA) layout (`A_soa[r * N + c][e]`). Supports in-place `x_soa == b_soa`. `solve_4x4_batched` delegates to `solve_nxn_batched<4>`.
 - **Architectural Rationale**:
   - Vectorizes **across systems** (`W = std::simd::vec<T>::size()` elements in lockstep) rather than within a single small matrix.
-  - Uses branchless `std::simd::select` for partial pivoting.
+  - Uses branchless `std::simd::select` for partial pivoting, hoisting `abs_i` across the pivot loop, and for `N >= 6` reuses `rhs[]` in-place for the back-substitution solution (saving `N` vector registers without altering `N <= 4`).
   - Computes `max_abs = max(|A[r][c]|)` in registers and checks `!(abs_diag > max_abs * rel_eps)` (`1e-6` for `float`, `1e-14` for `double`), accumulating a `singular_flag` mask and throwing **after** the SIMD loop—preserving full vectorization while catching both `float` numerical singularities and `NaN` pivots without false positives on small-scale well-conditioned systems.
 
 ### `gather` & `scatter_add`
@@ -114,12 +114,12 @@
 
 ---
 
-## 5. `vsimd` — Concepts & Compile-Time Macros
+## 5. `ksimd` — Concepts & Compile-Time Macros
 
 - **`Scalar<T>`**: Valid arithmetic or `std::complex<float|double>` scalar.
 - **`NumericVector<T>`**: Contiguous container (`std::vector`, `aligned_vector`, `std::span`, `std::array`) or `StridedSpan` over a `Scalar`.
 - **`VecExpression<T>` / `VectorOperand<T>`**: Lazy expression AST nodes and valid operands.
 - **`sycl_compatible<T>`**: `std::is_trivially_copyable_v<std::remove_cvref_t<T>>`.
 - **`KEISAN_NO_INTRINSICS`**: Disables `<simd>` and x86 streaming intrinsics for pure portable scalar fallback.
-- **`KEISAN_STRICT_ZERO_MALLOC`**: Throws `std::bad_alloc` if `assign()` attempts to resize a `std::vector`.
+- **`KEISAN_STRICT_ZERO_MALLOC`**: Throws `std::bad_alloc` if `assign()` or `assign_par()` encounters `dst.capacity() < n`.
 - **`KEISAN_NO_EXCEPTIONS`**: Replaces `throw` with `std::abort()` (host) or `__builtin_trap()` (device).

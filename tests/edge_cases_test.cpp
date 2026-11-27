@@ -370,9 +370,33 @@ void test_strided_span_and_views() {
         const double d = dot(x_view, y_view);
         const double dr = dot(x_view, y_view, ReductionPolicy::REPRO);
         const double linf = norm_inf(y_view);
+        const double l1_x = norm_l1(x_cview);
+        const double l1_y = norm_l1(y_view);
+        double ref_l1_x = 0.0;
+        double ref_l1_y = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            ref_l1_x += std::abs(aos[i * 3 + 0]);
+            ref_l1_y += std::abs(aos[i * 3 + 1]);
+        }
         TEST_ASSERT(approx_eq(s, sr, 1e-12));
         TEST_ASSERT(approx_eq(d, dr, 1e-10));
         TEST_ASSERT(linf > 0.0);
+        TEST_ASSERT(approx_eq(l1_x, ref_l1_x, 1e-12));
+        TEST_ASSERT(approx_eq(l1_y, ref_l1_y, 1e-12));
+    }
+
+    // StridedSpan<const float> norm_l1
+    {
+        std::vector<float> faos(n * 2);
+        double ref_l1_f = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            faos[i * 2] = static_cast<float>(i) * 1.5f - 10.0f;
+            faos[i * 2 + 1] = 0.25f;
+            ref_l1_f += std::abs(static_cast<double>(faos[i * 2]));
+        }
+        StridedSpan<const float> fcview(faos.data(), n, 2);
+        ZeroMallocGuard guard("strided_span_const_float_norm_l1");
+        TEST_ASSERT(approx_eq(norm_l1(fcview), ref_l1_f, 1e-4));
     }
 
     for (std::size_t i = 0; i < n; ++i) {
@@ -677,7 +701,9 @@ void test_nan_inf_and_errors() {
     expect_throw([&] { (void)dot_repro(a, b); });
     expect_throw([&] { (void)dot_par(a, b); });
     expect_throw([&] { assign_stream(a, b); });
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
     expect_throw([&] { assign_par(a, b); });
+#endif
 #endif
 }
 
@@ -729,6 +755,108 @@ void test_openmp_determinism() {
 #endif
 }
 
+    // ============================================================================
+// 7. SIMD Tail Coverage: Reductions + NaN, Fused eval_simd, and assign_par
+// ============================================================================
+
+template <typename T>
+void test_simd_tails_reductions_and_fused() {
+    using namespace keisan;
+    const std::vector<std::size_t> tail_sizes = {0, 1, 3, 7, 15, 31, 37, 64, 511};
+    const T qnan = std::numeric_limits<T>::quiet_NaN();
+    const double tol = std::is_same_v<T, float> ? 1e-4 : 1e-11;
+
+    for (std::size_t n : tail_sizes) {
+        std::vector<T> a(n), b(n), c(n), out_eval(n, T{0}), out_assign(n, T{0}), out_comp(n, T{1});
+        for (std::size_t i = 0; i < n; ++i) {
+            // Mix positive and negative values so abs/min/max/clamp are non-trivial
+            a[i] = static_cast<T>(static_cast<int>(i % 19) - 9) * T{0.5};
+            b[i] = static_cast<T>(static_cast<int>((i * 5) % 17) - 8) * T{0.25};
+            c[i] = static_cast<T>(static_cast<int>((i * 7) % 13) - 6) * T{0.5};
+        }
+
+        // 1) norm_inf, norm_l1, min_val, max_val across tail sizes with negative/mixed values
+        double ref_linf = 0.0;
+        double ref_l1 = 0.0;
+        T ref_min = n > 0 ? a[0] : std::numeric_limits<T>::max();
+        T ref_max = n > 0 ? a[0] : std::numeric_limits<T>::lowest();
+        for (std::size_t i = 0; i < n; ++i) {
+            const double av = std::abs(static_cast<double>(a[i]));
+            ref_linf = std::max(ref_linf, av);
+            ref_l1 += av;
+            ref_min = std::min(ref_min, a[i]);
+            ref_max = std::max(ref_max, a[i]);
+        }
+
+        {
+            ZeroMallocGuard guard("simd_tail_reductions");
+            TEST_ASSERT(approx_eq(norm_inf(a), ref_linf, tol));
+            TEST_ASSERT(approx_eq(norm_l1(a), ref_l1, tol));
+            if (n > 0) {
+                TEST_ASSERT(approx_eq(min_val(a), ref_min, tol));
+                TEST_ASSERT(approx_eq(max_val(a), ref_max, tol));
+            }
+        }
+
+        // 2) NaN propagation in norm_inf at head, middle, and scalar tail
+        if (n > 0) {
+            for (std::size_t pos : {std::size_t{0}, n / 2, n - 1}) {
+                std::vector<T> v_nan = a;
+                v_nan[pos] = qnan;
+                ZeroMallocGuard guard("simd_tail_norm_inf_nan");
+                TEST_ASSERT(std::isnan(norm_inf(v_nan)));
+            }
+        }
+
+        // 3) eval_into / assign / compound += with fused fma / clamp / arithmetic
+        {
+            ZeroMallocGuard guard("simd_tail_fused_eval");
+            auto expr = fma(a, T{1.5}, clamp(T{2} * b - c, T{-2}, T{2})) + T{0.5};
+            eval_into(out_eval.data(), n, expr);
+            assign(out_assign, expr);
+            out_comp += expr;
+        }
+
+        for (std::size_t i = 0; i < n; ++i) {
+            const T clamped = std::clamp(static_cast<T>(T{2} * b[i] - c[i]), T{-2}, T{2});
+            const T expected = a[i] * T{1.5} + clamped + T{0.5};
+            TEST_ASSERT(approx_eq(out_eval[i], expected, tol));
+            TEST_ASSERT(approx_eq(out_assign[i], expected, tol));
+            TEST_ASSERT(approx_eq(out_comp[i], T{1} + expected, tol));
+        }
+    }
+}
+
+void test_assign_par_paths() {
+    using namespace keisan;
+
+    // Serial path (< 16384) with pre-reserved capacity under ZeroMallocGuard
+    {
+        const std::size_t n_serial = 1023;
+        std::vector<double> a(n_serial, 2.0), b(n_serial, 3.0), out(n_serial, 0.0);
+        {
+            ZeroMallocGuard guard("assign_par_serial_threshold");
+            assign_par(out, 2.0 * a + b);
+        }
+        for (std::size_t i = 0; i < n_serial; ++i) {
+            TEST_ASSERT(approx_eq(out[i], 7.0));
+        }
+    }
+
+#if !defined(KEISAN_STRICT_ZERO_MALLOC)
+    // Resizing without KEISAN_STRICT_ZERO_MALLOC on both serial (<16384) and parallel (>=16384) paths
+    for (std::size_t n : {std::size_t{511}, std::size_t{20000}}) {
+        std::vector<double> a(n, 1.5), b(n, 2.5);
+        std::vector<double> empty_dst; // capacity 0
+        assign_par(empty_dst, 2.0 * a + b);
+        TEST_ASSERT(empty_dst.size() == n);
+        for (std::size_t i = 0; i < n; ++i) {
+            TEST_ASSERT(approx_eq(empty_dst[i], 5.5));
+        }
+    }
+#endif
+}
+
 } // namespace
 
 int main() {
@@ -749,6 +877,9 @@ int main() {
     test_dg_kernels_edge_cases();
     test_nan_inf_and_errors();
     test_openmp_determinism();
+    test_simd_tails_reductions_and_fused<double>();
+    test_simd_tails_reductions_and_fused<float>();
+    test_assign_par_paths();
 
     std::cout << "ALL EDGE CASE, CONSTEXPR, AND DETERMINISM TESTS PASSED!\n";
     return 0;

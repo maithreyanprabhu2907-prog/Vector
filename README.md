@@ -1,6 +1,13 @@
-# `keisan++` (`keisan`)
+<p align="center">
+  <img src="docs/assets/keisanpp-logo.jpg" alt="keisan++ logo" width="420" />
+</p>
 
-[![C++26 GCC 16 CI](https://github.com/maithreyanprabhu2907-prog/keisanpp/actions/workflows/ci.yml/badge.svg)](https://github.com/maithreyanprabhu2907-prog/keisanpp/actions/workflows/ci.yml)
+<h1 align="center"><code>keisan++</code> (<code>keisan</code>)</h1>
+
+<p align="center">
+  <img src="docs/assets/keisanpp-icon.jpg" alt="keisan++ icon" width="24" />&nbsp;
+  <a href="https://github.com/maithreyanprabhu2907-prog/keisanpp/actions/workflows/ci.yml"><img src="https://github.com/maithreyanprabhu2907-prog/keisanpp/actions/workflows/ci.yml/badge.svg" alt="C++26 GCC 16 CI" /></a>
+</p>
 
 **A zero-allocation, header-only C++26 vector & Discontinuous Galerkin (DG) math library** powered by portable `std::simd`, OpenMP, and SYCL-compatible expression templates.
 
@@ -33,10 +40,11 @@ int main() {
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DKEISAN_BUILD_EXAMPLES=ON -DKEISAN_BUILD_BENCHMARKS=ON
 cmake --build build -j
 ctest --test-dir build --output-on-failure
+./build/01_fused_expressions
 ./build/regression_bench --quick
 ```
 
-> **Compiler requirement**: C++26 with `<simd>` (GCC 16+ recommended). Pass `-DKEISAN_NO_INTRINSICS` to compile pure portable scalar loops without `<simd>`.
+> **Compiler requirement**: C++26 with `<simd>` (GCC 16+ recommended). Pass `-DKEISAN_NO_INTRINSICS` to compile pure portable scalar loops without `<simd>`. CI builds and runs CTest on all configurations, and builds and runs all five `examples/` (`01_fused_expressions`..`05_repro_openmp`) on Release builds.
 
 ---
 

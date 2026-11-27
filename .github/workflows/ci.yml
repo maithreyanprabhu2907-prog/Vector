@@ -63,18 +63,33 @@ jobs:
               BENCH_OPT="OFF"
             fi
           fi
+          if [ "${{ matrix.build_type }}" = "Release" ]; then
+            EXAMPLES_OPT="ON"
+          else
+            EXAMPLES_OPT="OFF"
+          fi
           cmake -B build -S . \
             -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}" \
             -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
             -DKEISAN_BUILD_TESTS=ON \
-            -DKEISAN_BUILD_BENCHMARKS="$BENCH_OPT"
+            -DKEISAN_BUILD_BENCHMARKS="$BENCH_OPT" \
+            -DKEISAN_BUILD_EXAMPLES="$EXAMPLES_OPT"
 
       - name: Build Test & Benchmark Targets
         run: cmake --build build --config ${{ matrix.build_type }}
 
       - name: Run Tests
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+      - name: Run Examples
+        if: matrix.build_type == 'Release'
+        run: |
+          ./build/01_fused_expressions
+          ./build/02_zero_malloc_rk
+          ./build/03_sum_factorization
+          ./build/04_batched_imex
+          ./build/05_repro_openmp
 
       - name: Run Regression Benchmark Smoke Check
         if: matrix.build_type == 'Release' && contains(matrix.cxx_flags, 'mavx2')
