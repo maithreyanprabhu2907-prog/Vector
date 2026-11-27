@@ -25,6 +25,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <functional>
+#include <limits>
 #include <stdlib.h>
 #include <new>
 #if !defined(__SYCL_DEVICE_ONLY__) && __has_include(<simd>)
@@ -129,8 +131,8 @@
 
 #if defined(__SYCL_DEVICE_ONLY__)
 #include <cassert>
-#define KEISAN_THROW_OR_ABORT(exc_type, msg) ((void)0)
-#define KEISAN_THROW_BAD_ALLOC(msg) ((void)0)
+#define KEISAN_THROW_OR_ABORT(exc_type, msg) do { assert(false && (msg)); } while (false)
+#define KEISAN_THROW_BAD_ALLOC(msg) do { assert(false && (msg)); } while (false)
 #define KEISAN_DEVICE_ASSERT(cond, msg) assert((cond) && (msg))
 #elif defined(KEISAN_NO_EXCEPTIONS)
 #include <cassert>
@@ -282,6 +284,9 @@ namespace keisan {
     template<typename T>
     inline constexpr bool is_sycl_compatible_v = sycl_compatible<T>;
 
+    template<typename T, VectorOperand Src>
+    KEISAN_HD_INLINE void eval_into(T* dst, std::size_t n, const Src& src);
+
     // ============================================================================
     // 64-Byte Cache-Line Aligned Memory
     // ============================================================================
@@ -291,13 +296,17 @@ namespace keisan {
             if (bytes == 0) return nullptr;
 #if defined(_WIN32) || defined(_MSC_VER) || defined(__MINGW32__)
             void* ptr = _aligned_malloc(bytes, align);
-            if (!ptr) throw std::bad_alloc{};
+            if (!ptr) {
+                KEISAN_THROW_BAD_ALLOC("keisan: aligned allocation failed");
+                return nullptr;
+            }
             return ptr;
 #else
             void* ptr = nullptr;
             std::size_t a = align < sizeof(void*) ? sizeof(void*) : align;
             if (posix_memalign(&ptr, a, bytes) != 0 || !ptr) {
-                throw std::bad_alloc{};
+                KEISAN_THROW_BAD_ALLOC("keisan: aligned allocation failed");
+                return nullptr;
             }
             return ptr;
 #endif
@@ -331,7 +340,12 @@ namespace keisan {
         [[nodiscard]] T* allocate(std::size_t n) {
             if (n == 0) return nullptr;
             if (n > std::size_t(-1) / sizeof(T)) {
+#if defined(KEISAN_NO_EXCEPTIONS) || defined(__SYCL_DEVICE_ONLY__)
+                KEISAN_THROW_OR_ABORT(std::bad_array_new_length, "keisan: aligned_allocator size overflow");
+                return nullptr;
+#else
                 throw std::bad_array_new_length{};
+#endif
             }
             return static_cast<T*>(detail::aligned_alloc_helper(Alignment, n * sizeof(T)));
         }
@@ -387,10 +401,18 @@ namespace keisan {
         };
 
         struct OpAbs {
-            template<typename T>
+            template<Scalar T>
             [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const T &x) const noexcept {
-                if constexpr (std::is_signed_v<T> || std::is_floating_point_v<T>) {
+                if constexpr (is_complex_v<T>) {
+                    using std::abs;
+                    return abs(x);
+                } else if constexpr (std::is_floating_point_v<T>) {
                     return x < static_cast<T>(0) ? -x : x;
+                } else if constexpr (std::is_signed_v<T>) {
+                    using U = std::make_unsigned_t<T>;
+                    return x < static_cast<T>(0)
+                        ? static_cast<T>(U{0} - static_cast<U>(x))
+                        : x;
                 } else {
                     return x;
                 }
@@ -398,35 +420,44 @@ namespace keisan {
         };
 
         struct OpFma {
-            template<typename A, typename B, typename C>
+            template<Scalar A, Scalar B, Scalar C>
             [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const A &a, const B &b, const C &c) const noexcept {
-                return a * b + c;
+                using R = std::common_type_t<A, B, C>;
+                if constexpr (std::is_floating_point_v<R>) {
+                    if consteval {
+                        return static_cast<R>(a) * static_cast<R>(b) + static_cast<R>(c);
+                    } else {
+                        return std::fma(static_cast<R>(a), static_cast<R>(b), static_cast<R>(c));
+                    }
+                } else {
+                    return static_cast<R>(a) * static_cast<R>(b) + static_cast<R>(c);
+                }
             }
         };
 
         struct OpMin {
-            template<typename L, typename R>
+            template<Scalar L, Scalar R>
             [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept {
                 return l < r ? l : r;
             }
         };
 
         struct OpMax {
-            template<typename L, typename R>
+            template<Scalar L, Scalar R>
             [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept {
                 return l > r ? l : r;
             }
         };
 
         struct OpClamp {
-            template<typename V, typename Lo, typename Hi>
+            template<Scalar V, Scalar Lo, Scalar Hi>
             [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const V &v, const Lo &lo, const Hi &hi) const noexcept {
                 return v < lo ? lo : (v > hi ? hi : v);
             }
         };
 
         struct OpSqrt {
-            template<typename T>
+            template<Scalar T>
             [[nodiscard]] KEISAN_HD_INLINE auto operator()(const T &x) const noexcept {
                 using std::sqrt;
                 return sqrt(x);
@@ -434,7 +465,7 @@ namespace keisan {
         };
 
         struct OpExp {
-            template<typename T>
+            template<Scalar T>
             [[nodiscard]] KEISAN_HD_INLINE auto operator()(const T &x) const noexcept {
                 using std::exp;
                 return exp(x);
@@ -442,7 +473,7 @@ namespace keisan {
         };
 
         struct OpLog {
-            template<typename T>
+            template<Scalar T>
             [[nodiscard]] KEISAN_HD_INLINE auto operator()(const T &x) const noexcept {
                 using std::log;
                 return log(x);
@@ -450,7 +481,7 @@ namespace keisan {
         };
 
         struct OpSin {
-            template<typename T>
+            template<Scalar T>
             [[nodiscard]] KEISAN_HD_INLINE auto operator()(const T &x) const noexcept {
                 using std::sin;
                 return sin(x);
@@ -458,7 +489,7 @@ namespace keisan {
         };
 
         struct OpCos {
-            template<typename T>
+            template<Scalar T>
             [[nodiscard]] KEISAN_HD_INLINE auto operator()(const T &x) const noexcept {
                 using std::cos;
                 return cos(x);
@@ -466,7 +497,7 @@ namespace keisan {
         };
 
         struct OpPow {
-            template<typename B, typename E>
+            template<Scalar B, Scalar E>
             [[nodiscard]] KEISAN_HD_INLINE auto operator()(const B &base, const E &exp) const noexcept {
                 using std::pow;
                 return pow(base, exp);
@@ -487,7 +518,7 @@ namespace keisan {
             constexpr VecRef& operator=(VecRef&&) noexcept = default;
             ~VecRef() = default;
 
-            explicit constexpr VecRef(const Vec &v) noexcept
+            KEISAN_HD_INLINE explicit constexpr VecRef(const Vec &v) noexcept
                 : ptr_(v.data()), size_(v.size()) {}
 
             KEISAN_HD_INLINE constexpr VecRef(const value_type* ptr, std::size_t count) noexcept
@@ -518,7 +549,7 @@ namespace keisan {
             constexpr ScalarVal& operator=(ScalarVal&&) noexcept = default;
             ~ScalarVal() = default;
 
-            explicit constexpr ScalarVal(S s) noexcept : val(s) {}
+            KEISAN_HD_INLINE explicit constexpr ScalarVal(S s) noexcept : val(s) {}
 
             [[nodiscard]] KEISAN_HD_INLINE constexpr S operator[](std::size_t) const noexcept { return val; }
 
@@ -556,7 +587,7 @@ namespace keisan {
         using operand_storage_t = typename OperandStorage<T>::type;
 
         template<typename T>
-        [[nodiscard]] constexpr auto make_operand(const T &x) noexcept {
+        [[nodiscard]] KEISAN_HD_INLINE constexpr auto make_operand(const T &x) noexcept {
             return operand_storage_t<T>(x);
         }
 
@@ -577,7 +608,7 @@ namespace keisan {
             Lhs lhs;
             Rhs rhs;
 
-            constexpr BinExpr(Op o, const Lhs& l, const Rhs& r) : op(o), lhs(l), rhs(r) {
+            KEISAN_HD_INLINE constexpr BinExpr(Op o, const Lhs& l, const Rhs& r) : op(o), lhs(l), rhs(r) {
                 if constexpr (!is_scalar_val_v<Lhs> && !is_scalar_val_v<Rhs>) {
                     if (lhs.size() != rhs.size()) [[unlikely]] {
                         KEISAN_THROW_OR_ABORT(std::invalid_argument,
@@ -618,11 +649,7 @@ namespace keisan {
             template<typename Alloc = std::allocator<value_type>>
             [[nodiscard]] std::vector<value_type, Alloc> eval(const Alloc &alloc = Alloc{}) const {
                 std::vector<value_type, Alloc> result(size(), alloc);
-                const std::size_t n = result.size();
-                value_type * KEISAN_RESTRICT dst = result.data();
-
-                KEISAN_PRAGMA_SIMD
-                for (std::size_t i = 0; i < n; ++i) { dst[i] = (*this)[i]; }
+                eval_into(result.data(), result.size(), *this);
                 return result;
             }
 
@@ -632,12 +659,12 @@ namespace keisan {
         // Unary Expression (TriviallyCopyable when Operand is TriviallyCopyable)
         template<typename Op, typename Operand>
         struct UnaryExpr : ExprBase {
-            using value_type = decltype(std::declval<Op>()(std::declval<typename Operand::value_type>()));
+            using value_type = std::remove_cvref_t<decltype(std::declval<Op>()(std::declval<typename Operand::value_type>()))>;
 
             Op op;
             Operand operand;
 
-            constexpr UnaryExpr(Op o, const Operand& arg) : op(o), operand(arg) {}
+            KEISAN_HD_INLINE constexpr UnaryExpr(Op o, const Operand& arg) : op(o), operand(arg) {}
 
             constexpr UnaryExpr(const UnaryExpr&) noexcept = default;
             constexpr UnaryExpr(UnaryExpr&&) noexcept = default;
@@ -666,11 +693,7 @@ namespace keisan {
             template<typename Alloc = std::allocator<value_type>>
             [[nodiscard]] std::vector<value_type, Alloc> eval(const Alloc &alloc = Alloc{}) const {
                 std::vector<value_type, Alloc> result(size(), alloc);
-                const std::size_t n = result.size();
-                value_type * KEISAN_RESTRICT dst = result.data();
-
-                KEISAN_PRAGMA_SIMD
-                for (std::size_t i = 0; i < n; ++i) { dst[i] = (*this)[i]; }
+                eval_into(result.data(), result.size(), *this);
                 return result;
             }
 
@@ -680,18 +703,18 @@ namespace keisan {
         // Ternary Expression (TriviallyCopyable for FMA, etc.)
         template<typename Op, typename A, typename B, typename C>
         struct TernaryExpr : ExprBase {
-            using value_type = decltype(std::declval<Op>()(
+            using value_type = std::remove_cvref_t<decltype(std::declval<Op>()(
                 std::declval<typename A::value_type>(),
                 std::declval<typename B::value_type>(),
                 std::declval<typename C::value_type>()
-            ));
+            ))>;
 
             Op op;
             A a;
             B b;
             C c;
 
-            constexpr TernaryExpr(Op o, const A& arg_a, const B& arg_b, const C& arg_c)
+            KEISAN_HD_INLINE constexpr TernaryExpr(Op o, const A& arg_a, const B& arg_b, const C& arg_c)
                 : op(o), a(arg_a), b(arg_b), c(arg_c) {
                 std::size_t expected_size = 0;
                 bool has_size = false;
@@ -736,6 +759,13 @@ namespace keisan {
                 const V vc = c.template eval_simd<V>(i);
                 if constexpr (std::is_same_v<Op, OpClamp>) {
                     return std::simd::select(va < vb, vb, std::simd::select(va > vc, vc, va));
+                } else if constexpr (std::is_same_v<Op, OpFma>) {
+                    using std::fma;
+                    if constexpr (requires(const V& x, const V& y, const V& z) { fma(x, y, z); }) {
+                        return fma(va, vb, vc);
+                    } else {
+                        return va * vb + vc;
+                    }
                 } else {
                     return op(va, vb, vc);
                 }
@@ -745,11 +775,7 @@ namespace keisan {
             template<typename Alloc = std::allocator<value_type>>
             [[nodiscard]] std::vector<value_type, Alloc> eval(const Alloc &alloc = Alloc{}) const {
                 std::vector<value_type, Alloc> result(size(), alloc);
-                const std::size_t n = result.size();
-                value_type * KEISAN_RESTRICT dst = result.data();
-
-                KEISAN_PRAGMA_SIMD
-                for (std::size_t i = 0; i < n; ++i) { dst[i] = (*this)[i]; }
+                eval_into(result.data(), result.size(), *this);
                 return result;
             }
 
@@ -757,60 +783,69 @@ namespace keisan {
         };
 
         template<typename Op, typename L, typename R>
-        [[nodiscard]] constexpr auto make_bin_expr(Op op, const L &l, const R &r) {
+        [[nodiscard]] KEISAN_HD_INLINE constexpr auto make_bin_expr(Op op, const L &l, const R &r) {
             return BinExpr<Op, operand_storage_t<L>, operand_storage_t<R>>(op, make_operand(l), make_operand(r));
         }
 
         template<typename Op, typename Arg>
-        [[nodiscard]] constexpr auto make_unary_expr(Op op, const Arg &arg) {
+        [[nodiscard]] KEISAN_HD_INLINE constexpr auto make_unary_expr(Op op, const Arg &arg) {
             return UnaryExpr<Op, operand_storage_t<Arg>>(op, make_operand(arg));
         }
 
-        inline bool memory_ranges_overlap(const void* a, std::size_t a_bytes, const void* b, std::size_t b_bytes) noexcept {
+        KEISAN_HD_INLINE bool memory_ranges_overlap(const void* a, std::size_t a_bytes, const void* b, std::size_t b_bytes) noexcept {
             if (!a || !b || a_bytes == 0 || b_bytes == 0) return false;
             const auto* a_beg = static_cast<const char*>(a);
             const auto* a_end = a_beg + a_bytes;
             const auto* b_beg = static_cast<const char*>(b);
             const auto* b_end = b_beg + b_bytes;
-            return (a_beg < b_end) && (b_beg < a_end);
+            const std::less<const char*> lt{};
+            return lt(a_beg, b_end) && lt(b_beg, a_end);
         }
 
         template<typename S>
-        KEISAN_HD_INLINE constexpr bool has_partial_overlap(const ScalarVal<S>&, const char*, const char*) noexcept {
+        KEISAN_HD_INLINE constexpr bool has_partial_overlap(const ScalarVal<S>&, const char*, const char*, std::size_t) noexcept {
             return false;
         }
 
         template<typename Vec>
-        KEISAN_HD_INLINE bool has_partial_overlap(const VecRef<Vec>& ref, const char* dst_begin, const char* dst_end) noexcept {
-            if (!ref.data()) return false;
+        KEISAN_HD_INLINE bool has_partial_overlap(const VecRef<Vec>& ref, const char* dst_begin, const char* dst_end, std::size_t dst_elem_size) noexcept {
+            using SrcT = std::remove_cv_t<typename VecRef<Vec>::value_type>;
+            if (!ref.data() || ref.size() == 0) return false;
             const char* p_begin = reinterpret_cast<const char*>(ref.data());
-            const char* p_end = p_begin + ref.size() * sizeof(typename VecRef<Vec>::value_type);
-            return (p_begin < dst_end) && (dst_begin < p_end) && (p_begin != dst_begin);
+            const char* p_end = p_begin + ref.size() * sizeof(SrcT);
+            const std::less<const char*> lt{};
+            if (!(lt(p_begin, dst_end) && lt(dst_begin, p_end))) return false;
+            return !(p_begin == dst_begin && sizeof(SrcT) == dst_elem_size);
         }
 
         template<typename T>
-        KEISAN_HD_INLINE bool has_partial_overlap(const StridedSpan<T>& ref, const char* dst_begin, const char* dst_end) noexcept {
+        KEISAN_HD_INLINE bool has_partial_overlap(const StridedSpan<T>& ref, const char* dst_begin, const char* dst_end, std::size_t dst_elem_size) noexcept {
+            using SrcT = std::remove_cv_t<T>;
             if (!ref.data() || ref.size() == 0) return false;
             const char* p_begin = reinterpret_cast<const char*>(ref.data());
-            const char* p_end = p_begin + ref.size() * ref.stride() * sizeof(T);
-            return (p_begin < dst_end) && (dst_begin < p_end) && (p_begin != dst_begin);
+            const std::size_t span_elems = (ref.stride() == 0) ? 1 : ((ref.size() - 1) * ref.stride() + 1);
+            const char* p_end = p_begin + span_elems * sizeof(SrcT);
+            const std::less<const char*> lt{};
+            if (!(lt(p_begin, dst_end) && lt(dst_begin, p_end))) return false;
+            return !(p_begin == dst_begin && ref.stride() == 1 && sizeof(SrcT) == dst_elem_size);
         }
 
         template<typename Op, typename L, typename R>
-        KEISAN_HD_INLINE bool has_partial_overlap(const BinExpr<Op, L, R>& expr, const char* dst_begin, const char* dst_end) noexcept {
-            return has_partial_overlap(expr.lhs, dst_begin, dst_end) || has_partial_overlap(expr.rhs, dst_begin, dst_end);
+        KEISAN_HD_INLINE bool has_partial_overlap(const BinExpr<Op, L, R>& expr, const char* dst_begin, const char* dst_end, std::size_t dst_elem_size) noexcept {
+            return has_partial_overlap(expr.lhs, dst_begin, dst_end, dst_elem_size) ||
+                   has_partial_overlap(expr.rhs, dst_begin, dst_end, dst_elem_size);
         }
 
         template<typename Op, typename Arg>
-        KEISAN_HD_INLINE bool has_partial_overlap(const UnaryExpr<Op, Arg>& expr, const char* dst_begin, const char* dst_end) noexcept {
-            return has_partial_overlap(expr.operand, dst_begin, dst_end);
+        KEISAN_HD_INLINE bool has_partial_overlap(const UnaryExpr<Op, Arg>& expr, const char* dst_begin, const char* dst_end, std::size_t dst_elem_size) noexcept {
+            return has_partial_overlap(expr.operand, dst_begin, dst_end, dst_elem_size);
         }
 
         template<typename Op, typename A, typename B, typename C>
-        KEISAN_HD_INLINE bool has_partial_overlap(const TernaryExpr<Op, A, B, C>& expr, const char* dst_begin, const char* dst_end) noexcept {
-            return has_partial_overlap(expr.a, dst_begin, dst_end) ||
-                   has_partial_overlap(expr.b, dst_begin, dst_end) ||
-                   has_partial_overlap(expr.c, dst_begin, dst_end);
+        KEISAN_HD_INLINE bool has_partial_overlap(const TernaryExpr<Op, A, B, C>& expr, const char* dst_begin, const char* dst_end, std::size_t dst_elem_size) noexcept {
+            return has_partial_overlap(expr.a, dst_begin, dst_end, dst_elem_size) ||
+                   has_partial_overlap(expr.b, dst_begin, dst_end, dst_elem_size) ||
+                   has_partial_overlap(expr.c, dst_begin, dst_end, dst_elem_size);
         }
 
 #if defined(KEISAN_HAS_STD_SIMD)
@@ -828,28 +863,44 @@ namespace keisan {
         struct can_eval_simd<ScalarVal<S>, V>
             : std::bool_constant<std::is_arithmetic_v<S> && !std::is_same_v<S, bool>> {};
 
+        template<typename Op, typename V>
+        consteval bool unary_op_supports_simd() noexcept {
+            if constexpr (std::is_same_v<Op, OpAbs>) {
+                return true;
+            } else {
+                return requires(const Op& o, const V& v) { { o(v) } -> std::convertible_to<V>; };
+            }
+        }
+
+        template<typename Op, typename V>
+        consteval bool bin_op_supports_simd() noexcept {
+            if constexpr (std::is_same_v<Op, OpMin> || std::is_same_v<Op, OpMax>) {
+                return true;
+            } else {
+                return requires(const Op& o, const V& l, const V& r) { { o(l, r) } -> std::convertible_to<V>; };
+            }
+        }
+
+        template<typename Op, typename V>
+        consteval bool ternary_op_supports_simd() noexcept {
+            if constexpr (std::is_same_v<Op, OpClamp> || std::is_same_v<Op, OpFma>) {
+                return true;
+            } else {
+                return requires(const Op& o, const V& a, const V& b, const V& c) { { o(a, b, c) } -> std::convertible_to<V>; };
+            }
+        }
+
         template<typename Op, typename Arg, typename V>
         struct can_eval_simd<UnaryExpr<Op, Arg>, V>
-            : std::bool_constant<
-                can_eval_simd_v<Arg, V> &&
-                (std::is_same_v<Op, OpAbs> || requires(const Op& o, const V& v) { { o(v) } -> std::convertible_to<V>; })
-            > {};
+            : std::bool_constant<can_eval_simd_v<Arg, V> && unary_op_supports_simd<Op, V>()> {};
 
         template<typename Op, typename Lhs, typename Rhs, typename V>
         struct can_eval_simd<BinExpr<Op, Lhs, Rhs>, V>
-            : std::bool_constant<
-                can_eval_simd_v<Lhs, V> && can_eval_simd_v<Rhs, V> &&
-                (std::is_same_v<Op, OpMin> || std::is_same_v<Op, OpMax> ||
-                 requires(const Op& o, const V& l, const V& r) { { o(l, r) } -> std::convertible_to<V>; })
-            > {};
+            : std::bool_constant<can_eval_simd_v<Lhs, V> && can_eval_simd_v<Rhs, V> && bin_op_supports_simd<Op, V>()> {};
 
         template<typename Op, typename A, typename B, typename C, typename V>
         struct can_eval_simd<TernaryExpr<Op, A, B, C>, V>
-            : std::bool_constant<
-                can_eval_simd_v<A, V> && can_eval_simd_v<B, V> && can_eval_simd_v<C, V> &&
-                (std::is_same_v<Op, OpClamp> ||
-                 requires(const Op& o, const V& a, const V& b, const V& c) { { o(a, b, c) } -> std::convertible_to<V>; })
-            > {};
+            : std::bool_constant<can_eval_simd_v<A, V> && can_eval_simd_v<B, V> && can_eval_simd_v<C, V> && ternary_op_supports_simd<Op, V>()> {};
 #endif
     }
 
@@ -857,13 +908,18 @@ namespace keisan {
     KEISAN_HD_INLINE void eval_into(T* dst, std::size_t n, const Src& src) {
         if (n != src.size()) [[unlikely]] {
             KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: destination size mismatch in eval_into");
+            return;
         }
         if (n == 0) return;
         auto storage = detail::make_operand(src);
         const char* dst_begin = reinterpret_cast<const char*>(dst);
         const char* dst_end = dst_begin + n * sizeof(T);
-        if (detail::has_partial_overlap(storage, dst_begin, dst_end)) {
+        if (detail::has_partial_overlap(storage, dst_begin, dst_end, sizeof(T))) {
+#if defined(__SYCL_DEVICE_ONLY__)
+            constexpr std::size_t STACK_BUF_CAP = 128;
+#else
             constexpr std::size_t STACK_BUF_CAP = 1024;
+#endif
             if (n <= STACK_BUF_CAP) {
                 T local_buf[STACK_BUF_CAP];
                 for (std::size_t i = 0; i < n; ++i) {
@@ -877,6 +933,7 @@ namespace keisan {
 #if defined(KEISAN_STRICT_ZERO_MALLOC)
             else {
                 KEISAN_THROW_BAD_ALLOC("keisan: eval_into partial overlap exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
+                return;
             }
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
@@ -887,6 +944,11 @@ namespace keisan {
                 for (std::size_t i = 0; i < n; ++i) {
                     dst[i] = local_buf[i];
                 }
+                return;
+            }
+#else
+            else {
+                KEISAN_DEVICE_ASSERT(false, "keisan: eval_into partial overlap exceeds device stack buffer capacity");
                 return;
             }
 #endif
@@ -922,7 +984,7 @@ namespace keisan {
         // ============================================================================
 
         template<typename T, Scalar S, typename CompoundFn>
-        KEISAN_FORCE_INLINE void apply_scalar_inplace_ptr(T * p, std::size_t n, const S &scalar, CompoundFn fn) noexcept {
+        KEISAN_HD_INLINE void apply_scalar_inplace_ptr(T * p, std::size_t n, const S &scalar, CompoundFn fn) noexcept {
             const T s = static_cast<T>(scalar);
 #if defined(KEISAN_HAS_STD_SIMD)
             if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
@@ -946,8 +1008,50 @@ namespace keisan {
         }
 
         template<typename T, VectorOperand Src, typename CompoundFn>
-        KEISAN_FORCE_INLINE void apply_vec_inplace_ptr(T * p, std::size_t n, const Src &src, CompoundFn fn) {
+        KEISAN_HD_INLINE void apply_vec_inplace_ptr(T * p, std::size_t n, const Src &src, CompoundFn fn) {
+            if (n == 0) return;
             auto storage = make_operand(src);
+            const char* dst_begin = reinterpret_cast<const char*>(p);
+            const char* dst_end = dst_begin + n * sizeof(T);
+            if (has_partial_overlap(storage, dst_begin, dst_end, sizeof(T))) {
+#if defined(__SYCL_DEVICE_ONLY__)
+                constexpr std::size_t STACK_BUF_CAP = 128;
+#else
+                constexpr std::size_t STACK_BUF_CAP = 1024;
+#endif
+                if (n <= STACK_BUF_CAP) {
+                    T local_buf[STACK_BUF_CAP];
+                    for (std::size_t i = 0; i < n; ++i) {
+                        local_buf[i] = static_cast<T>(storage[i]);
+                    }
+                    for (std::size_t i = 0; i < n; ++i) {
+                        fn(p[i], local_buf[i]);
+                    }
+                    return;
+                }
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
+                else {
+                    KEISAN_THROW_BAD_ALLOC("keisan: apply_vec_inplace_ptr partial overlap exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
+                    return;
+                }
+#elif !defined(__SYCL_DEVICE_ONLY__)
+                else {
+                    std::vector<T> local_buf(n);
+                    for (std::size_t i = 0; i < n; ++i) {
+                        local_buf[i] = static_cast<T>(storage[i]);
+                    }
+                    for (std::size_t i = 0; i < n; ++i) {
+                        fn(p[i], local_buf[i]);
+                    }
+                    return;
+                }
+#else
+                else {
+                    KEISAN_DEVICE_ASSERT(false, "keisan: apply_vec_inplace_ptr partial overlap exceeds device stack buffer capacity");
+                    return;
+                }
+#endif
+            }
 #if defined(KEISAN_HAS_STD_SIMD)
             if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
                 using V = std::simd::vec<T>;
@@ -982,23 +1086,23 @@ namespace keisan {
         }
 
         template<typename T, std::size_t Extent, Scalar S, typename CompoundFn>
-        KEISAN_FORCE_INLINE void apply_scalar_inplace(std::span<T, Extent> dst, const S &scalar, CompoundFn fn) noexcept {
+        KEISAN_HD_INLINE void apply_scalar_inplace(std::span<T, Extent> dst, const S &scalar, CompoundFn fn) noexcept {
             apply_scalar_inplace_ptr(dst.data(), dst.size(), scalar, fn);
         }
 
         template<typename T, std::size_t Extent, VectorOperand Src, typename CompoundFn>
-        KEISAN_FORCE_INLINE void apply_vec_inplace(std::span<T, Extent> dst, const Src &src, CompoundFn fn) {
+        KEISAN_HD_INLINE void apply_vec_inplace(std::span<T, Extent> dst, const Src &src, CompoundFn fn) {
             KEISAN_CHECK_SIZE_EQ(dst.size(), src.size(), "keisan: span size mismatch in compound assignment");
             apply_vec_inplace_ptr(dst.data(), dst.size(), src, fn);
         }
 
         template<typename T, std::size_t N, Scalar S, typename CompoundFn>
-        KEISAN_FORCE_INLINE void apply_scalar_inplace(std::array<T, N> &dst, const S &scalar, CompoundFn fn) noexcept {
+        KEISAN_HD_INLINE void apply_scalar_inplace(std::array<T, N> &dst, const S &scalar, CompoundFn fn) noexcept {
             apply_scalar_inplace_ptr(dst.data(), N, scalar, fn);
         }
 
         template<typename T, std::size_t N, VectorOperand Src, typename CompoundFn>
-        KEISAN_FORCE_INLINE void apply_vec_inplace(std::array<T, N> &dst, const Src &src, CompoundFn fn) {
+        KEISAN_HD_INLINE void apply_vec_inplace(std::array<T, N> &dst, const Src &src, CompoundFn fn) {
             KEISAN_CHECK_SIZE_EQ(N, src.size(), "keisan: array size mismatch in compound assignment");
             apply_vec_inplace_ptr(dst.data(), N, src, fn);
         }
@@ -1009,19 +1113,25 @@ namespace keisan {
             if (dst.capacity() < n) [[unlikely]] {
                 KEISAN_THROW_OR_ABORT(std::length_error,
                                         "keisan: destination capacity < source size (zero-malloc invariant violated)");
+                return;
             }
-            dst.resize(n);
-            eval_into(dst.data(), n, src);
+            if (n < dst.size()) {
+                eval_into(dst.data(), n, src);
+                dst.resize(n);
+            } else {
+                dst.resize(n);
+                eval_into(dst.data(), n, src);
+            }
         }
 
         template<typename T, std::size_t Extent, VectorOperand Src>
-        KEISAN_FORCE_INLINE void assign_zero_malloc(std::span<T, Extent> dst, const Src &src) {
+        KEISAN_HD_INLINE void assign_zero_malloc(std::span<T, Extent> dst, const Src &src) {
             KEISAN_CHECK_SIZE_EQ(dst.size(), src.size(), "keisan: span size mismatch in assignment");
             eval_into(dst.data(), dst.size(), src);
         }
 
         template<typename T, std::size_t N, VectorOperand Src>
-        KEISAN_FORCE_INLINE void assign_zero_malloc(std::array<T, N> &dst, const Src &src) {
+        KEISAN_HD_INLINE void assign_zero_malloc(std::array<T, N> &dst, const Src &src) {
             KEISAN_CHECK_SIZE_EQ(N, src.size(), "keisan: array size mismatch in assignment");
             eval_into(dst.data(), N, src);
         }
@@ -1276,6 +1386,19 @@ namespace keisan {
         [[nodiscard]] inline std::vector<T, Alloc> operator-(std::vector<T, Alloc> &&v) noexcept {
             const std::size_t n = v.size();
             T * KEISAN_RESTRICT p = v.data();
+#if defined(KEISAN_HAS_STD_SIMD)
+            if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+                using V = std::simd::vec<T>;
+                constexpr std::size_t W = V::size();
+                std::size_t i = 0;
+                for (; i + W <= n; i += W) {
+                    const V val = std::simd::unchecked_load<V>(std::span<const T>(p + i, W));
+                    std::simd::unchecked_store(-val, std::span<T>(p + i, W));
+                }
+                for (; i < n; ++i) { p[i] = -p[i]; }
+                return std::move(v);
+            }
+#endif
             KEISAN_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) { p[i] = -p[i]; }
             return std::move(v);
@@ -1286,13 +1409,17 @@ namespace keisan {
             return std::move(v);
         }
 
-        template<typename T, typename Alloc, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        template<typename T, typename Alloc, VectorOperand Rhs>
+            requires detail::is_valid_numeric_v<T> &&
+                     std::is_same_v<std::common_type_t<T, std::remove_cv_t<typename detail::operand_storage_t<Rhs>::value_type>>, T>
         [[nodiscard]] inline std::vector<T, Alloc> operator+(std::vector<T, Alloc> &&lhs, const Rhs &rhs) {
             lhs += rhs;
             return std::move(lhs);
         }
 
-        template<VectorOperand Lhs, typename T, typename Alloc> requires detail::is_valid_numeric_v<T>
+        template<VectorOperand Lhs, typename T, typename Alloc>
+            requires detail::is_valid_numeric_v<T> &&
+                     std::is_same_v<std::common_type_t<T, std::remove_cv_t<typename detail::operand_storage_t<Lhs>::value_type>>, T>
         [[nodiscard]] inline std::vector<T, Alloc> operator+(const Lhs &lhs, std::vector<T, Alloc> &&rhs) {
             rhs += lhs;
             return std::move(rhs);
@@ -1316,13 +1443,17 @@ namespace keisan {
             return std::move(rhs);
         }
 
-        template<typename T, typename Alloc, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        template<typename T, typename Alloc, VectorOperand Rhs>
+            requires detail::is_valid_numeric_v<T> &&
+                     std::is_same_v<std::common_type_t<T, std::remove_cv_t<typename detail::operand_storage_t<Rhs>::value_type>>, T>
         [[nodiscard]] inline std::vector<T, Alloc> operator-(std::vector<T, Alloc> &&lhs, const Rhs &rhs) {
             lhs -= rhs;
             return std::move(lhs);
         }
 
-        template<VectorOperand Lhs, typename T, typename Alloc> requires detail::is_valid_numeric_v<T>
+        template<VectorOperand Lhs, typename T, typename Alloc>
+            requires detail::is_valid_numeric_v<T> &&
+                     std::is_same_v<std::common_type_t<T, std::remove_cv_t<typename detail::operand_storage_t<Lhs>::value_type>>, T>
         [[nodiscard]] inline std::vector<T, Alloc> operator-(const Lhs &lhs, std::vector<T, Alloc> &&rhs) {
             detail::apply_vec_inplace(rhs, lhs, [](auto &r, const auto &l) noexcept { r = l - r; });
             return std::move(rhs);
@@ -1346,13 +1477,17 @@ namespace keisan {
             return std::move(rhs);
         }
 
-        template<typename T, typename Alloc, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        template<typename T, typename Alloc, VectorOperand Rhs>
+            requires detail::is_valid_numeric_v<T> &&
+                     std::is_same_v<std::common_type_t<T, std::remove_cv_t<typename detail::operand_storage_t<Rhs>::value_type>>, T>
         [[nodiscard]] inline std::vector<T, Alloc> operator*(std::vector<T, Alloc> &&lhs, const Rhs &rhs) {
             lhs *= rhs;
             return std::move(lhs);
         }
 
-        template<VectorOperand Lhs, typename T, typename Alloc> requires detail::is_valid_numeric_v<T>
+        template<VectorOperand Lhs, typename T, typename Alloc>
+            requires detail::is_valid_numeric_v<T> &&
+                     std::is_same_v<std::common_type_t<T, std::remove_cv_t<typename detail::operand_storage_t<Lhs>::value_type>>, T>
         [[nodiscard]] inline std::vector<T, Alloc> operator*(const Lhs &lhs, std::vector<T, Alloc> &&rhs) {
             rhs *= lhs;
             return std::move(rhs);
@@ -1376,13 +1511,17 @@ namespace keisan {
             return std::move(rhs);
         }
 
-        template<typename T, typename Alloc, VectorOperand Rhs> requires detail::is_valid_numeric_v<T>
+        template<typename T, typename Alloc, VectorOperand Rhs>
+            requires detail::is_valid_numeric_v<T> &&
+                     std::is_same_v<std::common_type_t<T, std::remove_cv_t<typename detail::operand_storage_t<Rhs>::value_type>>, T>
         [[nodiscard]] inline std::vector<T, Alloc> operator/(std::vector<T, Alloc> &&lhs, const Rhs &rhs) {
             lhs /= rhs;
             return std::move(lhs);
         }
 
-        template<VectorOperand Lhs, typename T, typename Alloc> requires detail::is_valid_numeric_v<T>
+        template<VectorOperand Lhs, typename T, typename Alloc>
+            requires detail::is_valid_numeric_v<T> &&
+                     std::is_same_v<std::common_type_t<T, std::remove_cv_t<typename detail::operand_storage_t<Lhs>::value_type>>, T>
         [[nodiscard]] inline std::vector<T, Alloc> operator/(const Lhs &lhs, std::vector<T, Alloc> &&rhs) {
             detail::apply_vec_inplace(rhs, lhs, [](auto &r, const auto &l) noexcept { r = l / r; });
             return std::move(rhs);
@@ -1475,9 +1614,53 @@ namespace keisan {
         );
     }
 
+    template<VectorOperand A, Scalar B, Scalar C>
+    [[nodiscard]] constexpr auto fma(const A &a, const B &b, const C &c) {
+        return detail::TernaryExpr<detail::OpFma,
+            detail::operand_storage_t<A>,
+            detail::operand_storage_t<B>,
+            detail::operand_storage_t<C>>(
+                detail::OpFma{},
+                detail::make_operand(a),
+                detail::make_operand(b),
+                detail::make_operand(c)
+        );
+    }
+
+    template<Scalar A, VectorOperand B, Scalar C>
+    [[nodiscard]] constexpr auto fma(const A &a, const B &b, const C &c) {
+        return detail::TernaryExpr<detail::OpFma,
+            detail::operand_storage_t<A>,
+            detail::operand_storage_t<B>,
+            detail::operand_storage_t<C>>(
+                detail::OpFma{},
+                detail::make_operand(a),
+                detail::make_operand(b),
+                detail::make_operand(c)
+        );
+    }
+
+    template<Scalar A, Scalar B, VectorOperand C>
+    [[nodiscard]] constexpr auto fma(const A &a, const B &b, const C &c) {
+        return detail::TernaryExpr<detail::OpFma,
+            detail::operand_storage_t<A>,
+            detail::operand_storage_t<B>,
+            detail::operand_storage_t<C>>(
+                detail::OpFma{},
+                detail::make_operand(a),
+                detail::make_operand(b),
+                detail::make_operand(c)
+        );
+    }
+
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC push_options
 #pragma GCC optimize("no-fast-math", "no-associative-math")
+#elif defined(__clang__)
+#pragma float_control(precise, on, push)
+#elif defined(_MSC_VER)
+#pragma float_control(precise, on, push)
+#pragma fp_contract(off)
 #endif
 
     namespace detail {
@@ -1511,7 +1694,7 @@ namespace keisan {
     template<VectorOperand Op>
     [[nodiscard]] constexpr auto sum_repro(const Op &op_in) {
         auto op = detail::make_operand(op_in);
-        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        using value_type = std::remove_const_t<typename detail::operand_storage_t<Op>::value_type>;
         const std::size_t n = op.size();
         if (n == 0) return value_type{0};
 
@@ -1533,7 +1716,7 @@ namespace keisan {
     template<VectorOperand Op>
     [[nodiscard]] constexpr auto sum_deterministic(const Op &op_in) {
         auto op = detail::make_operand(op_in);
-        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        using value_type = std::remove_const_t<typename detail::operand_storage_t<Op>::value_type>;
         const std::size_t n = op.size();
         value_type total{0};
         for (std::size_t i = 0; i < n; ++i) {
@@ -1589,6 +1772,11 @@ namespace keisan {
 
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC pop_options
+#elif defined(__clang__)
+#pragma float_control(pop)
+#elif defined(_MSC_VER)
+#pragma fp_contract(on)
+#pragma float_control(pop)
 #endif
 
     // sum: reduction with portable C++26 std::simd and dual-accumulator dependency breaking
@@ -1604,26 +1792,26 @@ namespace keisan {
 
 #if defined(KEISAN_HAS_STD_SIMD)
         if !consteval {
-            if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } &&
-                          (std::is_same_v<value_type, double> || std::is_same_v<value_type, float>)) {
+            if constexpr (std::is_same_v<value_type, double> || std::is_same_v<value_type, float>) {
                 using V = std::simd::vec<value_type>;
-                constexpr std::size_t W = V::size();
-                const value_type* KEISAN_RESTRICT p = op.data();
-                V acc0(value_type{0});
-                V acc1(value_type{0});
-                std::size_t i = 0;
-                for (; i + 2 * W <= n; i += 2 * W) {
-                    acc0 += std::simd::unchecked_load<V>(std::span<const value_type>(p + i, W));
-                    acc1 += std::simd::unchecked_load<V>(std::span<const value_type>(p + i + W, W));
+                if constexpr (detail::can_eval_simd_v<decltype(op), V>) {
+                    constexpr std::size_t W = V::size();
+                    V acc0(value_type{0});
+                    V acc1(value_type{0});
+                    std::size_t i = 0;
+                    for (; i + 2 * W <= n; i += 2 * W) {
+                        acc0 += op.template eval_simd<V>(i);
+                        acc1 += op.template eval_simd<V>(i + W);
+                    }
+                    for (; i + W <= n; i += W) {
+                        acc0 += op.template eval_simd<V>(i);
+                    }
+                    value_type total = std::simd::reduce(acc0 + acc1);
+                    for (; i < n; ++i) {
+                        total += static_cast<value_type>(op[i]);
+                    }
+                    return total;
                 }
-                for (; i + W <= n; i += W) {
-                    acc0 += std::simd::unchecked_load<V>(std::span<const value_type>(p + i, W));
-                }
-                value_type total = std::simd::reduce(acc0 + acc1);
-                for (; i < n; ++i) {
-                    total += p[i];
-                }
-                return total;
             }
         }
 #endif
@@ -1662,35 +1850,27 @@ namespace keisan {
 
 #if defined(KEISAN_HAS_STD_SIMD)
         if !consteval {
-            if constexpr (!detail::is_strided_span_v<decltype(lhs_op)> && !detail::is_strided_span_v<decltype(rhs_op)> &&
-                          requires { { lhs_op.data() }; { rhs_op.data() }; } &&
-                          std::is_same_v<LhsVal, ResType> && std::is_same_v<RhsVal, ResType> &&
-                          (std::is_same_v<ResType, double> || std::is_same_v<ResType, float>)) {
+            if constexpr (std::is_same_v<ResType, double> || std::is_same_v<ResType, float>) {
                 using V = std::simd::vec<ResType>;
-                constexpr std::size_t W = V::size();
-                const ResType* KEISAN_RESTRICT p1 = lhs_op.data();
-                const ResType* KEISAN_RESTRICT p2 = rhs_op.data();
-                V acc0(ResType{0});
-                V acc1(ResType{0});
-                std::size_t i = 0;
-                for (; i + 2 * W <= n; i += 2 * W) {
-                    const V l0 = std::simd::unchecked_load<V>(std::span<const ResType>(p1 + i, W));
-                    const V r0 = std::simd::unchecked_load<V>(std::span<const ResType>(p2 + i, W));
-                    acc0 += l0 * r0;
-                    const V l1 = std::simd::unchecked_load<V>(std::span<const ResType>(p1 + i + W, W));
-                    const V r1 = std::simd::unchecked_load<V>(std::span<const ResType>(p2 + i + W, W));
-                    acc1 += l1 * r1;
+                if constexpr (detail::can_eval_simd_v<decltype(lhs_op), V> &&
+                              detail::can_eval_simd_v<decltype(rhs_op), V>) {
+                    constexpr std::size_t W = V::size();
+                    V acc0(ResType{0});
+                    V acc1(ResType{0});
+                    std::size_t i = 0;
+                    for (; i + 2 * W <= n; i += 2 * W) {
+                        acc0 += lhs_op.template eval_simd<V>(i) * rhs_op.template eval_simd<V>(i);
+                        acc1 += lhs_op.template eval_simd<V>(i + W) * rhs_op.template eval_simd<V>(i + W);
+                    }
+                    for (; i + W <= n; i += W) {
+                        acc0 += lhs_op.template eval_simd<V>(i) * rhs_op.template eval_simd<V>(i);
+                    }
+                    ResType total = std::simd::reduce(acc0 + acc1);
+                    for (; i < n; ++i) {
+                        total += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+                    }
+                    return total;
                 }
-                for (; i + W <= n; i += W) {
-                    const V l0 = std::simd::unchecked_load<V>(std::span<const ResType>(p1 + i, W));
-                    const V r0 = std::simd::unchecked_load<V>(std::span<const ResType>(p2 + i, W));
-                    acc0 += l0 * r0;
-                }
-                ResType total = std::simd::reduce(acc0 + acc1);
-                for (; i < n; ++i) {
-                    total += p1[i] * p2[i];
-                }
-                return total;
             }
         }
 #endif
@@ -1724,6 +1904,36 @@ namespace keisan {
         const std::size_t n = op.size();
         if (n == 0) { return ResType{0}; }
 
+#if defined(KEISAN_HAS_STD_SIMD)
+        if !consteval {
+            if constexpr (!detail::is_complex_v<Val> &&
+                          (std::is_same_v<ResType, double> || std::is_same_v<ResType, float>)) {
+                using V = std::simd::vec<ResType>;
+                if constexpr (detail::can_eval_simd_v<decltype(op), V>) {
+                    constexpr std::size_t W = V::size();
+                    V acc0(ResType{0});
+                    V acc1(ResType{0});
+                    std::size_t i = 0;
+                    for (; i + 2 * W <= n; i += 2 * W) {
+                        const V v0 = op.template eval_simd<V>(i);
+                        const V v1 = op.template eval_simd<V>(i + W);
+                        acc0 += v0 * v0;
+                        acc1 += v1 * v1;
+                    }
+                    for (; i + W <= n; i += W) {
+                        const V v0 = op.template eval_simd<V>(i);
+                        acc0 += v0 * v0;
+                    }
+                    ResType total = std::simd::reduce(acc0 + acc1);
+                    for (; i < n; ++i) {
+                        total += static_cast<ResType>(detail::mag2(op[i]));
+                    }
+                    return total;
+                }
+            }
+        }
+#endif
+
         ResType a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
         std::size_t i = 0;
         for (; i + 8 <= n; i += 8) {
@@ -1742,28 +1952,89 @@ namespace keisan {
         return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
     }
 
-    // norm: Euclidean L2 norm
+    // norm: Euclidean L2 norm (scaled to avoid overflow/underflow)
     template<VectorOperand Op>
     [[nodiscard]] inline auto norm(const Op &op) {
-        using Val = typename detail::operand_storage_t<Op>::value_type;
+        using Val = std::remove_const_t<typename detail::operand_storage_t<Op>::value_type>;
         using RealVal = typename real_of<Val>::type;
         using ResType = std::conditional_t<std::is_floating_point_v<RealVal>, RealVal, double>;
-        return std::sqrt(static_cast<ResType>(norm_sq(op)));
+        const std::size_t n = op.size();
+        if (n == 0) { return ResType{0}; }
+        if constexpr (detail::is_complex_v<Val>) {
+            ResType scale{0};
+            auto op_ref = detail::make_operand(op);
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto v = op_ref[i];
+                const ResType ar = static_cast<ResType>(std::abs(v.real()));
+                const ResType ai = static_cast<ResType>(std::abs(v.imag()));
+                const ResType m = ar > ai ? ar : ai;
+                if (std::isnan(m) || m > scale) { scale = m; }
+            }
+            if (scale == ResType{0} || !std::isfinite(scale)) {
+                return scale;
+            }
+            const ResType inv_scale = ResType{1} / scale;
+            ResType sum_sq{0};
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto v = op_ref[i];
+                const ResType sr = static_cast<ResType>(v.real()) * inv_scale;
+                const ResType si = static_cast<ResType>(v.imag()) * inv_scale;
+                sum_sq += sr * sr + si * si;
+            }
+            return scale * std::sqrt(sum_sq);
+        } else {
+            ResType scale{0};
+            auto op_ref = detail::make_operand(op);
+            for (std::size_t i = 0; i < n; ++i) {
+                const ResType av = static_cast<ResType>(std::abs(static_cast<ResType>(op_ref[i])));
+                if (std::isnan(av) || av > scale) { scale = av; }
+            }
+            if (scale == ResType{0} || !std::isfinite(scale)) {
+                return scale;
+            }
+            const ResType inv_scale = ResType{1} / scale;
+            return scale * std::sqrt(static_cast<ResType>(norm_sq(op * inv_scale)));
+        }
     }
 
     // dotc: conjugate inner product for complex vectors (std::conj on lhs)
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] constexpr auto dotc(const Lhs &lhs_in, const Rhs &rhs_in) {
-        if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
-            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: vector size mismatch in dotc");
-        }
+        KEISAN_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "keisan: vector size mismatch in dotc");
         auto lhs_op = detail::make_operand(lhs_in);
         auto rhs_op = detail::make_operand(rhs_in);
-        using LhsVal = typename detail::operand_storage_t<Lhs>::value_type;
-        using RhsVal = typename detail::operand_storage_t<Rhs>::value_type;
+        using LhsVal = std::remove_const_t<typename detail::operand_storage_t<Lhs>::value_type>;
+        using RhsVal = std::remove_const_t<typename detail::operand_storage_t<Rhs>::value_type>;
         using ResType = std::common_type_t<LhsVal, RhsVal>;
         const std::size_t n = lhs_in.size();
         if (n == 0) { return ResType{0}; }
+
+#if defined(KEISAN_HAS_STD_SIMD)
+        if !consteval {
+            if constexpr (std::is_same_v<ResType, double> || std::is_same_v<ResType, float>) {
+                using V = std::simd::vec<ResType>;
+                if constexpr (detail::can_eval_simd_v<decltype(lhs_op), V> &&
+                              detail::can_eval_simd_v<decltype(rhs_op), V>) {
+                    constexpr std::size_t W = V::size();
+                    V acc0(ResType{0});
+                    V acc1(ResType{0});
+                    std::size_t i = 0;
+                    for (; i + 2 * W <= n; i += 2 * W) {
+                        acc0 += lhs_op.template eval_simd<V>(i) * rhs_op.template eval_simd<V>(i);
+                        acc1 += lhs_op.template eval_simd<V>(i + W) * rhs_op.template eval_simd<V>(i + W);
+                    }
+                    for (; i + W <= n; i += W) {
+                        acc0 += lhs_op.template eval_simd<V>(i) * rhs_op.template eval_simd<V>(i);
+                    }
+                    ResType total = std::simd::reduce(acc0 + acc1);
+                    for (; i < n; ++i) {
+                        total += static_cast<ResType>(detail::conj_helper(lhs_op[i])) * static_cast<ResType>(rhs_op[i]);
+                    }
+                    return total;
+                }
+            }
+        }
+#endif
 
         ResType a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
         std::size_t i = 0;
@@ -1805,12 +2076,23 @@ namespace keisan {
         if (dst.capacity() < n) [[unlikely]] {
             KEISAN_THROW_OR_ABORT(std::length_error,
                                     "keisan: destination capacity < source size in assign_stream");
+            return;
+        }
+        if (n == 0) {
+            dst.resize(0);
+            return;
+        }
+        auto storage = detail::make_operand(src);
+        const char* dst_begin = reinterpret_cast<const char*>(dst.data());
+        const char* dst_end = dst_begin + (dst.size() > n ? dst.size() : n) * sizeof(T);
+        // Any overlap (partial or exact) is unsafe with non-temporal streaming stores + restrict.
+        if (detail::has_partial_overlap(storage, dst_begin, dst_end, 0)) {
+            assign(dst, src);
+            return;
         }
         dst.resize(n);
-        if (n == 0) return;
 
         T * KEISAN_RESTRICT p = dst.data();
-        auto storage = detail::make_operand(src);
 
 #if defined(KEISAN_HAS_X86_INTRIN)
         if constexpr (std::is_same_v<T, double>) {
@@ -1820,20 +2102,33 @@ namespace keisan {
                 p[i] = static_cast<double>(storage[i]);
                 ++i;
             }
-            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, double>) {
+            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<std::remove_const_t<typename decltype(storage)::value_type>, double>) {
                 const double* KEISAN_RESTRICT sp = storage.data();
                 for (; i + 4 <= n; i += 4) {
                     _mm256_stream_pd(p + i, _mm256_loadu_pd(sp + i));
                 }
             } else {
-                for (; i + 4 <= n; i += 4) {
-                    __m256d val = _mm256_setr_pd(
-                        static_cast<double>(storage[i]),
-                        static_cast<double>(storage[i + 1]),
-                        static_cast<double>(storage[i + 2]),
-                        static_cast<double>(storage[i + 3])
-                    );
-                    _mm256_stream_pd(p + i, val);
+#if defined(KEISAN_HAS_STD_SIMD)
+                using V4 = std::simd::vec<double, 4>;
+                if constexpr (detail::can_eval_simd_v<decltype(storage), V4>) {
+                    alignas(32) double tmp[4];
+                    for (; i + 4 <= n; i += 4) {
+                        const V4 v = storage.template eval_simd<V4>(i);
+                        std::simd::unchecked_store(v, std::span<double>(tmp, 4));
+                        _mm256_stream_pd(p + i, _mm256_load_pd(tmp));
+                    }
+                } else
+#endif
+                {
+                    for (; i + 4 <= n; i += 4) {
+                        __m256d val = _mm256_setr_pd(
+                            static_cast<double>(storage[i]),
+                            static_cast<double>(storage[i + 1]),
+                            static_cast<double>(storage[i + 2]),
+                            static_cast<double>(storage[i + 3])
+                        );
+                        _mm256_stream_pd(p + i, val);
+                    }
                 }
             }
             for (; i < n; ++i) {
@@ -1845,18 +2140,31 @@ namespace keisan {
                 p[i] = static_cast<double>(storage[i]);
                 ++i;
             }
-            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, double>) {
+            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<std::remove_const_t<typename decltype(storage)::value_type>, double>) {
                 const double* KEISAN_RESTRICT sp = storage.data();
                 for (; i + 2 <= n; i += 2) {
                     _mm_stream_pd(p + i, _mm_loadu_pd(sp + i));
                 }
             } else {
-                for (; i + 2 <= n; i += 2) {
-                    __m128d val = _mm_setr_pd(
-                        static_cast<double>(storage[i]),
-                        static_cast<double>(storage[i + 1])
-                    );
-                    _mm_stream_pd(p + i, val);
+#if defined(KEISAN_HAS_STD_SIMD)
+                using V2 = std::simd::vec<double, 2>;
+                if constexpr (detail::can_eval_simd_v<decltype(storage), V2>) {
+                    alignas(16) double tmp[2];
+                    for (; i + 2 <= n; i += 2) {
+                        const V2 v = storage.template eval_simd<V2>(i);
+                        std::simd::unchecked_store(v, std::span<double>(tmp, 2));
+                        _mm_stream_pd(p + i, _mm_load_pd(tmp));
+                    }
+                } else
+#endif
+                {
+                    for (; i + 2 <= n; i += 2) {
+                        __m128d val = _mm_setr_pd(
+                            static_cast<double>(storage[i]),
+                            static_cast<double>(storage[i + 1])
+                        );
+                        _mm_stream_pd(p + i, val);
+                    }
                 }
             }
             for (; i < n; ++i) {
@@ -1876,24 +2184,37 @@ namespace keisan {
                 p[i] = static_cast<float>(storage[i]);
                 ++i;
             }
-            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, float>) {
+            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<std::remove_const_t<typename decltype(storage)::value_type>, float>) {
                 const float* KEISAN_RESTRICT sp = storage.data();
                 for (; i + 8 <= n; i += 8) {
                     _mm256_stream_ps(p + i, _mm256_loadu_ps(sp + i));
                 }
             } else {
-                for (; i + 8 <= n; i += 8) {
-                    __m256 val = _mm256_setr_ps(
-                        static_cast<float>(storage[i]),
-                        static_cast<float>(storage[i + 1]),
-                        static_cast<float>(storage[i + 2]),
-                        static_cast<float>(storage[i + 3]),
-                        static_cast<float>(storage[i + 4]),
-                        static_cast<float>(storage[i + 5]),
-                        static_cast<float>(storage[i + 6]),
-                        static_cast<float>(storage[i + 7])
-                    );
-                    _mm256_stream_ps(p + i, val);
+#if defined(KEISAN_HAS_STD_SIMD)
+                using V8 = std::simd::vec<float, 8>;
+                if constexpr (detail::can_eval_simd_v<decltype(storage), V8>) {
+                    alignas(32) float tmp[8];
+                    for (; i + 8 <= n; i += 8) {
+                        const V8 v = storage.template eval_simd<V8>(i);
+                        std::simd::unchecked_store(v, std::span<float>(tmp, 8));
+                        _mm256_stream_ps(p + i, _mm256_load_ps(tmp));
+                    }
+                } else
+#endif
+                {
+                    for (; i + 8 <= n; i += 8) {
+                        __m256 val = _mm256_setr_ps(
+                            static_cast<float>(storage[i]),
+                            static_cast<float>(storage[i + 1]),
+                            static_cast<float>(storage[i + 2]),
+                            static_cast<float>(storage[i + 3]),
+                            static_cast<float>(storage[i + 4]),
+                            static_cast<float>(storage[i + 5]),
+                            static_cast<float>(storage[i + 6]),
+                            static_cast<float>(storage[i + 7])
+                        );
+                        _mm256_stream_ps(p + i, val);
+                    }
                 }
             }
             for (; i < n; ++i) {
@@ -1905,20 +2226,33 @@ namespace keisan {
                 p[i] = static_cast<float>(storage[i]);
                 ++i;
             }
-            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, float>) {
+            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<std::remove_const_t<typename decltype(storage)::value_type>, float>) {
                 const float* KEISAN_RESTRICT sp = storage.data();
                 for (; i + 4 <= n; i += 4) {
                     _mm_stream_ps(p + i, _mm_loadu_ps(sp + i));
                 }
             } else {
-                for (; i + 4 <= n; i += 4) {
-                    __m128 val = _mm_setr_ps(
-                        static_cast<float>(storage[i]),
-                        static_cast<float>(storage[i + 1]),
-                        static_cast<float>(storage[i + 2]),
-                        static_cast<float>(storage[i + 3])
-                    );
-                    _mm_stream_ps(p + i, val);
+#if defined(KEISAN_HAS_STD_SIMD)
+                using V4 = std::simd::vec<float, 4>;
+                if constexpr (detail::can_eval_simd_v<decltype(storage), V4>) {
+                    alignas(16) float tmp[4];
+                    for (; i + 4 <= n; i += 4) {
+                        const V4 v = storage.template eval_simd<V4>(i);
+                        std::simd::unchecked_store(v, std::span<float>(tmp, 4));
+                        _mm_stream_ps(p + i, _mm_load_ps(tmp));
+                    }
+                } else
+#endif
+                {
+                    for (; i + 4 <= n; i += 4) {
+                        __m128 val = _mm_setr_ps(
+                            static_cast<float>(storage[i]),
+                            static_cast<float>(storage[i + 1]),
+                            static_cast<float>(storage[i + 2]),
+                            static_cast<float>(storage[i + 3])
+                        );
+                        _mm_stream_ps(p + i, val);
+                    }
                 }
             }
             for (; i < n; ++i) {
@@ -1935,21 +2269,20 @@ namespace keisan {
 #endif
         {
 #if defined(KEISAN_HAS_STD_SIMD)
-            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } &&
-                          std::is_same_v<std::remove_const_t<typename decltype(storage)::value_type>, T> &&
-                          (std::is_same_v<T, double> || std::is_same_v<T, float>)) {
+            if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
                 using V = std::simd::vec<T>;
-                constexpr std::size_t W = V::size();
-                const T* KEISAN_RESTRICT sp = storage.data();
-                std::size_t i = 0;
-                for (; i + W <= n; i += W) {
-                    const V v = std::simd::unchecked_load<V>(std::span<const T>(sp + i, W));
-                    std::simd::unchecked_store(v, std::span<T>(p + i, W));
+                if constexpr (detail::can_eval_simd_v<decltype(storage), V>) {
+                    constexpr std::size_t W = V::size();
+                    std::size_t i = 0;
+                    for (; i + W <= n; i += W) {
+                        const V v = storage.template eval_simd<V>(i);
+                        std::simd::unchecked_store(v, std::span<T>(p + i, W));
+                    }
+                    for (; i < n; ++i) {
+                        p[i] = static_cast<T>(storage[i]);
+                    }
+                    return;
                 }
-                for (; i < n; ++i) {
-                    p[i] = sp[i];
-                }
-                return;
             }
 #endif
             KEISAN_PRAGMA_SIMD
@@ -2027,27 +2360,44 @@ namespace keisan {
             for (std::size_t c = 0; c < cols; ++c) {
                 y[c] = VecOutT{0};
             }
+#if defined(KEISAN_HAS_STD_SIMD)
+            if constexpr (std::is_same_v<MatT, VecOutT> &&
+                          (std::is_same_v<VecOutT, double> || std::is_same_v<VecOutT, float>)) {
+                using V = std::simd::vec<VecOutT>;
+                constexpr std::size_t W = V::size();
+                std::size_t c = 0;
+                for (; c + W <= cols; c += W) {
+                    V yv = V(VecOutT{0});
+                    std::size_t r = 0;
+                    for (; r + 4 <= rows; r += 4) {
+                        const V x0(static_cast<VecOutT>(x[r + 0]));
+                        const V x1(static_cast<VecOutT>(x[r + 1]));
+                        const V x2(static_cast<VecOutT>(x[r + 2]));
+                        const V x3(static_cast<VecOutT>(x[r + 3]));
+                        yv += std::simd::unchecked_load<V>(std::span<const VecOutT>(A + (r + 0) * cols + c, W)) * x0;
+                        yv += std::simd::unchecked_load<V>(std::span<const VecOutT>(A + (r + 1) * cols + c, W)) * x1;
+                        yv += std::simd::unchecked_load<V>(std::span<const VecOutT>(A + (r + 2) * cols + c, W)) * x2;
+                        yv += std::simd::unchecked_load<V>(std::span<const VecOutT>(A + (r + 3) * cols + c, W)) * x3;
+                    }
+                    for (; r < rows; ++r) {
+                        const V xr(static_cast<VecOutT>(x[r]));
+                        yv += std::simd::unchecked_load<V>(std::span<const VecOutT>(A + r * cols + c, W)) * xr;
+                    }
+                    std::simd::unchecked_store(yv, std::span<VecOutT>(y + c, W));
+                }
+                for (; c < cols; ++c) {
+                    VecOutT sum{0};
+                    for (std::size_t r = 0; r < rows; ++r) {
+                        sum += A[r * cols + c] * static_cast<VecOutT>(x[r]);
+                    }
+                    y[c] = sum;
+                }
+                return;
+            }
+#endif
             for (std::size_t r = 0; r < rows; ++r) {
                 const MatT* KEISAN_RESTRICT row = A + r * cols;
                 const auto xr = static_cast<VecOutT>(x[r]);
-#if defined(KEISAN_HAS_STD_SIMD)
-                if constexpr (std::is_same_v<MatT, VecOutT> &&
-                              (std::is_same_v<VecOutT, double> || std::is_same_v<VecOutT, float>)) {
-                    using V = std::simd::vec<VecOutT>;
-                    constexpr std::size_t W = V::size();
-                    const V vxr(xr);
-                    std::size_t c = 0;
-                    for (; c + W <= cols; c += W) {
-                        const V yv = std::simd::unchecked_load<V>(std::span<const VecOutT>(y + c, W));
-                        const V rv = std::simd::unchecked_load<V>(std::span<const VecOutT>(row + c, W));
-                        std::simd::unchecked_store(yv + rv * vxr, std::span<VecOutT>(y + c, W));
-                    }
-                    for (; c < cols; ++c) {
-                        y[c] += row[c] * xr;
-                    }
-                    continue;
-                }
-#endif
                 KEISAN_PRAGMA_SIMD
                 for (std::size_t c = 0; c < cols; ++c) {
                     y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
@@ -2059,7 +2409,8 @@ namespace keisan {
     template<typename MatT, typename VecInT, typename VecOutT>
     KEISAN_HOST_DEVICE inline void matvec(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
         if (rows == 0 || cols == 0) return;
-        const bool aliased = detail::memory_ranges_overlap(x, cols * sizeof(VecInT), y, rows * sizeof(VecOutT));
+        const bool aliased = detail::memory_ranges_overlap(x, cols * sizeof(VecInT), y, rows * sizeof(VecOutT)) ||
+                             detail::memory_ranges_overlap(A, rows * cols * sizeof(MatT), y, rows * sizeof(VecOutT));
         constexpr std::size_t STACK_BUF_CAP = 128;
         if (aliased) {
             if (rows <= STACK_BUF_CAP) {
@@ -2073,6 +2424,7 @@ namespace keisan {
 #if defined(KEISAN_STRICT_ZERO_MALLOC)
             else {
                 KEISAN_THROW_BAD_ALLOC("keisan: matvec aliasing exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
+                return;
             }
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
@@ -2083,6 +2435,11 @@ namespace keisan {
                 }
                 return;
             }
+#else
+            else {
+                KEISAN_DEVICE_ASSERT(false, "keisan: matvec aliasing exceeds device stack buffer capacity");
+                return;
+            }
 #endif
         }
         detail::matvec_noalias(A, x, y, rows, cols);
@@ -2091,7 +2448,8 @@ namespace keisan {
     template<typename MatT, typename VecInT, typename VecOutT>
     KEISAN_HOST_DEVICE inline void matvec_transposed(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
         if (rows == 0 || cols == 0) return;
-        const bool aliased = detail::memory_ranges_overlap(x, rows * sizeof(VecInT), y, cols * sizeof(VecOutT));
+        const bool aliased = detail::memory_ranges_overlap(x, rows * sizeof(VecInT), y, cols * sizeof(VecOutT)) ||
+                             detail::memory_ranges_overlap(A, rows * cols * sizeof(MatT), y, cols * sizeof(VecOutT));
         constexpr std::size_t STACK_BUF_CAP = 128;
         if (aliased) {
             if (cols <= STACK_BUF_CAP) {
@@ -2105,6 +2463,7 @@ namespace keisan {
 #if defined(KEISAN_STRICT_ZERO_MALLOC)
             else {
                 KEISAN_THROW_BAD_ALLOC("keisan: matvec_transposed aliasing exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
+                return;
             }
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
@@ -2113,6 +2472,11 @@ namespace keisan {
                 for (std::size_t c = 0; c < cols; ++c) {
                     y[c] = local_buf[c];
                 }
+                return;
+            }
+#else
+            else {
+                KEISAN_DEVICE_ASSERT(false, "keisan: matvec_transposed aliasing exceeds device stack buffer capacity");
                 return;
             }
 #endif
@@ -2126,14 +2490,38 @@ namespace keisan {
         if constexpr (Rows == 0 || Cols == 0) {
             return;
         } else {
-            const bool aliased = detail::memory_ranges_overlap(x, Cols * sizeof(VecInT), y, Rows * sizeof(VecOutT));
+            const bool aliased = detail::memory_ranges_overlap(x, Cols * sizeof(VecInT), y, Rows * sizeof(VecOutT)) ||
+                                 detail::memory_ranges_overlap(A, Rows * Cols * sizeof(MatT), y, Rows * sizeof(VecOutT));
+            constexpr std::size_t STACK_BUF_CAP = 128;
             if (aliased) {
-                VecOutT local_buf[Rows];
-                detail::matvec_noalias(A, x, local_buf, Rows, Cols);
-                for (std::size_t r = 0; r < Rows; ++r) {
-                    y[r] = local_buf[r];
+                if constexpr (Rows <= STACK_BUF_CAP) {
+                    VecOutT local_buf[Rows];
+                    detail::matvec_noalias(A, x, local_buf, Rows, Cols);
+                    for (std::size_t r = 0; r < Rows; ++r) {
+                        y[r] = local_buf[r];
+                    }
+                    return;
                 }
-                return;
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
+                else {
+                    KEISAN_THROW_BAD_ALLOC("keisan: matvec_fixed aliasing exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
+                    return;
+                }
+#elif !defined(__SYCL_DEVICE_ONLY__)
+                else {
+                    std::vector<VecOutT> local_buf(Rows);
+                    detail::matvec_noalias(A, x, local_buf.data(), Rows, Cols);
+                    for (std::size_t r = 0; r < Rows; ++r) {
+                        y[r] = local_buf[r];
+                    }
+                    return;
+                }
+#else
+                else {
+                    KEISAN_DEVICE_ASSERT(false, "keisan: matvec_fixed aliasing exceeds device stack buffer capacity");
+                    return;
+                }
+#endif
             }
             detail::matvec_noalias(A, x, y, Rows, Cols);
         }
@@ -2144,14 +2532,38 @@ namespace keisan {
         if constexpr (Rows == 0 || Cols == 0) {
             return;
         } else {
-            const bool aliased = detail::memory_ranges_overlap(x, Rows * sizeof(VecInT), y, Cols * sizeof(VecOutT));
+            const bool aliased = detail::memory_ranges_overlap(x, Rows * sizeof(VecInT), y, Cols * sizeof(VecOutT)) ||
+                                 detail::memory_ranges_overlap(A, Rows * Cols * sizeof(MatT), y, Cols * sizeof(VecOutT));
+            constexpr std::size_t STACK_BUF_CAP = 128;
             if (aliased) {
-                VecOutT local_buf[Cols];
-                detail::matvec_transposed_noalias(A, x, local_buf, Rows, Cols);
-                for (std::size_t c = 0; c < Cols; ++c) {
-                    y[c] = local_buf[c];
+                if constexpr (Cols <= STACK_BUF_CAP) {
+                    VecOutT local_buf[Cols];
+                    detail::matvec_transposed_noalias(A, x, local_buf, Rows, Cols);
+                    for (std::size_t c = 0; c < Cols; ++c) {
+                        y[c] = local_buf[c];
+                    }
+                    return;
                 }
-                return;
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
+                else {
+                    KEISAN_THROW_BAD_ALLOC("keisan: matvec_transposed_fixed aliasing exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
+                    return;
+                }
+#elif !defined(__SYCL_DEVICE_ONLY__)
+                else {
+                    std::vector<VecOutT> local_buf(Cols);
+                    detail::matvec_transposed_noalias(A, x, local_buf.data(), Rows, Cols);
+                    for (std::size_t c = 0; c < Cols; ++c) {
+                        y[c] = local_buf[c];
+                    }
+                    return;
+                }
+#else
+                else {
+                    KEISAN_DEVICE_ASSERT(false, "keisan: matvec_transposed_fixed aliasing exceeds device stack buffer capacity");
+                    return;
+                }
+#endif
             }
             detail::matvec_transposed_noalias(A, x, y, Rows, Cols);
         }
@@ -2164,7 +2576,8 @@ namespace keisan {
     template<typename T>
     class StridedSpan {
     public:
-        using value_type = T;
+        using element_type = T;
+        using value_type = std::remove_cv_t<T>;
         using size_type = std::size_t;
         using difference_type = std::ptrdiff_t;
         using reference = T&;
@@ -2174,7 +2587,9 @@ namespace keisan {
 
         constexpr StridedSpan() noexcept : ptr_(nullptr), size_(0), stride_(1) {}
         constexpr StridedSpan(T* ptr, std::size_t size, std::size_t stride) noexcept
-            : ptr_(ptr), size_(size), stride_(stride) {}
+            : ptr_(ptr), size_(size), stride_(stride) {
+            assert((size == 0 || stride > 0) && "keisan: StridedSpan stride must be > 0 when size > 0");
+        }
 
         [[nodiscard]] constexpr std::size_t size() const noexcept { return size_; }
         [[nodiscard]] constexpr std::size_t stride() const noexcept { return stride_; }
@@ -2182,6 +2597,7 @@ namespace keisan {
         [[nodiscard]] constexpr pointer data() const noexcept { return ptr_; }
 
         [[nodiscard]] constexpr reference operator[](std::size_t i) const noexcept {
+            assert(i < size_ && "keisan: StridedSpan index out of bounds");
             return ptr_[i * stride_];
         }
 
@@ -2193,10 +2609,28 @@ namespace keisan {
 
     template<typename T, typename ScalarT>
     KEISAN_HOST_DEVICE inline void broadcast_multiply(T* data, std::size_t count, ScalarT factor) {
-        const auto f = static_cast<T>(factor);
+        using CommonT = std::common_type_t<T, ScalarT>;
+#if defined(KEISAN_HAS_STD_SIMD)
+        if constexpr ((std::is_same_v<T, double> || std::is_same_v<T, float>) && std::is_same_v<CommonT, T>) {
+            using V = std::simd::vec<T>;
+            constexpr std::size_t W = V::size();
+            const T f = static_cast<T>(factor);
+            const V vf(f);
+            std::size_t i = 0;
+            for (; i + W <= count; i += W) {
+                const V v = std::simd::unchecked_load<V>(std::span<const T>(data + i, W));
+                std::simd::unchecked_store(v * vf, std::span<T>(data + i, W));
+            }
+            for (; i < count; ++i) {
+                data[i] = data[i] * f;
+            }
+            return;
+        }
+#endif
+        const auto f = static_cast<CommonT>(factor);
         KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < count; ++i) {
-            data[i] = data[i] * f;
+            data[i] = static_cast<T>(static_cast<CommonT>(data[i]) * f);
         }
     }
 
@@ -2244,14 +2678,24 @@ namespace keisan {
         template<typename T>
         [[nodiscard]] std::span<T> allocate(std::size_t count) {
             constexpr std::size_t alignment = 64;
-            std::size_t current_addr = reinterpret_cast<std::size_t>(buffer_ + offset_);
-            std::size_t aligned_addr = (current_addr + alignment - 1) & ~(alignment - 1);
-            std::size_t new_offset = (aligned_addr - reinterpret_cast<std::size_t>(buffer_)) + count * sizeof(T);
-            if (new_offset > capacity_) [[unlikely]] {
-                KEISAN_THROW_OR_ABORT(std::length_error, "keisan: WorkspaceArena capacity exceeded");
+            static_assert(alignof(T) <= alignment, "keisan: WorkspaceArena does not support over-aligned types (> 64 bytes)");
+            static_assert(std::is_trivially_destructible_v<T>, "keisan: WorkspaceArena only supports trivially destructible types");
+            if (count > std::numeric_limits<std::size_t>::max() / sizeof(T)) [[unlikely]] {
+                KEISAN_THROW_OR_ABORT(std::length_error, "keisan: WorkspaceArena allocation size overflow");
+                return {};
             }
-            offset_ = new_offset;
-            return std::span<T>(reinterpret_cast<T*>(aligned_addr), count);
+            const std::size_t bytes = count * sizeof(T);
+            if (offset_ > capacity_) [[unlikely]] {
+                KEISAN_THROW_OR_ABORT(std::length_error, "keisan: WorkspaceArena capacity exceeded");
+                return {};
+            }
+            const std::size_t aligned_offset = (offset_ + alignment - 1) & ~(alignment - 1);
+            if (aligned_offset < offset_ || aligned_offset > capacity_ || bytes > capacity_ - aligned_offset) [[unlikely]] {
+                KEISAN_THROW_OR_ABORT(std::length_error, "keisan: WorkspaceArena capacity exceeded");
+                return {};
+            }
+            offset_ = aligned_offset + bytes;
+            return std::span<T>(reinterpret_cast<T*>(buffer_ + aligned_offset), count);
         }
 
         void reset() noexcept {
@@ -2269,9 +2713,50 @@ namespace keisan {
 
     template<typename T, typename IndexT>
     KEISAN_HOST_DEVICE inline void gather(T* dst, const T* src, const IndexT* indices, std::size_t count) {
+        if (count == 0) return;
+        const bool aliased = (dst == src) ||
+                             detail::memory_ranges_overlap(dst, count * sizeof(T), indices, count * sizeof(IndexT));
+        if (aliased) {
+            constexpr std::size_t STACK_BUF_CAP = 1024;
+            if (count <= STACK_BUF_CAP) {
+                T local_buf[STACK_BUF_CAP];
+                for (std::size_t i = 0; i < count; ++i) {
+                    local_buf[i] = src[indices[i]];
+                }
+                for (std::size_t i = 0; i < count; ++i) {
+                    dst[i] = local_buf[i];
+                }
+                return;
+            }
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
+            else {
+                KEISAN_THROW_BAD_ALLOC("keisan: gather aliasing exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
+                return;
+            }
+#elif !defined(__SYCL_DEVICE_ONLY__)
+            else {
+                std::vector<T> local_buf(count);
+                for (std::size_t i = 0; i < count; ++i) {
+                    local_buf[i] = src[indices[i]];
+                }
+                for (std::size_t i = 0; i < count; ++i) {
+                    dst[i] = local_buf[i];
+                }
+                return;
+            }
+#else
+            else {
+                KEISAN_DEVICE_ASSERT(false, "keisan: gather aliasing exceeds device stack buffer capacity");
+                return;
+            }
+#endif
+        }
+        T* KEISAN_RESTRICT d = dst;
+        const T* KEISAN_RESTRICT s = src;
+        const IndexT* KEISAN_RESTRICT idx = indices;
         KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < count; ++i) {
-            dst[i] = src[indices[i]];
+            d[i] = s[idx[i]];
         }
     }
 
@@ -2279,8 +2764,51 @@ namespace keisan {
     KEISAN_HOST_DEVICE inline void gather(std::span<T, DstExt> dst, std::span<SrcT, SrcExt> src, std::span<IndexT, IdxExt> indices) {
         static_assert(std::is_convertible_v<SrcT, T>, "keisan: source element type must be convertible to destination type in gather");
         KEISAN_CHECK_SIZE_EQ(dst.size(), indices.size(), "keisan: size mismatch in gather");
-        for (std::size_t i = 0; i < indices.size(); ++i) {
-            dst[i] = static_cast<T>(src[indices[i]]);
+        const std::size_t count = indices.size();
+        if (count == 0) return;
+        const bool aliased = detail::memory_ranges_overlap(dst.data(), dst.size_bytes(), src.data(), src.size_bytes()) ||
+                             detail::memory_ranges_overlap(dst.data(), dst.size_bytes(), indices.data(), indices.size_bytes());
+        if (aliased) {
+            constexpr std::size_t STACK_BUF_CAP = 1024;
+            if (count <= STACK_BUF_CAP) {
+                T local_buf[STACK_BUF_CAP];
+                for (std::size_t i = 0; i < count; ++i) {
+                    local_buf[i] = static_cast<T>(src[indices[i]]);
+                }
+                for (std::size_t i = 0; i < count; ++i) {
+                    dst[i] = local_buf[i];
+                }
+                return;
+            }
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
+            else {
+                KEISAN_THROW_BAD_ALLOC("keisan: gather aliasing exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
+                return;
+            }
+#elif !defined(__SYCL_DEVICE_ONLY__)
+            else {
+                std::vector<T> local_buf(count);
+                for (std::size_t i = 0; i < count; ++i) {
+                    local_buf[i] = static_cast<T>(src[indices[i]]);
+                }
+                for (std::size_t i = 0; i < count; ++i) {
+                    dst[i] = local_buf[i];
+                }
+                return;
+            }
+#else
+            else {
+                KEISAN_DEVICE_ASSERT(false, "keisan: gather aliasing exceeds device stack buffer capacity");
+                return;
+            }
+#endif
+        }
+        T* KEISAN_RESTRICT d = dst.data();
+        const SrcT* KEISAN_RESTRICT s = src.data();
+        const IndexT* KEISAN_RESTRICT idx = indices.data();
+        KEISAN_PRAGMA_SIMD
+        for (std::size_t i = 0; i < count; ++i) {
+            d[i] = static_cast<T>(s[idx[i]]);
         }
     }
 
@@ -2318,22 +2846,25 @@ namespace keisan {
             std::size_t e = 0;
 
 #if defined(KEISAN_HAS_STD_SIMD)
-            if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+            if constexpr ((N <= 4) && (std::is_same_v<T, double> || std::is_same_v<T, float>)) {
                 using V = std::simd::vec<T>;
                 using M = typename V::mask_type;
                 constexpr std::size_t W = V::size();
                 M any_singular(false);
+                const V max_finite(std::numeric_limits<T>::max());
 
                 for (; e + W <= num_elements; e += W) {
                     V a[N][N];
                     V rhs[N];
                     V max_abs(T{0});
+                    M nonfinite_mat(false);
                     for (std::size_t r = 0; r < N; ++r) {
                         for (std::size_t c = 0; c < N; ++c) {
                             const V val = std::simd::unchecked_load<V>(
                                 std::span<const T>(A_soa[r * N + c] + e, W));
                             a[r][c] = val;
                             const V aval = std::simd::select(val < V(T{0}), -val, val);
+                            nonfinite_mat = nonfinite_mat || !(aval <= max_finite);
                             max_abs = std::simd::select(aval > max_abs, aval, max_abs);
                         }
                         rhs[r] = std::simd::unchecked_load<V>(
@@ -2346,7 +2877,9 @@ namespace keisan {
                         V abs_i = std::simd::select(a[i][i] < V(T{0}), -a[i][i], a[i][i]);
                         for (std::size_t k = i + 1; k < N; ++k) {
                             const V abs_k = std::simd::select(a[k][i] < V(T{0}), -a[k][i], a[k][i]);
-                            const M do_swap = abs_k > abs_i;
+                            const M i_nan = (abs_i != abs_i);
+                            const M k_ok = (abs_k == abs_k);
+                            const M do_swap = (abs_k > abs_i) || (i_nan && k_ok);
                             abs_i = std::simd::select(do_swap, abs_k, abs_i);
                             for (std::size_t c = i; c < N; ++c) {
                                 const V ai = a[i][c];
@@ -2361,11 +2894,11 @@ namespace keisan {
                         }
 
                         const V diag = a[i][i];
-                        const M is_sing = !(abs_i > sing_tol);
+                        const M is_sing = nonfinite_mat || !(abs_i > sing_tol) || !(abs_i <= max_finite);
                         any_singular = any_singular || is_sing;
                         const V safe_diag = std::simd::select(is_sing, V(T{1}), diag);
                         const V inv_diag = V(T{1}) / safe_diag;
-                        a[i][i] = safe_diag;
+                        a[i][i] = inv_diag;
 
                         for (std::size_t k = i + 1; k < N; ++k) {
                             const V factor = a[k][i] * inv_diag;
@@ -2376,34 +2909,18 @@ namespace keisan {
                         }
                     }
 
-                    if constexpr (N >= 6) {
-                        // Reuse rhs[] in-place for the solution to save N vector registers
-                        for (std::size_t idx = N; idx > 0; --idx) {
-                            const std::size_t r = idx - 1;
-                            V acc = rhs[r];
-                            for (std::size_t c = r + 1; c < N; ++c) {
-                                acc -= a[r][c] * rhs[c];
-                            }
-                            rhs[r] = acc / a[r][r];
+                    V sol[N];
+                    for (std::size_t idx = N; idx > 0; --idx) {
+                        const std::size_t r = idx - 1;
+                        V acc = rhs[r];
+                        for (std::size_t c = r + 1; c < N; ++c) {
+                            acc -= a[r][c] * sol[c];
                         }
+                        sol[r] = acc * a[r][r];
+                    }
 
-                        for (std::size_t r = 0; r < N; ++r) {
-                            std::simd::unchecked_store(rhs[r], std::span<T>(x_soa[r] + e, W));
-                        }
-                    } else {
-                        V sol[N];
-                        for (std::size_t idx = N; idx > 0; --idx) {
-                            const std::size_t r = idx - 1;
-                            V acc = rhs[r];
-                            for (std::size_t c = r + 1; c < N; ++c) {
-                                acc -= a[r][c] * sol[c];
-                            }
-                            sol[r] = acc / a[r][r];
-                        }
-
-                        for (std::size_t r = 0; r < N; ++r) {
-                            std::simd::unchecked_store(sol[r], std::span<T>(x_soa[r] + e, W));
-                        }
+                    for (std::size_t r = 0; r < N; ++r) {
+                        std::simd::unchecked_store(sol[r], std::span<T>(x_soa[r] + e, W));
                     }
                 }
 
@@ -2413,17 +2930,21 @@ namespace keisan {
             }
 #endif
 
-            KEISAN_PRAGMA_SIMD
             for (; e < num_elements; ++e) {
                 T a[N][N];
                 T rhs[N];
                 T max_abs{0};
+                bool nonfinite_mat = false;
                 for (std::size_t r = 0; r < N; ++r) {
                     for (std::size_t c = 0; c < N; ++c) {
                         const T val = A_soa[r * N + c][e];
                         a[r][c] = val;
                         const T aval = std::abs(val);
-                        if (aval > max_abs) max_abs = aval;
+                        if (!std::isfinite(aval)) {
+                            nonfinite_mat = true;
+                        } else if (aval > max_abs) {
+                            max_abs = aval;
+                        }
                     }
                     rhs[r] = b_soa[r][e];
                 }
@@ -2431,26 +2952,34 @@ namespace keisan {
                 const T sing_tol = max_abs * rel_eps;
 
                 for (std::size_t i = 0; i < N; ++i) {
+                    std::size_t pivot_row = i;
+                    T best_abs = std::abs(a[i][i]);
+                    bool best_nan = !std::isfinite(best_abs);
                     for (std::size_t k = i + 1; k < N; ++k) {
-                        const bool do_swap = std::abs(a[k][i]) > std::abs(a[i][i]);
-                        for (std::size_t c = i; c < N; ++c) {
-                            const T ai = a[i][c];
-                            const T ak = a[k][c];
-                            a[i][c] = do_swap ? ak : ai;
-                            a[k][c] = do_swap ? ai : ak;
+                        const T cand_abs = std::abs(a[k][i]);
+                        if (std::isfinite(cand_abs) && (best_nan || cand_abs > best_abs)) {
+                            best_abs = cand_abs;
+                            best_nan = false;
+                            pivot_row = k;
                         }
-                        const T bi = rhs[i];
-                        const T bk = rhs[k];
-                        rhs[i] = do_swap ? bk : bi;
-                        rhs[k] = do_swap ? bi : bk;
+                    }
+                    if (pivot_row != i) {
+                        for (std::size_t c = i; c < N; ++c) {
+                            const T tmp = a[i][c];
+                            a[i][c] = a[pivot_row][c];
+                            a[pivot_row][c] = tmp;
+                        }
+                        const T tmp_b = rhs[i];
+                        rhs[i] = rhs[pivot_row];
+                        rhs[pivot_row] = tmp_b;
                     }
 
                     const T diag = a[i][i];
-                    const bool is_sing = !(std::abs(diag) > sing_tol);
+                    const bool is_sing = nonfinite_mat || !std::isfinite(diag) || !(std::abs(diag) > sing_tol);
                     if (is_sing) { singular_flag = 1; }
                     const T safe_diag = is_sing ? T{1} : diag;
                     const T inv_diag = T{1} / safe_diag;
-                    a[i][i] = safe_diag;
+                    a[i][i] = inv_diag;
 
                     for (std::size_t k = i + 1; k < N; ++k) {
                         const T factor = a[k][i] * inv_diag;
@@ -2461,23 +2990,37 @@ namespace keisan {
                     }
                 }
 
-                T sol[N];
-                for (std::size_t idx = N; idx > 0; --idx) {
-                    const std::size_t r = idx - 1;
-                    T acc = rhs[r];
-                    for (std::size_t c = r + 1; c < N; ++c) {
-                        acc -= a[r][c] * sol[c];
+                if constexpr (N >= 6) {
+                    for (std::size_t idx = N; idx > 0; --idx) {
+                        const std::size_t r = idx - 1;
+                        T acc = rhs[r];
+                        for (std::size_t c = r + 1; c < N; ++c) {
+                            acc -= a[r][c] * rhs[c];
+                        }
+                        rhs[r] = acc * a[r][r];
                     }
-                    sol[r] = acc / a[r][r];
-                }
-
-                for (std::size_t r = 0; r < N; ++r) {
-                    x_soa[r][e] = sol[r];
+                    for (std::size_t r = 0; r < N; ++r) {
+                        x_soa[r][e] = rhs[r];
+                    }
+                } else {
+                    T sol[N];
+                    for (std::size_t idx = N; idx > 0; --idx) {
+                        const std::size_t r = idx - 1;
+                        T acc = rhs[r];
+                        for (std::size_t c = r + 1; c < N; ++c) {
+                            acc -= a[r][c] * sol[c];
+                        }
+                        sol[r] = acc * a[r][r];
+                    }
+                    for (std::size_t r = 0; r < N; ++r) {
+                        x_soa[r][e] = sol[r];
+                    }
                 }
             }
 
             if (singular_flag) [[unlikely]] {
                 KEISAN_THROW_OR_ABORT(std::runtime_error, "keisan: singular matrix in solve_nxn_batched");
+                return;
             }
         }
     }
@@ -2609,6 +3152,26 @@ namespace keisan {
                     T* KEISAN_RESTRICT out_ptr = out + p * dim;
                     for (std::size_t i = 0; i < dim; ++i) {
                         const MatT* KEISAN_RESTRICT row = D + i * dim;
+#if defined(KEISAN_HAS_STD_SIMD)
+                        if constexpr (std::is_same_v<MatT, T> &&
+                                      (std::is_same_v<T, double> || std::is_same_v<T, float>)) {
+                            using V = std::simd::vec<T>;
+                            constexpr std::size_t W = V::size();
+                            V vacc(T{0});
+                            std::size_t j = 0;
+                            for (; j + W <= dim; j += W) {
+                                const V vr = std::simd::unchecked_load<V>(std::span<const T>(row + j, W));
+                                const V vi = std::simd::unchecked_load<V>(std::span<const T>(in_ptr + j, W));
+                                vacc += vr * vi;
+                            }
+                            T sum = std::simd::reduce(vacc);
+                            for (; j < dim; ++j) {
+                                sum += row[j] * in_ptr[j];
+                            }
+                            out_ptr[i] = sum;
+                            continue;
+                        }
+#endif
                         T acc0{0}, acc1{0}, acc2{0}, acc3{0};
                         std::size_t j = 0;
                         for (; j + 4 <= dim; j += 4) {
@@ -2681,7 +3244,20 @@ namespace keisan {
             KEISAN_DEVICE_ASSERT(nz == N, "keisan: nz must match N for Axis 2 contraction");
         }
 
-        const std::size_t total = nx * ny * nz;
+        if (nx > std::numeric_limits<std::size_t>::max() / ny) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis dimensions overflow");
+            return;
+        }
+        const std::size_t nxy = nx * ny;
+        if (nxy > std::numeric_limits<std::size_t>::max() / nz) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis dimensions overflow");
+            return;
+        }
+        const std::size_t total = nxy * nz;
+        if (total > std::numeric_limits<std::size_t>::max() / sizeof(T)) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis byte size overflow");
+            return;
+        }
         const bool aliased = detail::memory_ranges_overlap(in, total * sizeof(T), out, total * sizeof(T));
         if (aliased) {
             constexpr std::size_t STACK_TOTAL_CAP = 1024;
@@ -2696,6 +3272,7 @@ namespace keisan {
 #if defined(KEISAN_STRICT_ZERO_MALLOC)
             else {
                 KEISAN_THROW_BAD_ALLOC("keisan: contract_axis aliased buffer exceeds stack capacity under KEISAN_STRICT_ZERO_MALLOC");
+                return;
             }
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
@@ -2704,6 +3281,11 @@ namespace keisan {
                 for (std::size_t idx = 0; idx < total; ++idx) {
                     out[idx] = local_buf[idx];
                 }
+                return;
+            }
+#else
+            else {
+                KEISAN_DEVICE_ASSERT(false, "keisan: contract_axis aliased buffer exceeds device stack capacity");
                 return;
             }
 #endif
@@ -2721,12 +3303,209 @@ namespace keisan {
         std::size_t ny,
         std::size_t nz = 1
     ) {
+        if (nx == 0 || ny == 0 || nz == 0) return;
+        constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
+        const std::size_t dim = (N > 0) ? N : (axis_idx == 0 ? nx : (axis_idx == 1 ? ny : nz));
+        if (nx > std::numeric_limits<std::size_t>::max() / ny ||
+            (nx * ny) > std::numeric_limits<std::size_t>::max() / nz ||
+            dim > std::numeric_limits<std::size_t>::max() / dim) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis span dimensions overflow");
+            return;
+        }
+        const std::size_t total = nx * ny * nz;
+        if (D.size() < dim * dim || in.size() < total || out.size() < total) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: contract_axis span size too small");
+            return;
+        }
         contract_axis<AxisParam, N>(D.data(), in.data(), out.data(), nx, ny, nz);
     }
 
     // ============================================================================
     // Explicit Parallel Helpers (OpenMP-guarded)
     // ============================================================================
+
+#if defined(_OPENMP)
+    namespace detail {
+        template<typename T, typename Storage>
+        KEISAN_NOINLINE inline void assign_par_omp_impl(T* KEISAN_RESTRICT p, std::size_t n, Storage storage) {
+            #pragma omp parallel
+            {
+                const int tid = omp_get_thread_num();
+                const int nthreads = omp_get_num_threads();
+                const std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
+                const std::size_t start = static_cast<std::size_t>(tid) * chunk;
+                const std::size_t end = (start + chunk < n) ? (start + chunk) : n;
+                if (start < end) {
+                    std::size_t i = start;
+#if defined(KEISAN_HAS_STD_SIMD)
+                    if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+                        using V = std::simd::vec<T>;
+                        if constexpr (detail::can_eval_simd_v<Storage, V>) {
+                            constexpr std::size_t W = V::size();
+                            for (; i + W <= end; i += W) {
+                                const V v = storage.template eval_simd<V>(i);
+                                std::simd::unchecked_store(v, std::span<T>(p + i, W));
+                            }
+                        }
+                    }
+#endif
+                    for (; i < end; ++i) {
+                        p[i] = static_cast<T>(storage[i]);
+                    }
+                }
+            }
+        }
+
+        template<typename ResType, typename LhsOp, typename RhsOp>
+        KEISAN_NOINLINE inline ResType dot_par_omp_impl(std::size_t n, LhsOp lhs_op, RhsOp rhs_op) {
+            constexpr int MAX_OMP_THREADS = 128;
+            struct alignas(64) PaddedAcc {
+                ResType value{0};
+            };
+            alignas(64) PaddedAcc partial_sums[MAX_OMP_THREADS];
+
+            const int max_t = omp_get_max_threads();
+            const int target_threads = (max_t < MAX_OMP_THREADS) ? max_t : MAX_OMP_THREADS;
+            int actual_threads = 1;
+            #pragma omp parallel num_threads(target_threads)
+            {
+                const int tid = omp_get_thread_num();
+                const int nthreads = omp_get_num_threads();
+                if (tid == 0) {
+                    actual_threads = nthreads;
+                }
+                if (tid < MAX_OMP_THREADS) {
+                    const std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
+                    const std::size_t start = static_cast<std::size_t>(tid) * chunk;
+                    const std::size_t end = (start + chunk < n) ? (start + chunk) : n;
+                    if (start < end) {
+                        std::size_t i = start;
+                        bool simd_done = false;
+#if defined(KEISAN_HAS_STD_SIMD)
+                        if constexpr (std::is_same_v<ResType, double> || std::is_same_v<ResType, float>) {
+                            using V = std::simd::vec<ResType>;
+                            if constexpr (detail::can_eval_simd_v<LhsOp, V> &&
+                                          detail::can_eval_simd_v<RhsOp, V>) {
+                                constexpr std::size_t W = V::size();
+                                V acc0(ResType{0});
+                                V acc1(ResType{0});
+                                for (; i + 2 * W <= end; i += 2 * W) {
+                                    acc0 += lhs_op.template eval_simd<V>(i) * rhs_op.template eval_simd<V>(i);
+                                    acc1 += lhs_op.template eval_simd<V>(i + W) * rhs_op.template eval_simd<V>(i + W);
+                                }
+                                for (; i + W <= end; i += W) {
+                                    acc0 += lhs_op.template eval_simd<V>(i) * rhs_op.template eval_simd<V>(i);
+                                }
+                                ResType local_sum = std::simd::reduce(acc0 + acc1);
+                                for (; i < end; ++i) {
+                                    local_sum += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+                                }
+                                partial_sums[tid].value = local_sum;
+                                simd_done = true;
+                            }
+                        }
+#endif
+                        if (!simd_done) {
+                            ResType local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
+                            for (; i + 4 <= end; i += 4) {
+                                local_acc0 += static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
+                                local_acc1 += static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
+                                local_acc2 += static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
+                                local_acc3 += static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
+                            }
+                            ResType local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
+                            for (; i < end; ++i) {
+                                local_sum += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+                            }
+                            partial_sums[tid].value = local_sum;
+                        }
+                    }
+                }
+            }
+
+            if (actual_threads > MAX_OMP_THREADS) actual_threads = MAX_OMP_THREADS;
+            ResType total{0};
+            for (int t = 0; t < actual_threads; ++t) {
+                total += partial_sums[t].value;
+            }
+            return total;
+        }
+
+        template<typename ValueT, typename OpStorage>
+        KEISAN_NOINLINE inline ValueT sum_par_omp_impl(std::size_t n, OpStorage op) {
+            constexpr int MAX_OMP_THREADS = 128;
+            struct alignas(64) PaddedAcc {
+                ValueT value{0};
+            };
+            alignas(64) PaddedAcc partial_sums[MAX_OMP_THREADS];
+
+            const int max_t = omp_get_max_threads();
+            const int target_threads = (max_t < MAX_OMP_THREADS) ? max_t : MAX_OMP_THREADS;
+            int actual_threads = 1;
+            #pragma omp parallel num_threads(target_threads)
+            {
+                const int tid = omp_get_thread_num();
+                const int nthreads = omp_get_num_threads();
+                if (tid == 0) {
+                    actual_threads = nthreads;
+                }
+                if (tid < MAX_OMP_THREADS) {
+                    const std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
+                    const std::size_t start = static_cast<std::size_t>(tid) * chunk;
+                    const std::size_t end = (start + chunk < n) ? (start + chunk) : n;
+                    if (start < end) {
+                        std::size_t i = start;
+                        bool simd_done = false;
+#if defined(KEISAN_HAS_STD_SIMD)
+                        if constexpr (std::is_same_v<ValueT, double> || std::is_same_v<ValueT, float>) {
+                            using V = std::simd::vec<ValueT>;
+                            if constexpr (detail::can_eval_simd_v<OpStorage, V>) {
+                                constexpr std::size_t W = V::size();
+                                V acc0(ValueT{0});
+                                V acc1(ValueT{0});
+                                for (; i + 2 * W <= end; i += 2 * W) {
+                                    acc0 += op.template eval_simd<V>(i);
+                                    acc1 += op.template eval_simd<V>(i + W);
+                                }
+                                for (; i + W <= end; i += W) {
+                                    acc0 += op.template eval_simd<V>(i);
+                                }
+                                ValueT local_sum = std::simd::reduce(acc0 + acc1);
+                                for (; i < end; ++i) {
+                                    local_sum += static_cast<ValueT>(op[i]);
+                                }
+                                partial_sums[tid].value = local_sum;
+                                simd_done = true;
+                            }
+                        }
+#endif
+                        if (!simd_done) {
+                            ValueT local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
+                            for (; i + 4 <= end; i += 4) {
+                                local_acc0 += static_cast<ValueT>(op[i + 0]);
+                                local_acc1 += static_cast<ValueT>(op[i + 1]);
+                                local_acc2 += static_cast<ValueT>(op[i + 2]);
+                                local_acc3 += static_cast<ValueT>(op[i + 3]);
+                            }
+                            ValueT local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
+                            for (; i < end; ++i) {
+                                local_sum += static_cast<ValueT>(op[i]);
+                            }
+                            partial_sums[tid].value = local_sum;
+                        }
+                    }
+                }
+            }
+
+            if (actual_threads > MAX_OMP_THREADS) actual_threads = MAX_OMP_THREADS;
+            ValueT total{0};
+            for (int t = 0; t < actual_threads; ++t) {
+                total += partial_sums[t].value;
+            }
+            return total;
+        }
+    }
+#endif
 
     template<typename T, typename Alloc, VectorOperand Src>
     inline void assign_par(std::vector<T, Alloc> &dst, const Src &src) {
@@ -2735,100 +3514,49 @@ namespace keisan {
         if (dst.capacity() < n) [[unlikely]] {
             KEISAN_THROW_OR_ABORT(std::length_error,
                                     "keisan: destination capacity < source size in assign_par");
+            return;
         }
 #endif
+        if (n == 0) {
+            dst.resize(0);
+            return;
+        }
+        auto storage = detail::make_operand(src);
+        const char* dst_begin = reinterpret_cast<const char*>(dst.data());
+        const char* dst_end = dst_begin + (dst.size() > n ? dst.size() : n) * sizeof(T);
+        if (detail::has_partial_overlap(storage, dst_begin, dst_end, sizeof(T))) {
+            assign(dst, src);
+            return;
+        }
         dst.resize(n);
-        if (n == 0) return;
         if (n < 131072) {
             assign(dst, src);
             return;
         }
 
         T * KEISAN_RESTRICT p = dst.data();
-        auto storage = detail::make_operand(src);
 
 #if defined(_OPENMP)
-        const std::int64_t n_signed = static_cast<std::int64_t>(n);
-        #pragma omp parallel for schedule(static)
-        for (std::int64_t i = 0; i < n_signed; ++i) {
-            p[i] = static_cast<T>(storage[static_cast<std::size_t>(i)]);
-        }
-#else
-        KEISAN_PRAGMA_SIMD
-        for (std::size_t i = 0; i < n; ++i) {
-            p[i] = static_cast<T>(storage[i]);
+        if (n <= static_cast<std::size_t>(std::numeric_limits<std::int64_t>::max())) {
+            detail::assign_par_omp_impl(p, n, storage);
+            return;
         }
 #endif
+        eval_into(p, n, src);
     }
 
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] inline auto dot_par(const Lhs &lhs_in, const Rhs &rhs_in) {
-        if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
-            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: vector size mismatch in dot_par");
-        }
+        KEISAN_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "keisan: vector size mismatch in dot_par");
 #if defined(_OPENMP)
         const std::size_t n = lhs_in.size();
         if (n < 131072) {
             return dot(lhs_in, rhs_in);
         }
-        auto lhs_op = detail::make_operand(lhs_in);
-        auto rhs_op = detail::make_operand(rhs_in);
-        using ResType = std::common_type_t<
-            typename detail::operand_storage_t<Lhs>::value_type,
-            typename detail::operand_storage_t<Rhs>::value_type
-        >;
-
-        // Eliminate false sharing on 64-byte cache lines by isolating thread accumulators
-        constexpr int MAX_OMP_THREADS = 128;
-        struct alignas(64) PaddedAcc {
-            ResType value{0};
-        };
-        alignas(64) PaddedAcc partial_sums[MAX_OMP_THREADS];
-
-        int actual_threads = 1;
-        #pragma omp parallel
-        {
-            int tid = omp_get_thread_num();
-            int nthreads = omp_get_num_threads();
-            if (tid == 0) {
-                actual_threads = nthreads;
-            }
-            if (tid < MAX_OMP_THREADS) {
-                std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
-                std::size_t start = static_cast<std::size_t>(tid) * chunk;
-                std::size_t end = (start + chunk < n) ? (start + chunk) : n;
-                if (start < end) {
-                    if constexpr (!detail::is_strided_span_v<decltype(lhs_op)> && !detail::is_strided_span_v<decltype(rhs_op)> &&
-                                  requires { { lhs_op.data() }; { rhs_op.data() }; }) {
-                        partial_sums[tid].value = static_cast<ResType>(dot(
-                            std::span(lhs_op.data() + start, end - start),
-                            std::span(rhs_op.data() + start, end - start)
-                        ));
-                    } else {
-                        ResType local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
-                        std::size_t i = start;
-                        for (; i + 4 <= end; i += 4) {
-                            local_acc0 += static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
-                            local_acc1 += static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
-                            local_acc2 += static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
-                            local_acc3 += static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
-                        }
-                        ResType local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
-                        for (; i < end; ++i) {
-                            local_sum += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
-                        }
-                        partial_sums[tid].value = local_sum;
-                    }
-                }
-            }
-        }
-
-        if (actual_threads > MAX_OMP_THREADS) actual_threads = MAX_OMP_THREADS;
-        ResType total{0};
-        for (int t = 0; t < actual_threads; ++t) {
-            total += partial_sums[t].value;
-        }
-        return total;
+        using LhsVal = std::remove_const_t<typename detail::operand_storage_t<Lhs>::value_type>;
+        using RhsVal = std::remove_const_t<typename detail::operand_storage_t<Rhs>::value_type>;
+        using ResType = std::common_type_t<LhsVal, RhsVal>;
+        return detail::dot_par_omp_impl<ResType>(n, detail::make_operand(lhs_in), detail::make_operand(rhs_in));
 #else
         return dot(lhs_in, rhs_in);
 #endif
@@ -2841,58 +3569,8 @@ namespace keisan {
         if (n < 131072) {
             return sum(op_in);
         }
-        auto op = detail::make_operand(op_in);
-        using value_type = typename detail::operand_storage_t<Op>::value_type;
-
-        // Eliminate false sharing on 64-byte cache lines by isolating thread accumulators
-        constexpr int MAX_OMP_THREADS = 128;
-        struct alignas(64) PaddedAcc {
-            value_type value{0};
-        };
-        alignas(64) PaddedAcc partial_sums[MAX_OMP_THREADS];
-
-        int actual_threads = 1;
-        #pragma omp parallel
-        {
-            int tid = omp_get_thread_num();
-            int nthreads = omp_get_num_threads();
-            if (tid == 0) {
-                actual_threads = nthreads;
-            }
-            if (tid < MAX_OMP_THREADS) {
-                std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
-                std::size_t start = static_cast<std::size_t>(tid) * chunk;
-                std::size_t end = (start + chunk < n) ? (start + chunk) : n;
-                if (start < end) {
-                    if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; }) {
-                        partial_sums[tid].value = static_cast<value_type>(sum(
-                            std::span(op.data() + start, end - start)
-                        ));
-                    } else {
-                        value_type local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
-                        std::size_t i = start;
-                        for (; i + 4 <= end; i += 4) {
-                            local_acc0 += static_cast<value_type>(op[i + 0]);
-                            local_acc1 += static_cast<value_type>(op[i + 1]);
-                            local_acc2 += static_cast<value_type>(op[i + 2]);
-                            local_acc3 += static_cast<value_type>(op[i + 3]);
-                        }
-                        value_type local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
-                        for (; i < end; ++i) {
-                            local_sum += static_cast<value_type>(op[i]);
-                        }
-                        partial_sums[tid].value = local_sum;
-                    }
-                }
-            }
-        }
-
-        if (actual_threads > MAX_OMP_THREADS) actual_threads = MAX_OMP_THREADS;
-        value_type total{0};
-        for (int t = 0; t < actual_threads; ++t) {
-            total += partial_sums[t].value;
-        }
-        return total;
+        using value_type = std::remove_const_t<typename detail::operand_storage_t<Op>::value_type>;
+        return detail::sum_par_omp_impl<value_type>(n, detail::make_operand(op_in));
 #else
         return sum(op_in);
 #endif
@@ -2912,41 +3590,47 @@ namespace keisan {
         }
 #if defined(KEISAN_HAS_STD_SIMD)
         if !consteval {
-            if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } &&
-                          (std::is_same_v<value_type, double> || std::is_same_v<value_type, float>)) {
+            if constexpr (std::is_same_v<value_type, double> || std::is_same_v<value_type, float>) {
                 using V = std::simd::vec<value_type>;
-                constexpr std::size_t W = V::size();
-                const value_type* KEISAN_RESTRICT p = op.data();
-                V vmin0(p[0]);
-                V vmin1(p[0]);
-                std::size_t i = 0;
-                for (; i + 2 * W <= n; i += 2 * W) {
-                    const V v0 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i, W));
-                    vmin0 = std::simd::select(v0 < vmin0, v0, vmin0);
-                    const V v1 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i + W, W));
-                    vmin1 = std::simd::select(v1 < vmin1, v1, vmin1);
+                if constexpr (detail::can_eval_simd_v<decltype(op), V>) {
+                    constexpr std::size_t W = V::size();
+                    const value_type first = static_cast<value_type>(op[0]);
+                    V vmin0(first);
+                    V vmin1(first);
+                    std::size_t i = 0;
+                    for (; i + 2 * W <= n; i += 2 * W) {
+                        const V v0 = op.template eval_simd<V>(i);
+                        vmin0 = std::simd::select((v0 < vmin0) || (v0 != v0), v0, vmin0);
+                        const V v1 = op.template eval_simd<V>(i + W);
+                        vmin1 = std::simd::select((v1 < vmin1) || (v1 != v1), v1, vmin1);
+                    }
+                    for (; i + W <= n; i += W) {
+                        const V v0 = op.template eval_simd<V>(i);
+                        vmin0 = std::simd::select((v0 < vmin0) || (v0 != v0), v0, vmin0);
+                    }
+                    vmin0 = std::simd::select((vmin1 < vmin0) || (vmin1 != vmin1), vmin1, vmin0);
+                    value_type res = first;
+                    for (std::size_t k = 0; k < W; ++k) {
+                        const value_type v = vmin0[k];
+                        if (std::isnan(v) || v < res) { res = v; }
+                    }
+                    for (; i < n; ++i) {
+                        const value_type v = static_cast<value_type>(op[i]);
+                        if (std::isnan(v) || v < res) { res = v; }
+                    }
+                    return res;
                 }
-                for (; i + W <= n; i += W) {
-                    const V v0 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i, W));
-                    vmin0 = std::simd::select(v0 < vmin0, v0, vmin0);
-                }
-                vmin0 = std::simd::select(vmin1 < vmin0, vmin1, vmin0);
-                value_type res = p[0];
-                for (std::size_t k = 0; k < W; ++k) {
-                    if (vmin0[k] < res) { res = vmin0[k]; }
-                }
-                for (; i < n; ++i) {
-                    if (p[i] < res) { res = p[i]; }
-                }
-                return res;
             }
         }
 #endif
         value_type res = static_cast<value_type>(op[0]);
-        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 1; i < n; ++i) {
             value_type val = static_cast<value_type>(op[i]);
-            if (val < res) { res = val; }
+            if constexpr (std::is_floating_point_v<value_type>) {
+                if (std::isnan(val) || val < res) { res = val; }
+            } else {
+                if (val < res) { res = val; }
+            }
         }
         return res;
     }
@@ -2961,41 +3645,47 @@ namespace keisan {
         }
 #if defined(KEISAN_HAS_STD_SIMD)
         if !consteval {
-            if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } &&
-                          (std::is_same_v<value_type, double> || std::is_same_v<value_type, float>)) {
+            if constexpr (std::is_same_v<value_type, double> || std::is_same_v<value_type, float>) {
                 using V = std::simd::vec<value_type>;
-                constexpr std::size_t W = V::size();
-                const value_type* KEISAN_RESTRICT p = op.data();
-                V vmax0(p[0]);
-                V vmax1(p[0]);
-                std::size_t i = 0;
-                for (; i + 2 * W <= n; i += 2 * W) {
-                    const V v0 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i, W));
-                    vmax0 = std::simd::select(v0 > vmax0, v0, vmax0);
-                    const V v1 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i + W, W));
-                    vmax1 = std::simd::select(v1 > vmax1, v1, vmax1);
+                if constexpr (detail::can_eval_simd_v<decltype(op), V>) {
+                    constexpr std::size_t W = V::size();
+                    const value_type first = static_cast<value_type>(op[0]);
+                    V vmax0(first);
+                    V vmax1(first);
+                    std::size_t i = 0;
+                    for (; i + 2 * W <= n; i += 2 * W) {
+                        const V v0 = op.template eval_simd<V>(i);
+                        vmax0 = std::simd::select((v0 > vmax0) || (v0 != v0), v0, vmax0);
+                        const V v1 = op.template eval_simd<V>(i + W);
+                        vmax1 = std::simd::select((v1 > vmax1) || (v1 != v1), v1, vmax1);
+                    }
+                    for (; i + W <= n; i += W) {
+                        const V v0 = op.template eval_simd<V>(i);
+                        vmax0 = std::simd::select((v0 > vmax0) || (v0 != v0), v0, vmax0);
+                    }
+                    vmax0 = std::simd::select((vmax1 > vmax0) || (vmax1 != vmax1), vmax1, vmax0);
+                    value_type res = first;
+                    for (std::size_t k = 0; k < W; ++k) {
+                        const value_type v = vmax0[k];
+                        if (std::isnan(v) || v > res) { res = v; }
+                    }
+                    for (; i < n; ++i) {
+                        const value_type v = static_cast<value_type>(op[i]);
+                        if (std::isnan(v) || v > res) { res = v; }
+                    }
+                    return res;
                 }
-                for (; i + W <= n; i += W) {
-                    const V v0 = std::simd::unchecked_load<V>(std::span<const value_type>(p + i, W));
-                    vmax0 = std::simd::select(v0 > vmax0, v0, vmax0);
-                }
-                vmax0 = std::simd::select(vmax1 > vmax0, vmax1, vmax0);
-                value_type res = p[0];
-                for (std::size_t k = 0; k < W; ++k) {
-                    if (vmax0[k] > res) { res = vmax0[k]; }
-                }
-                for (; i < n; ++i) {
-                    if (p[i] > res) { res = p[i]; }
-                }
-                return res;
             }
         }
 #endif
         value_type res = static_cast<value_type>(op[0]);
-        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 1; i < n; ++i) {
             value_type val = static_cast<value_type>(op[i]);
-            if (val > res) { res = val; }
+            if constexpr (std::is_floating_point_v<value_type>) {
+                if (std::isnan(val) || val > res) { res = val; }
+            } else {
+                if (val > res) { res = val; }
+            }
         }
         return res;
     }
@@ -3009,43 +3699,42 @@ namespace keisan {
         if (n == 0) { return ResType{0}; }
 #if defined(KEISAN_HAS_STD_SIMD)
         if !consteval {
-            if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } &&
-                          (std::is_same_v<Val, double> || std::is_same_v<Val, float>)) {
+            if constexpr (std::is_same_v<Val, double> || std::is_same_v<Val, float>) {
                 using V = std::simd::vec<Val>;
-                constexpr std::size_t W = V::size();
-                const Val* KEISAN_RESTRICT p = op.data();
-                V vmax0(Val{0});
-                V vmax1(Val{0});
-                std::size_t i = 0;
-                auto vabs = [](const V& x) noexcept {
-                    return std::simd::select(x < V(Val{0}), -x, x);
-                };
-                for (; i + 2 * W <= n; i += 2 * W) {
-                    const V a0 = vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i, W)));
-                    vmax0 = std::simd::select((a0 > vmax0) || (a0 != a0), a0, vmax0);
-                    const V a1 = vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i + W, W)));
-                    vmax1 = std::simd::select((a1 > vmax1) || (a1 != a1), a1, vmax1);
+                if constexpr (detail::can_eval_simd_v<decltype(op), V>) {
+                    constexpr std::size_t W = V::size();
+                    V vmax0(Val{0});
+                    V vmax1(Val{0});
+                    std::size_t i = 0;
+                    auto vabs = [](const V& x) noexcept {
+                        return std::simd::select(x < V(Val{0}), -x, x);
+                    };
+                    for (; i + 2 * W <= n; i += 2 * W) {
+                        const V a0 = vabs(op.template eval_simd<V>(i));
+                        vmax0 = std::simd::select((a0 > vmax0) || (a0 != a0), a0, vmax0);
+                        const V a1 = vabs(op.template eval_simd<V>(i + W));
+                        vmax1 = std::simd::select((a1 > vmax1) || (a1 != a1), a1, vmax1);
+                    }
+                    for (; i + W <= n; i += W) {
+                        const V a0 = vabs(op.template eval_simd<V>(i));
+                        vmax0 = std::simd::select((a0 > vmax0) || (a0 != a0), a0, vmax0);
+                    }
+                    vmax0 = std::simd::select((vmax1 > vmax0) || (vmax1 != vmax1), vmax1, vmax0);
+                    Val res{0};
+                    for (std::size_t k = 0; k < W; ++k) {
+                        const Val v = vmax0[k];
+                        if (std::isnan(v) || v > res) { res = v; }
+                    }
+                    for (; i < n; ++i) {
+                        const Val v = std::abs(static_cast<Val>(op[i]));
+                        if (std::isnan(v) || v > res) { res = v; }
+                    }
+                    return res;
                 }
-                for (; i + W <= n; i += W) {
-                    const V a0 = vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i, W)));
-                    vmax0 = std::simd::select((a0 > vmax0) || (a0 != a0), a0, vmax0);
-                }
-                vmax0 = std::simd::select((vmax1 > vmax0) || (vmax1 != vmax1), vmax1, vmax0);
-                Val res{0};
-                for (std::size_t k = 0; k < W; ++k) {
-                    const Val v = vmax0[k];
-                    if (std::isnan(v) || v > res) { res = v; }
-                }
-                for (; i < n; ++i) {
-                    const Val v = std::abs(p[i]);
-                    if (std::isnan(v) || v > res) { res = v; }
-                }
-                return res;
             }
         }
 #endif
         ResType res{0};
-        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < n; ++i) {
             ResType val = std::abs(static_cast<ResType>(op[i]));
             if (std::isnan(val) || val > res) { res = val; }
@@ -3062,34 +3751,33 @@ namespace keisan {
         if (n == 0) { return ResType{0}; }
 #if defined(KEISAN_HAS_STD_SIMD)
         if !consteval {
-            if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } &&
-                          (std::is_same_v<Val, double> || std::is_same_v<Val, float>)) {
+            if constexpr (std::is_same_v<Val, double> || std::is_same_v<Val, float>) {
                 using V = std::simd::vec<Val>;
-                constexpr std::size_t W = V::size();
-                const Val* KEISAN_RESTRICT p = op.data();
-                V acc0(Val{0});
-                V acc1(Val{0});
-                std::size_t i = 0;
-                auto vabs = [](const V& x) noexcept {
-                    return std::simd::select(x < V(Val{0}), -x, x);
-                };
-                for (; i + 2 * W <= n; i += 2 * W) {
-                    acc0 += vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i, W)));
-                    acc1 += vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i + W, W)));
+                if constexpr (detail::can_eval_simd_v<decltype(op), V>) {
+                    constexpr std::size_t W = V::size();
+                    V acc0(Val{0});
+                    V acc1(Val{0});
+                    std::size_t i = 0;
+                    auto vabs = [](const V& x) noexcept {
+                        return std::simd::select(x < V(Val{0}), -x, x);
+                    };
+                    for (; i + 2 * W <= n; i += 2 * W) {
+                        acc0 += vabs(op.template eval_simd<V>(i));
+                        acc1 += vabs(op.template eval_simd<V>(i + W));
+                    }
+                    for (; i + W <= n; i += W) {
+                        acc0 += vabs(op.template eval_simd<V>(i));
+                    }
+                    Val total = std::simd::reduce(acc0 + acc1);
+                    for (; i < n; ++i) {
+                        total += std::abs(static_cast<Val>(op[i]));
+                    }
+                    return total;
                 }
-                for (; i + W <= n; i += W) {
-                    acc0 += vabs(std::simd::unchecked_load<V>(std::span<const Val>(p + i, W)));
-                }
-                Val total = std::simd::reduce(acc0 + acc1);
-                for (; i < n; ++i) {
-                    total += std::abs(p[i]);
-                }
-                return total;
             }
         }
 #endif
         ResType total{0};
-        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < n; ++i) {
             total += std::abs(static_cast<ResType>(op[i]));
         }

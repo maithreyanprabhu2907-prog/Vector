@@ -857,6 +857,188 @@ void test_assign_par_paths() {
 #endif
 }
 
+// ============================================================================
+// 8. Audit Regression Tests
+// ============================================================================
+
+void test_audit_regressions() {
+    using namespace keisan;
+
+    // 1) Complex abs() and signed INT_MIN abs()
+    {
+        std::vector<std::complex<double>> z = {{3.0, 4.0}, {-5.0, 12.0}, {0.0, -7.0}};
+        std::vector<double> mags(3, 0.0);
+        {
+            ZeroMallocGuard guard("complex_abs");
+            mags <<= abs(z);
+        }
+        TEST_ASSERT(approx_eq(mags[0], 5.0));
+        TEST_ASSERT(approx_eq(mags[1], 13.0));
+        TEST_ASSERT(approx_eq(mags[2], 7.0));
+
+        std::vector<int> iv = {std::numeric_limits<int>::min(), -42, 7};
+        std::vector<int> iout(3, 0);
+        iout <<= abs(iv);
+        TEST_ASSERT(iout[1] == 42 && iout[2] == 7);
+    }
+
+    // 2) Overlapping compound assignment (apply_vec_inplace_ptr) & assign_stream overlap
+    {
+        std::vector<double> v = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0};
+        std::span<double> dst(v.data() + 1, 8);
+        std::span<const double> src(v.data(), 8);
+        {
+            ZeroMallocGuard guard("inplace_overlap");
+            dst += src;
+        }
+        // Expected: v[1..8] += original v[0..7] -> {2+1, 3+2, 4+3, 5+4, 6+5, 7+6, 8+7, 9+8}
+        for (std::size_t i = 0; i < 8; ++i) {
+            TEST_ASSERT(approx_eq(v[i + 1], static_cast<double>(i + 2) + static_cast<double>(i + 1)));
+        }
+
+        aligned_vector<double> av(16);
+        for (std::size_t i = 0; i < 16; ++i) av[i] = static_cast<double>(i + 1);
+        std::span<const double> av_src(av.data(), 16);
+        assign_stream(av, 2.0 * av_src);
+        for (std::size_t i = 0; i < 16; ++i) {
+            TEST_ASSERT(approx_eq(av[i], 2.0 * static_cast<double>(i + 1)));
+        }
+    }
+
+    // 3) matvec / matvec_fixed A-vs-y aliasing
+    {
+        std::vector<double> A = {1.0, 2.0, 3.0,
+                                 4.0, 5.0, 6.0,
+                                 7.0, 8.0, 9.0};
+        std::vector<double> x = {1.0, 2.0, 3.0};
+        {
+            ZeroMallocGuard guard("matvec_A_vs_y_alias");
+            matvec(A.data(), x.data(), A.data(), 3, 3);
+        }
+        TEST_ASSERT(approx_eq(A[0], 14.0));
+        TEST_ASSERT(approx_eq(A[1], 32.0));
+        TEST_ASSERT(approx_eq(A[2], 50.0));
+
+        std::vector<double> Af = {1.0, 2.0, 3.0, 4.0};
+        std::vector<double> xf = {2.0, 3.0};
+        {
+            ZeroMallocGuard guard("matvec_fixed_A_vs_y_alias");
+            matvec_fixed<2, 2>(Af.data(), xf.data(), Af.data());
+        }
+        TEST_ASSERT(approx_eq(Af[0], 8.0));
+        TEST_ASSERT(approx_eq(Af[1], 18.0));
+    }
+
+#if !defined(KEISAN_NO_EXCEPTIONS)
+    // 4) WorkspaceArena size_t overflow guard
+    {
+        WorkspaceArena arena(1024);
+        bool threw = false;
+        try {
+            [[maybe_unused]] auto sp = arena.allocate<double>(std::numeric_limits<std::size_t>::max() / sizeof(double));
+        } catch (const std::length_error&) {
+            threw = true;
+        }
+        TEST_ASSERT(threw);
+        TEST_ASSERT(arena.allocated_bytes() == 0);
+    }
+
+    // 5) solve_nxn_batched NaN/Inf detection (SIMD N=4 and scalar tail)
+    {
+        constexpr std::size_t B = 9;
+        std::vector<double> a_buf(16 * B, 0.0), b_buf(4 * B, 1.0), x_buf(4 * B, 0.0);
+        std::array<const double*, 16> A_ptr{};
+        std::array<const double*, 4> b_ptr{};
+        std::array<double*, 4> x_ptr{};
+        for (std::size_t i = 0; i < 16; ++i) A_ptr[i] = a_buf.data() + i * B;
+        for (std::size_t i = 0; i < 4; ++i) {
+            b_ptr[i] = b_buf.data() + i * B;
+            x_ptr[i] = x_buf.data() + i * B;
+            a_buf[(i * 4 + i) * B + 0] = 1.0;
+        }
+        for (std::size_t e = 0; e < B; ++e) {
+            for (std::size_t i = 0; i < 4; ++i) a_buf[(i * 4 + i) * B + e] = 2.0;
+        }
+        // Inject NaN at element 0 (SIMD lane) and Inf at element 8 (scalar tail)
+        a_buf[0] = std::numeric_limits<double>::quiet_NaN();
+        bool threw_nan = false;
+        try {
+            solve_nxn_batched<4>(A_ptr.data(), b_ptr.data(), x_ptr.data(), B);
+        } catch (const std::runtime_error&) {
+            threw_nan = true;
+        }
+        TEST_ASSERT(threw_nan);
+
+        a_buf[0] = 2.0;
+        a_buf[8] = std::numeric_limits<double>::infinity();
+        bool threw_inf = false;
+        try {
+            solve_nxn_batched<4>(A_ptr.data(), b_ptr.data(), x_ptr.data(), B);
+        } catch (const std::runtime_error&) {
+            threw_inf = true;
+        }
+        TEST_ASSERT(threw_inf);
+    }
+#endif
+
+    // 6) min_val / max_val NaN propagation at head, middle, and tail
+    {
+        const double qnan = std::numeric_limits<double>::quiet_NaN();
+        for (std::size_t n : {std::size_t{1}, std::size_t{9}, std::size_t{37}}) {
+            for (std::size_t pos : {std::size_t{0}, n / 2, n - 1}) {
+                std::vector<double> v(n, 1.0);
+                v[pos] = qnan;
+                ZeroMallocGuard guard("min_max_nan");
+                TEST_ASSERT(std::isnan(min_val(v)));
+                TEST_ASSERT(std::isnan(max_val(v)));
+            }
+        }
+    }
+
+    // 7) SIMD expression reductions + norm() scaled overflow/underflow protection
+    {
+        const std::size_t n = 131;
+        std::vector<double> a(n), b(n), c(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            a[i] = static_cast<double>(i % 11) - 5.0;
+            b[i] = static_cast<double>(i % 7) + 1.0;
+            c[i] = static_cast<double>(i % 5) - 2.0;
+        }
+        double ref_sum = 0.0, ref_dot = 0.0, ref_nsq = 0.0, ref_l1 = 0.0, ref_linf = 0.0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double ab = a[i] + b[i];
+            ref_sum += ab;
+            ref_dot += ab * c[i];
+            ref_nsq += ab * ab;
+            ref_l1 += std::abs(ab);
+            ref_linf = std::max(ref_linf, std::abs(ab));
+        }
+        {
+            ZeroMallocGuard guard("simd_expr_reductions");
+            TEST_ASSERT(approx_eq(sum(a + b), ref_sum, 1e-11));
+            TEST_ASSERT(approx_eq(dot(a + b, c), ref_dot, 1e-11));
+            TEST_ASSERT(approx_eq(norm_sq(a + b), ref_nsq, 1e-11));
+            TEST_ASSERT(approx_eq(norm_l1(a + b), ref_l1, 1e-11));
+            TEST_ASSERT(approx_eq(norm_inf(a + b), ref_linf, 1e-11));
+        }
+
+        std::vector<double> huge = {3.0e200, 4.0e200};
+        std::vector<double> tiny = {3.0e-200, 4.0e-200};
+        TEST_ASSERT(std::isfinite(norm(huge)) && approx_eq(norm(huge), 5.0e200, 1e188));
+        TEST_ASSERT(norm(tiny) > 0.0 && approx_eq(norm(tiny), 5.0e-200, 1e-212));
+    }
+
+    // 8) StridedSpan<const T> with sum_deterministic, sum_repro, and sum_par
+    {
+        const std::vector<double> buf = {1.0, 100.0, 2.0, 200.0, 3.0, 300.0, 4.0, 400.0};
+        StridedSpan<const double> cs(buf.data(), 4, 2);
+        ZeroMallocGuard guard("strided_const_sum");
+        TEST_ASSERT(approx_eq(sum_deterministic(cs), 10.0));
+        TEST_ASSERT(approx_eq(sum_repro(cs), 10.0));
+        TEST_ASSERT(approx_eq(sum_par(cs), 10.0));
+    }
+}
+
 } // namespace
 
 int main() {
@@ -880,6 +1062,7 @@ int main() {
     test_simd_tails_reductions_and_fused<double>();
     test_simd_tails_reductions_and_fused<float>();
     test_assign_par_paths();
+    test_audit_regressions();
 
     std::cout << "ALL EDGE CASE, CONSTEXPR, AND DETERMINISM TESTS PASSED!\n";
     return 0;
