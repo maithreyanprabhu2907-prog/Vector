@@ -23,8 +23,8 @@
 - **Pitfalls**: Requires 32-byte alignment for AVX (`aligned_vector<double>` / `aligned_vector<float>` handles this automatically). For small L1/L2-resident arrays, `assign()` is faster because it keeps `dst` hot in cache.
 
 ### `assign_par(std::vector<T, Alloc>& dst, const Src& src)`
-- **Behavior**: Resizes `dst` to `n` if needed (unless `KEISAN_STRICT_ZERO_MALLOC` is defined, in which case `dst.capacity() < n` throws `std::bad_alloc`), validates operand sizes, and evaluates `src` into `dst` across OpenMP threads (`#pragma omp parallel for`) when compiled with `_OPENMP`. For small vectors (`n < 16384`), it delegates directly to `assign(dst, src)` to avoid OpenMP fork/join overhead.
-- **Architectural Rationale**: Memory-bandwidth-bound kernels saturate a single core's memory controller around ~45–60 GB/s; multi-core OpenMP scaling helps on multi-socket/NUMA or compute-heavy transcendental expressions (`sin`, `cos`, `exp`, `pow`), while the `n < 16384` serial threshold keeps small L1/L2 operations fast.
+- **Behavior**: Resizes `dst` to `n` if needed (unless `KEISAN_STRICT_ZERO_MALLOC` is defined, in which case `dst.capacity() < n` throws `std::bad_alloc`), validates operand sizes, and evaluates `src` into `dst` across OpenMP threads (`#pragma omp parallel for`) when compiled with `_OPENMP`. For small/L2-resident vectors (`n < 131072`), it delegates directly to `assign(dst, src)` to avoid OpenMP fork/join overhead.
+- **Architectural Rationale**: Memory-bandwidth-bound kernels saturate a single core's memory controller around ~45–60 GB/s; multi-core OpenMP scaling helps on multi-socket/NUMA or compute-heavy transcendental expressions (`sin`, `cos`, `exp`, `pow`), while the `n < 131072` serial threshold keeps L1/L2 operations fast.
 
 ### Compound Assignment (`+=`, `-=`, `*=`, `/=`)
 - **Behavior**: In-place elementwise updates on `std::vector`, `std::span`, and `std::array` against any `VectorOperand` or `Scalar`. Under `if !consteval` and `!KEISAN_NO_INTRINSICS`, contiguous `double`/`float` operands execute in `std::simd::vec` registers via `eval_simd` inside `apply_scalar_inplace` / `apply_vec_inplace`.
@@ -66,7 +66,7 @@
 - **Behavior**: Returns the sum of all elements in `op` (`T{0}` if empty).
 - **Architectural Rationale**:
   - `sum()` uses `if !consteval` so `static_assert(sum(arr) == ...)` works at compile time while runtime contiguous `double`/`float` paths execute dual-accumulator `std::simd::vec` loops (hiding 4-cycle FMA/ADD latency).
-  - `sum_par()` uses a serial threshold (`n < 16384`) to avoid OpenMP fork/join overhead on small vectors, and delegates each thread's contiguous slice to `sum()` so every core runs `std::simd`.
+  - `sum_par()` uses a serial threshold (`n < 131072`) to avoid OpenMP fork/join overhead on L1/L2-resident vectors, and delegates each thread's contiguous slice to `sum()` so every core runs `std::simd`.
 
 ### `dot(lhs, rhs, policy)` / `dot_repro(lhs, rhs)` / `dot_par(lhs, rhs)`
 - **Behavior**: Computes $\sum_i \text{lhs}[i] \cdot \text{rhs}[i]$ (throws `std::invalid_argument` on size mismatch).

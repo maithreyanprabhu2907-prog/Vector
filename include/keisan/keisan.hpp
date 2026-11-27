@@ -2308,6 +2308,7 @@ namespace keisan {
         T* const* x_soa,       // N pointers, each pointing to array of size num_elements
         std::size_t num_elements
     ) {
+        static_assert(N <= 16, "keisan: solve_nxn_batched<N> is intended for small systems (N <= 16)");
         if constexpr (N == 0) {
             return;
         } else {
@@ -2738,7 +2739,7 @@ namespace keisan {
 #endif
         dst.resize(n);
         if (n == 0) return;
-        if (n < 16384) {
+        if (n < 131072) {
             assign(dst, src);
             return;
         }
@@ -2767,7 +2768,7 @@ namespace keisan {
         }
 #if defined(_OPENMP)
         const std::size_t n = lhs_in.size();
-        if (n < 16384) {
+        if (n < 131072) {
             return dot(lhs_in, rhs_in);
         }
         auto lhs_op = detail::make_operand(lhs_in);
@@ -2837,7 +2838,7 @@ namespace keisan {
     [[nodiscard]] inline auto sum_par(const Op &op_in) {
 #if defined(_OPENMP)
         const std::size_t n = op_in.size();
-        if (n < 16384) {
+        if (n < 131072) {
             return sum(op_in);
         }
         auto op = detail::make_operand(op_in);
