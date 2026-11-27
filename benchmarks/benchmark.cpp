@@ -67,8 +67,8 @@ void operator delete[](void* ptr, std::size_t) noexcept {
 }
 
 // Compiler optimization barrier & memory clobber
-static volatile const void* g_escape_sink = nullptr;
-static volatile char g_escape_byte = 0;
+[[maybe_unused]] static volatile const void* g_escape_sink = nullptr;
+[[maybe_unused]] static volatile char g_escape_byte = 0;
 
 template <typename T>
 inline void do_not_optimize(const T& val) {

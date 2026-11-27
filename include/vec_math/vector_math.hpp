@@ -1410,35 +1410,6 @@ namespace vec_math {
         return total;
     }
 
-    // sum: reduction with 8-way multi-accumulator dependency breaking
-    template<VectorOperand Op>
-    [[nodiscard]] constexpr auto sum(const Op &op_in, ReductionPolicy policy = ReductionPolicy::FAST) {
-        if (policy == ReductionPolicy::REPRO) {
-            return sum_repro(op_in);
-        }
-        auto op = detail::make_operand(op_in);
-        using value_type = typename detail::operand_storage_t<Op>::value_type;
-        const std::size_t n = op.size();
-        if (n == 0) { return value_type{0}; }
-
-        value_type a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
-        std::size_t i = 0;
-        for (; i + 8 <= n; i += 8) {
-            a0 += static_cast<value_type>(op[i + 0]);
-            a1 += static_cast<value_type>(op[i + 1]);
-            a2 += static_cast<value_type>(op[i + 2]);
-            a3 += static_cast<value_type>(op[i + 3]);
-            a4 += static_cast<value_type>(op[i + 4]);
-            a5 += static_cast<value_type>(op[i + 5]);
-            a6 += static_cast<value_type>(op[i + 6]);
-            a7 += static_cast<value_type>(op[i + 7]);
-        }
-        for (; i < n; ++i) {
-            a0 += static_cast<value_type>(op[i]);
-        }
-        return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
-    }
-
     // dot_repro: Blocked tree inner product guaranteeing bit-identical results across thread counts and bounded FP32 error
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] constexpr auto dot_repro(const Lhs &lhs_in, const Rhs &rhs_in) {
@@ -1488,6 +1459,80 @@ namespace vec_math {
 #pragma GCC pop_options
 #endif
 
+    // sum: reduction with AVX2 intrinsics and 8-way multi-accumulator dependency breaking
+    template<VectorOperand Op>
+    [[nodiscard]] constexpr auto sum(const Op &op_in, ReductionPolicy policy = ReductionPolicy::FAST) {
+        if (policy == ReductionPolicy::REPRO) {
+            return sum_repro(op_in);
+        }
+        auto op = detail::make_operand(op_in);
+        using value_type = typename detail::operand_storage_t<Op>::value_type;
+        const std::size_t n = op.size();
+        if (n == 0) { return value_type{0}; }
+
+#if defined(VEC_MATH_HAS_AVX2_FMA)
+        if (!std::is_constant_evaluated()) {
+            if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } && std::is_same_v<value_type, double>) {
+                const double* VEC_MATH_RESTRICT p = op.data();
+                __m256d acc0 = _mm256_setzero_pd();
+                __m256d acc1 = _mm256_setzero_pd();
+                std::size_t i = 0;
+                for (; i + 8 <= n; i += 8) {
+                    acc0 = _mm256_add_pd(acc0, _mm256_loadu_pd(p + i));
+                    acc1 = _mm256_add_pd(acc1, _mm256_loadu_pd(p + i + 4));
+                }
+                acc0 = _mm256_add_pd(acc0, acc1);
+                __m128d lo = _mm256_castpd256_pd128(acc0);
+                __m128d hi = _mm256_extractf128_pd(acc0, 1);
+                __m128d sum128 = _mm_add_pd(lo, hi);
+                __m128d high_half = _mm_unpackhi_pd(sum128, sum128);
+                double total = _mm_cvtsd_f64(_mm_add_sd(sum128, high_half));
+                for (; i < n; ++i) {
+                    total += p[i];
+                }
+                return total;
+            } else if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } && std::is_same_v<value_type, float>) {
+                const float* VEC_MATH_RESTRICT p = op.data();
+                __m256 acc0 = _mm256_setzero_ps();
+                __m256 acc1 = _mm256_setzero_ps();
+                std::size_t i = 0;
+                for (; i + 16 <= n; i += 16) {
+                    acc0 = _mm256_add_ps(acc0, _mm256_loadu_ps(p + i));
+                    acc1 = _mm256_add_ps(acc1, _mm256_loadu_ps(p + i + 8));
+                }
+                acc0 = _mm256_add_ps(acc0, acc1);
+                __m128 lo = _mm256_castps256_ps128(acc0);
+                __m128 hi = _mm256_extractf128_ps(acc0, 1);
+                __m128 sum128 = _mm_add_ps(lo, hi);
+                __m128 shuf = _mm_movehl_ps(sum128, sum128);
+                __m128 sum64 = _mm_add_ps(sum128, shuf);
+                __m128 shuf2 = _mm_shuffle_ps(sum64, sum64, 1);
+                float total = _mm_cvtss_f32(_mm_add_ss(sum64, shuf2));
+                for (; i < n; ++i) {
+                    total += p[i];
+                }
+                return total;
+            }
+        }
+#endif
+        value_type a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
+        std::size_t i = 0;
+        for (; i + 8 <= n; i += 8) {
+            a0 += static_cast<value_type>(op[i + 0]);
+            a1 += static_cast<value_type>(op[i + 1]);
+            a2 += static_cast<value_type>(op[i + 2]);
+            a3 += static_cast<value_type>(op[i + 3]);
+            a4 += static_cast<value_type>(op[i + 4]);
+            a5 += static_cast<value_type>(op[i + 5]);
+            a6 += static_cast<value_type>(op[i + 6]);
+            a7 += static_cast<value_type>(op[i + 7]);
+        }
+        for (; i < n; ++i) {
+            a0 += static_cast<value_type>(op[i]);
+        }
+        return ((a0 + a1) + (a2 + a3)) + ((a4 + a5) + (a6 + a7));
+    }
+
     // dot: dot product with SIMD intrinsics and 8-way multi-accumulator dependency breaking
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] constexpr auto dot(const Lhs &lhs_in, const Rhs &rhs_in, ReductionPolicy policy = ReductionPolicy::FAST) {
@@ -1505,63 +1550,67 @@ namespace vec_math {
         if (n == 0) { return ResType{0}; }
 
 #if defined(VEC_MATH_HAS_AVX2_FMA)
-        if constexpr (requires { { lhs_op.data() }; { rhs_op.data() }; } && std::is_same_v<ResType, double>) {
-            const double* VEC_MATH_RESTRICT p1 = lhs_op.data();
-            const double* VEC_MATH_RESTRICT p2 = rhs_op.data();
-            __m256d acc0 = _mm256_setzero_pd();
-            __m256d acc1 = _mm256_setzero_pd();
-            std::size_t i = 0;
-            for (; i + 8 <= n; i += 8) {
-                __m256d l0 = _mm256_loadu_pd(p1 + i);
-                __m256d r0 = _mm256_loadu_pd(p2 + i);
-                acc0 = _mm256_fmadd_pd(l0, r0, acc0);
+        if (!std::is_constant_evaluated()) {
+            if constexpr (!detail::is_strided_span_v<decltype(lhs_op)> && !detail::is_strided_span_v<decltype(rhs_op)> &&
+                          requires { { lhs_op.data() }; { rhs_op.data() }; } && std::is_same_v<ResType, double>) {
+                const double* VEC_MATH_RESTRICT p1 = lhs_op.data();
+                const double* VEC_MATH_RESTRICT p2 = rhs_op.data();
+                __m256d acc0 = _mm256_setzero_pd();
+                __m256d acc1 = _mm256_setzero_pd();
+                std::size_t i = 0;
+                for (; i + 8 <= n; i += 8) {
+                    __m256d l0 = _mm256_loadu_pd(p1 + i);
+                    __m256d r0 = _mm256_loadu_pd(p2 + i);
+                    acc0 = _mm256_fmadd_pd(l0, r0, acc0);
 
-                __m256d l1 = _mm256_loadu_pd(p1 + i + 4);
-                __m256d r1 = _mm256_loadu_pd(p2 + i + 4);
-                acc1 = _mm256_fmadd_pd(l1, r1, acc1);
-            }
-            acc0 = _mm256_add_pd(acc0, acc1);
-            __m128d lo = _mm256_castpd256_pd128(acc0);
-            __m128d hi = _mm256_extractf128_pd(acc0, 1);
-            __m128d sum128 = _mm_add_pd(lo, hi);
-            __m128d high_half = _mm_unpackhi_pd(sum128, sum128);
-            __m128d scalar_sum = _mm_add_sd(sum128, high_half);
-            double total = _mm_cvtsd_f64(scalar_sum);
+                    __m256d l1 = _mm256_loadu_pd(p1 + i + 4);
+                    __m256d r1 = _mm256_loadu_pd(p2 + i + 4);
+                    acc1 = _mm256_fmadd_pd(l1, r1, acc1);
+                }
+                acc0 = _mm256_add_pd(acc0, acc1);
+                __m128d lo = _mm256_castpd256_pd128(acc0);
+                __m128d hi = _mm256_extractf128_pd(acc0, 1);
+                __m128d sum128 = _mm_add_pd(lo, hi);
+                __m128d high_half = _mm_unpackhi_pd(sum128, sum128);
+                __m128d scalar_sum = _mm_add_sd(sum128, high_half);
+                double total = _mm_cvtsd_f64(scalar_sum);
 
-            for (; i < n; ++i) {
-                total += p1[i] * p2[i];
-            }
-            return total;
-        } else if constexpr (requires { { lhs_op.data() }; { rhs_op.data() }; } && std::is_same_v<ResType, float>) {
-            const float* VEC_MATH_RESTRICT p1 = lhs_op.data();
-            const float* VEC_MATH_RESTRICT p2 = rhs_op.data();
-            __m256 acc0 = _mm256_setzero_ps();
-            __m256 acc1 = _mm256_setzero_ps();
-            std::size_t i = 0;
-            for (; i + 16 <= n; i += 16) {
-                __m256 l0 = _mm256_loadu_ps(p1 + i);
-                __m256 r0 = _mm256_loadu_ps(p2 + i);
-                acc0 = _mm256_fmadd_ps(l0, r0, acc0);
+                for (; i < n; ++i) {
+                    total += p1[i] * p2[i];
+                }
+                return total;
+            } else if constexpr (!detail::is_strided_span_v<decltype(lhs_op)> && !detail::is_strided_span_v<decltype(rhs_op)> &&
+                                 requires { { lhs_op.data() }; { rhs_op.data() }; } && std::is_same_v<ResType, float>) {
+                const float* VEC_MATH_RESTRICT p1 = lhs_op.data();
+                const float* VEC_MATH_RESTRICT p2 = rhs_op.data();
+                __m256 acc0 = _mm256_setzero_ps();
+                __m256 acc1 = _mm256_setzero_ps();
+                std::size_t i = 0;
+                for (; i + 16 <= n; i += 16) {
+                    __m256 l0 = _mm256_loadu_ps(p1 + i);
+                    __m256 r0 = _mm256_loadu_ps(p2 + i);
+                    acc0 = _mm256_fmadd_ps(l0, r0, acc0);
 
-                __m256 l1 = _mm256_loadu_ps(p1 + i + 8);
-                __m256 r1 = _mm256_loadu_ps(p2 + i + 8);
-                acc1 = _mm256_fmadd_ps(l1, r1, acc1);
-            }
-            acc0 = _mm256_add_ps(acc0, acc1);
-            __m128 lo = _mm256_castps256_ps128(acc0);
-            __m128 hi = _mm256_extractf128_ps(acc0, 1);
-            __m128 sum128 = _mm_add_ps(lo, hi);
-            __m128 shuf = _mm_movehl_ps(sum128, sum128);
-            __m128 sum64 = _mm_add_ps(sum128, shuf);
-            __m128 shuf2 = _mm_shuffle_ps(sum64, sum64, 1);
-            __m128 scalar_sum = _mm_add_ss(sum64, shuf2);
-            float total = _mm_cvtss_f32(scalar_sum);
+                    __m256 l1 = _mm256_loadu_ps(p1 + i + 8);
+                    __m256 r1 = _mm256_loadu_ps(p2 + i + 8);
+                    acc1 = _mm256_fmadd_ps(l1, r1, acc1);
+                }
+                acc0 = _mm256_add_ps(acc0, acc1);
+                __m128 lo = _mm256_castps256_ps128(acc0);
+                __m128 hi = _mm256_extractf128_ps(acc0, 1);
+                __m128 sum128 = _mm_add_ps(lo, hi);
+                __m128 shuf = _mm_movehl_ps(sum128, sum128);
+                __m128 sum64 = _mm_add_ps(sum128, shuf);
+                __m128 shuf2 = _mm_shuffle_ps(sum64, sum64, 1);
+                __m128 scalar_sum = _mm_add_ss(sum64, shuf2);
+                float total = _mm_cvtss_f32(scalar_sum);
 
-            for (; i < n; ++i) {
-                total += p1[i] * p2[i];
+                for (; i < n; ++i) {
+                    total += p1[i] * p2[i];
+                }
+                return total;
             }
-            return total;
-        } else
+        }
 #endif
         {
             ResType a0{0}, a1{0}, a2{0}, a3{0}, a4{0}, a5{0}, a6{0}, a7{0};
@@ -1689,32 +1738,55 @@ namespace vec_math {
                 p[i] = static_cast<double>(storage[i]);
                 ++i;
             }
-            for (; i + 4 <= n; i += 4) {
-                __m256d val = _mm256_setr_pd(
-                    static_cast<double>(storage[i]),
-                    static_cast<double>(storage[i + 1]),
-                    static_cast<double>(storage[i + 2]),
-                    static_cast<double>(storage[i + 3])
-                );
-                _mm256_stream_pd(p + i, val);
+            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, double>) {
+                const double* VEC_MATH_RESTRICT sp = storage.data();
+                for (; i + 4 <= n; i += 4) {
+                    _mm256_stream_pd(p + i, _mm256_loadu_pd(sp + i));
+                }
+            } else {
+                for (; i + 4 <= n; i += 4) {
+                    __m256d val = _mm256_setr_pd(
+                        static_cast<double>(storage[i]),
+                        static_cast<double>(storage[i + 1]),
+                        static_cast<double>(storage[i + 2]),
+                        static_cast<double>(storage[i + 3])
+                    );
+                    _mm256_stream_pd(p + i, val);
+                }
             }
+            for (; i < n; ++i) {
+                p[i] = static_cast<double>(storage[i]);
+            }
+            _mm_sfence();
 #elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
             while (i < n && (reinterpret_cast<std::uintptr_t>(p + i) & 15) != 0) {
                 p[i] = static_cast<double>(storage[i]);
                 ++i;
             }
-            for (; i + 2 <= n; i += 2) {
-                __m128d val = _mm_setr_pd(
-                    static_cast<double>(storage[i]),
-                    static_cast<double>(storage[i + 1])
-                );
-                _mm_stream_pd(p + i, val);
+            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, double>) {
+                const double* VEC_MATH_RESTRICT sp = storage.data();
+                for (; i + 2 <= n; i += 2) {
+                    _mm_stream_pd(p + i, _mm_loadu_pd(sp + i));
+                }
+            } else {
+                for (; i + 2 <= n; i += 2) {
+                    __m128d val = _mm_setr_pd(
+                        static_cast<double>(storage[i]),
+                        static_cast<double>(storage[i + 1])
+                    );
+                    _mm_stream_pd(p + i, val);
+                }
             }
-#endif
             for (; i < n; ++i) {
                 p[i] = static_cast<double>(storage[i]);
             }
             _mm_sfence();
+#else
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t j = 0; j < n; ++j) {
+                p[j] = static_cast<double>(storage[j]);
+            }
+#endif
         } else if constexpr (std::is_same_v<T, float>) {
             std::size_t i = 0;
 #if defined(__AVX__)
@@ -1722,38 +1794,61 @@ namespace vec_math {
                 p[i] = static_cast<float>(storage[i]);
                 ++i;
             }
-            for (; i + 8 <= n; i += 8) {
-                __m256 val = _mm256_setr_ps(
-                    static_cast<float>(storage[i]),
-                    static_cast<float>(storage[i + 1]),
-                    static_cast<float>(storage[i + 2]),
-                    static_cast<float>(storage[i + 3]),
-                    static_cast<float>(storage[i + 4]),
-                    static_cast<float>(storage[i + 5]),
-                    static_cast<float>(storage[i + 6]),
-                    static_cast<float>(storage[i + 7])
-                );
-                _mm256_stream_ps(p + i, val);
+            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, float>) {
+                const float* VEC_MATH_RESTRICT sp = storage.data();
+                for (; i + 8 <= n; i += 8) {
+                    _mm256_stream_ps(p + i, _mm256_loadu_ps(sp + i));
+                }
+            } else {
+                for (; i + 8 <= n; i += 8) {
+                    __m256 val = _mm256_setr_ps(
+                        static_cast<float>(storage[i]),
+                        static_cast<float>(storage[i + 1]),
+                        static_cast<float>(storage[i + 2]),
+                        static_cast<float>(storage[i + 3]),
+                        static_cast<float>(storage[i + 4]),
+                        static_cast<float>(storage[i + 5]),
+                        static_cast<float>(storage[i + 6]),
+                        static_cast<float>(storage[i + 7])
+                    );
+                    _mm256_stream_ps(p + i, val);
+                }
             }
+            for (; i < n; ++i) {
+                p[i] = static_cast<float>(storage[i]);
+            }
+            _mm_sfence();
 #elif defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
             while (i < n && (reinterpret_cast<std::uintptr_t>(p + i) & 15) != 0) {
                 p[i] = static_cast<float>(storage[i]);
                 ++i;
             }
-            for (; i + 4 <= n; i += 4) {
-                __m128 val = _mm_setr_ps(
-                    static_cast<float>(storage[i]),
-                    static_cast<float>(storage[i + 1]),
-                    static_cast<float>(storage[i + 2]),
-                    static_cast<float>(storage[i + 3])
-                );
-                _mm_stream_ps(p + i, val);
+            if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, float>) {
+                const float* VEC_MATH_RESTRICT sp = storage.data();
+                for (; i + 4 <= n; i += 4) {
+                    _mm_stream_ps(p + i, _mm_loadu_ps(sp + i));
+                }
+            } else {
+                for (; i + 4 <= n; i += 4) {
+                    __m128 val = _mm_setr_ps(
+                        static_cast<float>(storage[i]),
+                        static_cast<float>(storage[i + 1]),
+                        static_cast<float>(storage[i + 2]),
+                        static_cast<float>(storage[i + 3])
+                    );
+                    _mm_stream_ps(p + i, val);
+                }
             }
-#endif
             for (; i < n; ++i) {
                 p[i] = static_cast<float>(storage[i]);
             }
             _mm_sfence();
+#else
+            VEC_MATH_PRAGMA_SIMD
+            for (std::size_t j = 0; j < n; ++j) {
+                p[j] = static_cast<float>(storage[j]);
+            }
+#endif
         } else
 #endif
         {
@@ -1768,6 +1863,131 @@ namespace vec_math {
     // Direct Device / Buffer Evaluation & Matrix-Vector Operations
     // ============================================================================
 
+    namespace detail {
+        template<typename MatT, typename VecInT, typename VecOutT>
+        VEC_MATH_HOST_DEVICE inline void matvec_noalias(
+            const MatT* VEC_MATH_RESTRICT A,
+            const VecInT* VEC_MATH_RESTRICT x,
+            VecOutT* VEC_MATH_RESTRICT y,
+            std::size_t rows,
+            std::size_t cols
+        ) {
+            for (std::size_t r = 0; r < rows; ++r) {
+                const MatT* VEC_MATH_RESTRICT row = A + r * cols;
+#if defined(VEC_MATH_HAS_AVX2_FMA)
+                if constexpr (std::is_same_v<MatT, double> && std::is_same_v<VecInT, double> && std::is_same_v<VecOutT, double>) {
+                    __m256d acc0 = _mm256_setzero_pd();
+                    __m256d acc1 = _mm256_setzero_pd();
+                    std::size_t c = 0;
+                    for (; c + 8 <= cols; c += 8) {
+                        acc0 = _mm256_fmadd_pd(_mm256_loadu_pd(row + c), _mm256_loadu_pd(x + c), acc0);
+                        acc1 = _mm256_fmadd_pd(_mm256_loadu_pd(row + c + 4), _mm256_loadu_pd(x + c + 4), acc1);
+                    }
+                    for (; c + 4 <= cols; c += 4) {
+                        acc0 = _mm256_fmadd_pd(_mm256_loadu_pd(row + c), _mm256_loadu_pd(x + c), acc0);
+                    }
+                    acc0 = _mm256_add_pd(acc0, acc1);
+                    __m128d lo = _mm256_castpd256_pd128(acc0);
+                    __m128d hi = _mm256_extractf128_pd(acc0, 1);
+                    __m128d sum128 = _mm_add_pd(lo, hi);
+                    __m128d high_half = _mm_unpackhi_pd(sum128, sum128);
+                    double sum = _mm_cvtsd_f64(_mm_add_sd(sum128, high_half));
+                    for (; c < cols; ++c) {
+                        sum += row[c] * x[c];
+                    }
+                    y[r] = sum;
+                    continue;
+                } else if constexpr (std::is_same_v<MatT, float> && std::is_same_v<VecInT, float> && std::is_same_v<VecOutT, float>) {
+                    __m256 acc0 = _mm256_setzero_ps();
+                    __m256 acc1 = _mm256_setzero_ps();
+                    std::size_t c = 0;
+                    for (; c + 16 <= cols; c += 16) {
+                        acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(row + c), _mm256_loadu_ps(x + c), acc0);
+                        acc1 = _mm256_fmadd_ps(_mm256_loadu_ps(row + c + 8), _mm256_loadu_ps(x + c + 8), acc1);
+                    }
+                    for (; c + 8 <= cols; c += 8) {
+                        acc0 = _mm256_fmadd_ps(_mm256_loadu_ps(row + c), _mm256_loadu_ps(x + c), acc0);
+                    }
+                    acc0 = _mm256_add_ps(acc0, acc1);
+                    __m128 lo = _mm256_castps256_ps128(acc0);
+                    __m128 hi = _mm256_extractf128_ps(acc0, 1);
+                    __m128 sum128 = _mm_add_ps(lo, hi);
+                    __m128 shuf = _mm_movehl_ps(sum128, sum128);
+                    __m128 sum64 = _mm_add_ps(sum128, shuf);
+                    __m128 shuf2 = _mm_shuffle_ps(sum64, sum64, 1);
+                    float sum = _mm_cvtss_f32(_mm_add_ss(sum64, shuf2));
+                    for (; c < cols; ++c) {
+                        sum += row[c] * x[c];
+                    }
+                    y[r] = sum;
+                    continue;
+                }
+#endif
+                std::size_t c = 0;
+                VecOutT acc0{0}, acc1{0}, acc2{0}, acc3{0};
+                for (; c + 4 <= cols; c += 4) {
+                    acc0 = acc0 + static_cast<VecOutT>(row[c + 0]) * static_cast<VecOutT>(x[c + 0]);
+                    acc1 = acc1 + static_cast<VecOutT>(row[c + 1]) * static_cast<VecOutT>(x[c + 1]);
+                    acc2 = acc2 + static_cast<VecOutT>(row[c + 2]) * static_cast<VecOutT>(x[c + 2]);
+                    acc3 = acc3 + static_cast<VecOutT>(row[c + 3]) * static_cast<VecOutT>(x[c + 3]);
+                }
+                VecOutT sum = (acc0 + acc1) + (acc2 + acc3);
+                for (; c < cols; ++c) {
+                    sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
+                }
+                y[r] = sum;
+            }
+        }
+
+        template<typename MatT, typename VecInT, typename VecOutT>
+        VEC_MATH_HOST_DEVICE inline void matvec_transposed_noalias(
+            const MatT* VEC_MATH_RESTRICT A,
+            const VecInT* VEC_MATH_RESTRICT x,
+            VecOutT* VEC_MATH_RESTRICT y,
+            std::size_t rows,
+            std::size_t cols
+        ) {
+            for (std::size_t c = 0; c < cols; ++c) {
+                y[c] = VecOutT{0};
+            }
+            for (std::size_t r = 0; r < rows; ++r) {
+                const MatT* VEC_MATH_RESTRICT row = A + r * cols;
+                const auto xr = static_cast<VecOutT>(x[r]);
+#if defined(VEC_MATH_HAS_AVX2_FMA)
+                if constexpr (std::is_same_v<MatT, double> && std::is_same_v<VecOutT, double>) {
+                    const __m256d vxr = _mm256_set1_pd(xr);
+                    std::size_t c = 0;
+                    for (; c + 4 <= cols; c += 4) {
+                        __m256d yv = _mm256_loadu_pd(y + c);
+                        __m256d rv = _mm256_loadu_pd(row + c);
+                        _mm256_storeu_pd(y + c, _mm256_fmadd_pd(rv, vxr, yv));
+                    }
+                    for (; c < cols; ++c) {
+                        y[c] += row[c] * xr;
+                    }
+                    continue;
+                } else if constexpr (std::is_same_v<MatT, float> && std::is_same_v<VecOutT, float>) {
+                    const __m256 vxr = _mm256_set1_ps(xr);
+                    std::size_t c = 0;
+                    for (; c + 8 <= cols; c += 8) {
+                        __m256 yv = _mm256_loadu_ps(y + c);
+                        __m256 rv = _mm256_loadu_ps(row + c);
+                        _mm256_storeu_ps(y + c, _mm256_fmadd_ps(rv, vxr, yv));
+                    }
+                    for (; c < cols; ++c) {
+                        y[c] += row[c] * xr;
+                    }
+                    continue;
+                }
+#endif
+                VEC_MATH_PRAGMA_SIMD
+                for (std::size_t c = 0; c < cols; ++c) {
+                    y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
+                }
+            }
+        }
+    }
+
     template<typename MatT, typename VecInT, typename VecOutT>
     VEC_MATH_HOST_DEVICE inline void matvec(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
         if (rows == 0 || cols == 0) return;
@@ -1776,7 +1996,7 @@ namespace vec_math {
         if (aliased) {
             if (rows <= STACK_BUF_CAP) {
                 VecOutT local_buf[STACK_BUF_CAP];
-                matvec(A, x, local_buf, rows, cols);
+                detail::matvec_noalias(A, x, local_buf, rows, cols);
                 for (std::size_t r = 0; r < rows; ++r) {
                     y[r] = local_buf[r];
                 }
@@ -1789,7 +2009,7 @@ namespace vec_math {
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
                 std::vector<VecOutT> local_buf(rows);
-                matvec(A, x, local_buf.data(), rows, cols);
+                detail::matvec_noalias(A, x, local_buf.data(), rows, cols);
                 for (std::size_t r = 0; r < rows; ++r) {
                     y[r] = local_buf[r];
                 }
@@ -1797,31 +2017,7 @@ namespace vec_math {
             }
 #endif
         }
-
-        for (std::size_t r = 0; r < rows; ++r) {
-            VecOutT sum{0};
-            const MatT* row = A + r * cols;
-            if (cols <= 36) {
-                std::size_t c = 0;
-                VecOutT acc0{0}, acc1{0}, acc2{0}, acc3{0};
-                for (; c + 4 <= cols; c += 4) {
-                    acc0 = acc0 + static_cast<VecOutT>(row[c + 0]) * static_cast<VecOutT>(x[c + 0]);
-                    acc1 = acc1 + static_cast<VecOutT>(row[c + 1]) * static_cast<VecOutT>(x[c + 1]);
-                    acc2 = acc2 + static_cast<VecOutT>(row[c + 2]) * static_cast<VecOutT>(x[c + 2]);
-                    acc3 = acc3 + static_cast<VecOutT>(row[c + 3]) * static_cast<VecOutT>(x[c + 3]);
-                }
-                sum = (acc0 + acc1) + (acc2 + acc3);
-                for (; c < cols; ++c) {
-                    sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
-                }
-            } else {
-                VEC_MATH_PRAGMA_SIMD
-                for (std::size_t c = 0; c < cols; ++c) {
-                    sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
-                }
-            }
-            y[r] = sum;
-        }
+        detail::matvec_noalias(A, x, y, rows, cols);
     }
 
     template<typename MatT, typename VecInT, typename VecOutT>
@@ -1832,7 +2028,7 @@ namespace vec_math {
         if (aliased) {
             if (cols <= STACK_BUF_CAP) {
                 VecOutT local_buf[STACK_BUF_CAP];
-                matvec_transposed(A, x, local_buf, rows, cols);
+                detail::matvec_transposed_noalias(A, x, local_buf, rows, cols);
                 for (std::size_t c = 0; c < cols; ++c) {
                     y[c] = local_buf[c];
                 }
@@ -1845,7 +2041,7 @@ namespace vec_math {
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
                 std::vector<VecOutT> local_buf(cols);
-                matvec_transposed(A, x, local_buf.data(), rows, cols);
+                detail::matvec_transposed_noalias(A, x, local_buf.data(), rows, cols);
                 for (std::size_t c = 0; c < cols; ++c) {
                     y[c] = local_buf[c];
                 }
@@ -1853,31 +2049,7 @@ namespace vec_math {
             }
 #endif
         }
-
-        for (std::size_t c = 0; c < cols; ++c) {
-            y[c] = VecOutT{0};
-        }
-        for (std::size_t r = 0; r < rows; ++r) {
-            const MatT* row = A + r * cols;
-            const auto xr = static_cast<VecOutT>(x[r]);
-            if (cols <= 36) {
-                std::size_t c = 0;
-                for (; c + 4 <= cols; c += 4) {
-                    y[c + 0] = y[c + 0] + static_cast<VecOutT>(row[c + 0]) * xr;
-                    y[c + 1] = y[c + 1] + static_cast<VecOutT>(row[c + 1]) * xr;
-                    y[c + 2] = y[c + 2] + static_cast<VecOutT>(row[c + 2]) * xr;
-                    y[c + 3] = y[c + 3] + static_cast<VecOutT>(row[c + 3]) * xr;
-                }
-                for (; c < cols; ++c) {
-                    y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
-                }
-            } else {
-                VEC_MATH_PRAGMA_SIMD
-                for (std::size_t c = 0; c < cols; ++c) {
-                    y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
-                }
-            }
-        }
+        detail::matvec_transposed_noalias(A, x, y, rows, cols);
     }
 
     // Compile-time fixed Np small-matrix vector multiplication
@@ -1887,29 +2059,13 @@ namespace vec_math {
         const bool aliased = detail::memory_ranges_overlap(x, Cols * sizeof(VecInT), y, Rows * sizeof(VecOutT));
         if (aliased) {
             VecOutT local_buf[Rows];
-            matvec_fixed<Rows, Cols>(A, x, local_buf);
+            detail::matvec_noalias(A, x, local_buf, Rows, Cols);
             for (std::size_t r = 0; r < Rows; ++r) {
                 y[r] = local_buf[r];
             }
             return;
         }
-
-        for (std::size_t r = 0; r < Rows; ++r) {
-            const MatT* row = A + r * Cols;
-            std::size_t c = 0;
-            VecOutT acc0{0}, acc1{0}, acc2{0}, acc3{0};
-            for (; c + 4 <= Cols; c += 4) {
-                acc0 = acc0 + static_cast<VecOutT>(row[c + 0]) * static_cast<VecOutT>(x[c + 0]);
-                acc1 = acc1 + static_cast<VecOutT>(row[c + 1]) * static_cast<VecOutT>(x[c + 1]);
-                acc2 = acc2 + static_cast<VecOutT>(row[c + 2]) * static_cast<VecOutT>(x[c + 2]);
-                acc3 = acc3 + static_cast<VecOutT>(row[c + 3]) * static_cast<VecOutT>(x[c + 3]);
-            }
-            VecOutT sum = (acc0 + acc1) + (acc2 + acc3);
-            for (; c < Cols; ++c) {
-                sum = sum + static_cast<VecOutT>(row[c]) * static_cast<VecOutT>(x[c]);
-            }
-            y[r] = sum;
-        }
+        detail::matvec_noalias(A, x, y, Rows, Cols);
     }
 
     template<std::size_t Rows, std::size_t Cols, typename MatT, typename VecInT, typename VecOutT>
@@ -1918,30 +2074,13 @@ namespace vec_math {
         const bool aliased = detail::memory_ranges_overlap(x, Rows * sizeof(VecInT), y, Cols * sizeof(VecOutT));
         if (aliased) {
             VecOutT local_buf[Cols];
-            matvec_transposed_fixed<Rows, Cols>(A, x, local_buf);
+            detail::matvec_transposed_noalias(A, x, local_buf, Rows, Cols);
             for (std::size_t c = 0; c < Cols; ++c) {
                 y[c] = local_buf[c];
             }
             return;
         }
-
-        for (std::size_t c = 0; c < Cols; ++c) {
-            y[c] = VecOutT{0};
-        }
-        for (std::size_t r = 0; r < Rows; ++r) {
-            const MatT* row = A + r * Cols;
-            const auto xr = static_cast<VecOutT>(x[r]);
-            std::size_t c = 0;
-            for (; c + 4 <= Cols; c += 4) {
-                y[c + 0] = y[c + 0] + static_cast<VecOutT>(row[c + 0]) * xr;
-                y[c + 1] = y[c + 1] + static_cast<VecOutT>(row[c + 1]) * xr;
-                y[c + 2] = y[c + 2] + static_cast<VecOutT>(row[c + 2]) * xr;
-                y[c + 3] = y[c + 3] + static_cast<VecOutT>(row[c + 3]) * xr;
-            }
-            for (; c < Cols; ++c) {
-                y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
-            }
-        }
+        detail::matvec_transposed_noalias(A, x, y, Rows, Cols);
     }
 
     // ============================================================================
@@ -2095,69 +2234,79 @@ namespace vec_math {
         T* const* x_soa,       // 4 pointers, each pointing to array of size num_elements
         std::size_t num_elements
     ) {
+        if (num_elements == 0) return;
+
+        const T* VEC_MATH_RESTRICT a00 = A_soa[0];  const T* VEC_MATH_RESTRICT a01 = A_soa[1];
+        const T* VEC_MATH_RESTRICT a02 = A_soa[2];  const T* VEC_MATH_RESTRICT a03 = A_soa[3];
+        const T* VEC_MATH_RESTRICT a10 = A_soa[4];  const T* VEC_MATH_RESTRICT a11 = A_soa[5];
+        const T* VEC_MATH_RESTRICT a12 = A_soa[6];  const T* VEC_MATH_RESTRICT a13 = A_soa[7];
+        const T* VEC_MATH_RESTRICT a20 = A_soa[8];  const T* VEC_MATH_RESTRICT a21 = A_soa[9];
+        const T* VEC_MATH_RESTRICT a22 = A_soa[10]; const T* VEC_MATH_RESTRICT a23 = A_soa[11];
+        const T* VEC_MATH_RESTRICT a30 = A_soa[12]; const T* VEC_MATH_RESTRICT a31 = A_soa[13];
+        const T* VEC_MATH_RESTRICT a32 = A_soa[14]; const T* VEC_MATH_RESTRICT a33 = A_soa[15];
+
+        const T* b0 = b_soa[0]; const T* b1 = b_soa[1];
+        const T* b2 = b_soa[2]; const T* b3 = b_soa[3];
+
+        T* x0 = x_soa[0]; T* x1 = x_soa[1];
+        T* x2 = x_soa[2]; T* x3 = x_soa[3];
+
+        int singular_flag = 0;
+
         VEC_MATH_PRAGMA_SIMD
         for (std::size_t e = 0; e < num_elements; ++e) {
-            T a[4][4];
-            T rhs[4];
-            for (int r = 0; r < 4; ++r) {
-                for (int c = 0; c < 4; ++c) {
-                    a[r][c] = A_soa[r * 4 + c][e];
-                }
-                rhs[r] = b_soa[r][e];
-            }
+            T a[4][4] = {
+                {a00[e], a01[e], a02[e], a03[e]},
+                {a10[e], a11[e], a12[e], a13[e]},
+                {a20[e], a21[e], a22[e], a23[e]},
+                {a30[e], a31[e], a32[e], a33[e]}
+            };
+            T rhs[4] = {b0[e], b1[e], b2[e], b3[e]};
 
             for (int i = 0; i < 4; ++i) {
-                int pivot = i;
-                T max_val = std::abs(a[i][i]);
                 for (int k = i + 1; k < 4; ++k) {
-                    T val = std::abs(a[k][i]);
-                    if (val > max_val) {
-                        max_val = val;
-                        pivot = k;
+                    const bool do_swap = std::abs(a[k][i]) > std::abs(a[i][i]);
+                    for (int c = i; c < 4; ++c) {
+                        const T ai = a[i][c];
+                        const T ak = a[k][c];
+                        a[i][c] = do_swap ? ak : ai;
+                        a[k][c] = do_swap ? ai : ak;
                     }
-                }
-                if (max_val <= T{1e-20}) [[unlikely]] {
-                    VEC_MATH_THROW_OR_ABORT(std::runtime_error, "vec_math: singular matrix in solve_4x4_batched");
-                    return;
-                }
-                if (pivot != i) {
-                    for (int c = 0; c < 4; ++c) {
-                        T tmp = a[i][c];
-                        a[i][c] = a[pivot][c];
-                        a[pivot][c] = tmp;
-                    }
-                    T tmp_b = rhs[i];
-                    rhs[i] = rhs[pivot];
-                    rhs[pivot] = tmp_b;
+                    const T bi = rhs[i];
+                    const T bk = rhs[k];
+                    rhs[i] = do_swap ? bk : bi;
+                    rhs[k] = do_swap ? bi : bk;
                 }
 
-                T diag = a[i][i];
-                T inv_diag = T{1} / diag;
+                const T diag = a[i][i];
+                const bool is_sing = std::abs(diag) <= T{1e-20};
+                if (is_sing) { singular_flag = 1; }
+                const T safe_diag = is_sing ? T{1} : diag;
+                const T inv_diag = T{1} / safe_diag;
+                a[i][i] = safe_diag;
+
                 for (int k = i + 1; k < 4; ++k) {
-                    T factor = a[k][i] * inv_diag;
-                    for (int c = i; c < 4; ++c) {
+                    const T factor = a[k][i] * inv_diag;
+                    for (int c = i + 1; c < 4; ++c) {
                         a[k][c] -= factor * a[i][c];
                     }
                     rhs[k] -= factor * rhs[i];
                 }
             }
 
-            T sol[4];
-            for (int i = 3; i >= 0; --i) {
-                T sum = rhs[i];
-                for (int c = i + 1; c < 4; ++c) {
-                    sum -= a[i][c] * sol[c];
-                }
-                if (std::abs(a[i][i]) <= T{1e-20}) [[unlikely]] {
-                    VEC_MATH_THROW_OR_ABORT(std::runtime_error, "vec_math: singular matrix in solve_4x4_batched");
-                    return;
-                }
-                sol[i] = sum / a[i][i];
-            }
+            const T s3 = rhs[3] / a[3][3];
+            const T s2 = (rhs[2] - a[2][3] * s3) / a[2][2];
+            const T s1 = (rhs[1] - a[1][2] * s2 - a[1][3] * s3) / a[1][1];
+            const T s0 = (rhs[0] - a[0][1] * s1 - a[0][2] * s2 - a[0][3] * s3) / a[0][0];
 
-            for (int r = 0; r < 4; ++r) {
-                x_soa[r][e] = sol[r];
-            }
+            x0[e] = s0;
+            x1[e] = s1;
+            x2[e] = s2;
+            x3[e] = s3;
+        }
+
+        if (singular_flag) [[unlikely]] {
+            VEC_MATH_THROW_OR_ABORT(std::runtime_error, "vec_math: singular matrix in solve_4x4_batched");
         }
     }
 
@@ -2199,6 +2348,88 @@ namespace vec_math {
         Z = 2
     };
 
+    namespace detail {
+        template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
+        VEC_MATH_HOST_DEVICE inline void contract_axis_noalias(
+            const MatT* VEC_MATH_RESTRICT D,
+            const T* VEC_MATH_RESTRICT in,
+            T* VEC_MATH_RESTRICT out,
+            [[maybe_unused]] std::size_t nx,
+            [[maybe_unused]] std::size_t ny,
+            [[maybe_unused]] std::size_t nz
+        ) {
+            constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
+            if constexpr (axis_idx == 0) {
+                const std::size_t n_pencils = ny * nz;
+                const std::size_t dim = (N > 0) ? N : nx;
+                for (std::size_t p = 0; p < n_pencils; ++p) {
+                    const T* VEC_MATH_RESTRICT in_ptr = in + p * dim;
+                    T* VEC_MATH_RESTRICT out_ptr = out + p * dim;
+                    for (std::size_t i = 0; i < dim; ++i) {
+                        const MatT* VEC_MATH_RESTRICT row = D + i * dim;
+                        T acc0{0}, acc1{0}, acc2{0}, acc3{0};
+                        std::size_t j = 0;
+                        for (; j + 4 <= dim; j += 4) {
+                            acc0 += static_cast<T>(row[j + 0]) * in_ptr[j + 0];
+                            acc1 += static_cast<T>(row[j + 1]) * in_ptr[j + 1];
+                            acc2 += static_cast<T>(row[j + 2]) * in_ptr[j + 2];
+                            acc3 += static_cast<T>(row[j + 3]) * in_ptr[j + 3];
+                        }
+                        T sum = (acc0 + acc1) + (acc2 + acc3);
+                        for (; j < dim; ++j) {
+                            sum += static_cast<T>(row[j]) * in_ptr[j];
+                        }
+                        out_ptr[i] = sum;
+                    }
+                }
+            } else if constexpr (axis_idx == 1) {
+                const std::size_t dim_y = (N > 0) ? N : ny;
+                for (std::size_t k = 0; k < nz; ++k) {
+                    const T* VEC_MATH_RESTRICT in_k = in + k * (nx * dim_y);
+                    T* VEC_MATH_RESTRICT out_k = out + k * (nx * dim_y);
+                    for (std::size_t j = 0; j < dim_y; ++j) {
+                        T* VEC_MATH_RESTRICT out_row = out_k + j * nx;
+                        const MatT* VEC_MATH_RESTRICT row = D + j * dim_y;
+                        const T d0 = static_cast<T>(row[0]);
+                        const T* VEC_MATH_RESTRICT in_0 = in_k;
+                        VEC_MATH_PRAGMA_SIMD
+                        for (std::size_t i = 0; i < nx; ++i) {
+                            out_row[i] = d0 * in_0[i];
+                        }
+                        for (std::size_t q = 1; q < dim_y; ++q) {
+                            const T dq = static_cast<T>(row[q]);
+                            const T* VEC_MATH_RESTRICT in_q = in_k + q * nx;
+                            VEC_MATH_PRAGMA_SIMD
+                            for (std::size_t i = 0; i < nx; ++i) {
+                                out_row[i] += dq * in_q[i];
+                            }
+                        }
+                    }
+                }
+            } else if constexpr (axis_idx == 2) {
+                const std::size_t nxy = nx * ny;
+                const std::size_t dim_z = (N > 0) ? N : nz;
+                for (std::size_t k = 0; k < dim_z; ++k) {
+                    T* VEC_MATH_RESTRICT out_plane = out + k * nxy;
+                    const MatT* VEC_MATH_RESTRICT row = D + k * dim_z;
+                    const T d0 = static_cast<T>(row[0]);
+                    VEC_MATH_PRAGMA_SIMD
+                    for (std::size_t p = 0; p < nxy; ++p) {
+                        out_plane[p] = d0 * in[p];
+                    }
+                    for (std::size_t r = 1; r < dim_z; ++r) {
+                        const T dr = static_cast<T>(row[r]);
+                        const T* VEC_MATH_RESTRICT in_r = in + r * nxy;
+                        VEC_MATH_PRAGMA_SIMD
+                        for (std::size_t p = 0; p < nxy; ++p) {
+                            out_plane[p] += dr * in_r[p];
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
     VEC_MATH_HOST_DEVICE inline void contract_axis(
         const MatT* D,
@@ -2233,7 +2464,7 @@ namespace vec_math {
             constexpr std::size_t STACK_TOTAL_CAP = 1024;
             if (total <= STACK_TOTAL_CAP) {
                 T local_buf[STACK_TOTAL_CAP];
-                contract_axis<AxisParam, N>(D, in, local_buf, nx, ny, nz);
+                detail::contract_axis_noalias<AxisParam, N>(D, in, local_buf, nx, ny, nz);
                 for (std::size_t idx = 0; idx < total; ++idx) {
                     out[idx] = local_buf[idx];
                 }
@@ -2246,7 +2477,7 @@ namespace vec_math {
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
                 std::vector<T> local_buf(total);
-                contract_axis<AxisParam, N>(D, in, local_buf.data(), nx, ny, nz);
+                detail::contract_axis_noalias<AxisParam, N>(D, in, local_buf.data(), nx, ny, nz);
                 for (std::size_t idx = 0; idx < total; ++idx) {
                     out[idx] = local_buf[idx];
                 }
@@ -2255,116 +2486,7 @@ namespace vec_math {
 #endif
         }
 
-        if constexpr (axis_idx == 0) {
-            const std::size_t n_pencils = ny * nz;
-            if constexpr (N > 0) {
-                for (std::size_t p = 0; p < n_pencils; ++p) {
-                    const T* VEC_MATH_RESTRICT in_ptr = in + p * N;
-                    T* VEC_MATH_RESTRICT out_ptr = out + p * N;
-                    for (std::size_t i = 0; i < N; ++i) {
-                        const MatT* VEC_MATH_RESTRICT row = D + i * N;
-                        T sum{0};
-                        std::size_t j = 0;
-                        for (; j + 4 <= N; j += 4) {
-                            sum = sum + static_cast<T>(row[j + 0]) * in_ptr[j + 0]
-                                      + static_cast<T>(row[j + 1]) * in_ptr[j + 1]
-                                      + static_cast<T>(row[j + 2]) * in_ptr[j + 2]
-                                      + static_cast<T>(row[j + 3]) * in_ptr[j + 3];
-                        }
-                        for (; j < N; ++j) {
-                            sum = sum + static_cast<T>(row[j]) * in_ptr[j];
-                        }
-                        out_ptr[i] = sum;
-                    }
-                }
-            } else {
-                for (std::size_t p = 0; p < n_pencils; ++p) {
-                    const T* VEC_MATH_RESTRICT in_ptr = in + p * nx;
-                    T* VEC_MATH_RESTRICT out_ptr = out + p * nx;
-                    for (std::size_t i = 0; i < nx; ++i) {
-                        const MatT* VEC_MATH_RESTRICT row = D + i * nx;
-                        T acc0{0}, acc1{0}, acc2{0}, acc3{0};
-                        std::size_t j = 0;
-                        for (; j + 4 <= nx; j += 4) {
-                            acc0 = acc0 + static_cast<T>(row[j + 0]) * in_ptr[j + 0];
-                            acc1 = acc1 + static_cast<T>(row[j + 1]) * in_ptr[j + 1];
-                            acc2 = acc2 + static_cast<T>(row[j + 2]) * in_ptr[j + 2];
-                            acc3 = acc3 + static_cast<T>(row[j + 3]) * in_ptr[j + 3];
-                        }
-                        T sum = (acc0 + acc1) + (acc2 + acc3);
-                        for (; j < nx; ++j) {
-                            sum = sum + static_cast<T>(row[j]) * in_ptr[j];
-                        }
-                        out_ptr[i] = sum;
-                    }
-                }
-            }
-        } else if constexpr (axis_idx == 1) {
-            if constexpr (N > 0) {
-                for (std::size_t k = 0; k < nz; ++k) {
-                    const T* VEC_MATH_RESTRICT in_k = in + k * (nx * N);
-                    T* VEC_MATH_RESTRICT out_k = out + k * (nx * N);
-                    for (std::size_t j = 0; j < N; ++j) {
-                        T* VEC_MATH_RESTRICT out_row = out_k + j * nx;
-                        const MatT* VEC_MATH_RESTRICT row = D + j * N;
-                        VEC_MATH_PRAGMA_SIMD
-                        for (std::size_t i = 0; i < nx; ++i) {
-                            T sum{0};
-                            for (std::size_t q = 0; q < N; ++q) {
-                                sum = sum + static_cast<T>(row[q]) * in_k[q * nx + i];
-                            }
-                            out_row[i] = sum;
-                        }
-                    }
-                }
-            } else {
-                for (std::size_t k = 0; k < nz; ++k) {
-                    const T* VEC_MATH_RESTRICT in_k = in + k * (nx * ny);
-                    T* VEC_MATH_RESTRICT out_k = out + k * (nx * ny);
-                    for (std::size_t j = 0; j < ny; ++j) {
-                        T* VEC_MATH_RESTRICT out_row = out_k + j * nx;
-                        const MatT* VEC_MATH_RESTRICT row = D + j * ny;
-                        VEC_MATH_PRAGMA_SIMD
-                        for (std::size_t i = 0; i < nx; ++i) {
-                            T sum{0};
-                            for (std::size_t q = 0; q < ny; ++q) {
-                                sum = sum + static_cast<T>(row[q]) * in_k[q * nx + i];
-                            }
-                            out_row[i] = sum;
-                        }
-                    }
-                }
-            }
-        } else if constexpr (axis_idx == 2) {
-            const std::size_t nxy = nx * ny;
-            if constexpr (N > 0) {
-                for (std::size_t k = 0; k < N; ++k) {
-                    T* VEC_MATH_RESTRICT out_plane = out + k * nxy;
-                    const MatT* VEC_MATH_RESTRICT row = D + k * N;
-                    VEC_MATH_PRAGMA_SIMD
-                    for (std::size_t p = 0; p < nxy; ++p) {
-                        T sum{0};
-                        for (std::size_t r = 0; r < N; ++r) {
-                            sum = sum + static_cast<T>(row[r]) * in[r * nxy + p];
-                        }
-                        out_plane[p] = sum;
-                    }
-                }
-            } else {
-                for (std::size_t k = 0; k < nz; ++k) {
-                    T* VEC_MATH_RESTRICT out_plane = out + k * nxy;
-                    const MatT* VEC_MATH_RESTRICT row = D + k * nz;
-                    VEC_MATH_PRAGMA_SIMD
-                    for (std::size_t p = 0; p < nxy; ++p) {
-                        T sum{0};
-                        for (std::size_t r = 0; r < nz; ++r) {
-                            sum = sum + static_cast<T>(row[r]) * in[r * nxy + p];
-                        }
-                        out_plane[p] = sum;
-                    }
-                }
-            }
-        }
+        detail::contract_axis_noalias<AxisParam, N>(D, in, out, nx, ny, nz);
     }
 
     template<auto AxisParam, std::size_t N = 0, typename MatT, typename InT, typename OutT, std::size_t DExt, std::size_t InExt, std::size_t OutExt>
@@ -2416,14 +2538,16 @@ namespace vec_math {
             VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: vector size mismatch in dot_par");
         }
 #if defined(_OPENMP)
+        const std::size_t n = lhs_in.size();
+        if (n < 16384) {
+            return dot(lhs_in, rhs_in);
+        }
         auto lhs_op = detail::make_operand(lhs_in);
         auto rhs_op = detail::make_operand(rhs_in);
         using ResType = std::common_type_t<
             typename detail::operand_storage_t<Lhs>::value_type,
             typename detail::operand_storage_t<Rhs>::value_type
         >;
-        const std::size_t n = lhs_in.size();
-        if (n == 0) { return ResType{0}; }
 
         // Eliminate false sharing on 64-byte cache lines by isolating thread accumulators
         constexpr int MAX_OMP_THREADS = 128;
@@ -2444,19 +2568,29 @@ namespace vec_math {
                 std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
                 std::size_t start = static_cast<std::size_t>(tid) * chunk;
                 std::size_t end = (start + chunk < n) ? (start + chunk) : n;
-                ResType local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
-                std::size_t i = start;
-                for (; i + 4 <= end; i += 4) {
-                    local_acc0 += static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
-                    local_acc1 += static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
-                    local_acc2 += static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
-                    local_acc3 += static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
+                if (start < end) {
+                    if constexpr (!detail::is_strided_span_v<decltype(lhs_op)> && !detail::is_strided_span_v<decltype(rhs_op)> &&
+                                  requires { { lhs_op.data() }; { rhs_op.data() }; }) {
+                        partial_sums[tid].value = static_cast<ResType>(dot(
+                            std::span(lhs_op.data() + start, end - start),
+                            std::span(rhs_op.data() + start, end - start)
+                        ));
+                    } else {
+                        ResType local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
+                        std::size_t i = start;
+                        for (; i + 4 <= end; i += 4) {
+                            local_acc0 += static_cast<ResType>(lhs_op[i + 0]) * static_cast<ResType>(rhs_op[i + 0]);
+                            local_acc1 += static_cast<ResType>(lhs_op[i + 1]) * static_cast<ResType>(rhs_op[i + 1]);
+                            local_acc2 += static_cast<ResType>(lhs_op[i + 2]) * static_cast<ResType>(rhs_op[i + 2]);
+                            local_acc3 += static_cast<ResType>(lhs_op[i + 3]) * static_cast<ResType>(rhs_op[i + 3]);
+                        }
+                        ResType local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
+                        for (; i < end; ++i) {
+                            local_sum += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
+                        }
+                        partial_sums[tid].value = local_sum;
+                    }
                 }
-                ResType local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
-                for (; i < end; ++i) {
-                    local_sum += static_cast<ResType>(lhs_op[i]) * static_cast<ResType>(rhs_op[i]);
-                }
-                partial_sums[tid].value = local_sum;
             }
         }
 
@@ -2474,10 +2608,12 @@ namespace vec_math {
     template<VectorOperand Op>
     [[nodiscard]] inline auto sum_par(const Op &op_in) {
 #if defined(_OPENMP)
+        const std::size_t n = op_in.size();
+        if (n < 16384) {
+            return sum(op_in);
+        }
         auto op = detail::make_operand(op_in);
         using value_type = typename detail::operand_storage_t<Op>::value_type;
-        const std::size_t n = op.size();
-        if (n == 0) { return value_type{0}; }
 
         // Eliminate false sharing on 64-byte cache lines by isolating thread accumulators
         constexpr int MAX_OMP_THREADS = 128;
@@ -2498,19 +2634,27 @@ namespace vec_math {
                 std::size_t chunk = (n + static_cast<std::size_t>(nthreads) - 1) / static_cast<std::size_t>(nthreads);
                 std::size_t start = static_cast<std::size_t>(tid) * chunk;
                 std::size_t end = (start + chunk < n) ? (start + chunk) : n;
-                value_type local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
-                std::size_t i = start;
-                for (; i + 4 <= end; i += 4) {
-                    local_acc0 += static_cast<value_type>(op[i + 0]);
-                    local_acc1 += static_cast<value_type>(op[i + 1]);
-                    local_acc2 += static_cast<value_type>(op[i + 2]);
-                    local_acc3 += static_cast<value_type>(op[i + 3]);
+                if (start < end) {
+                    if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; }) {
+                        partial_sums[tid].value = static_cast<value_type>(sum(
+                            std::span(op.data() + start, end - start)
+                        ));
+                    } else {
+                        value_type local_acc0{0}, local_acc1{0}, local_acc2{0}, local_acc3{0};
+                        std::size_t i = start;
+                        for (; i + 4 <= end; i += 4) {
+                            local_acc0 += static_cast<value_type>(op[i + 0]);
+                            local_acc1 += static_cast<value_type>(op[i + 1]);
+                            local_acc2 += static_cast<value_type>(op[i + 2]);
+                            local_acc3 += static_cast<value_type>(op[i + 3]);
+                        }
+                        value_type local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
+                        for (; i < end; ++i) {
+                            local_sum += static_cast<value_type>(op[i]);
+                        }
+                        partial_sums[tid].value = local_sum;
+                    }
                 }
-                value_type local_sum = (local_acc0 + local_acc1) + (local_acc2 + local_acc3);
-                for (; i < end; ++i) {
-                    local_sum += static_cast<value_type>(op[i]);
-                }
-                partial_sums[tid].value = local_sum;
             }
         }
 

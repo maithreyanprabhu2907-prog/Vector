@@ -267,28 +267,28 @@ void audit_matvec() {
     {
         constexpr std::size_t M = 4, N = 6;
         double A[M * N], x[N], y[M], y_ref[M];
-        for (int i = 0; i < M * N; ++i) A[i] = i * 0.5 + 1.0;
-        for (int i = 0; i < N; ++i) x[i] = 2.0 - i * 0.1;
-        for (int r = 0; r < M; ++r) {
+        for (std::size_t i = 0; i < M * N; ++i) A[i] = static_cast<double>(i) * 0.5 + 1.0;
+        for (std::size_t i = 0; i < N; ++i) x[i] = 2.0 - static_cast<double>(i) * 0.1;
+        for (std::size_t r = 0; r < M; ++r) {
             double sum = 0;
-            for (int c = 0; c < N; ++c) sum += A[r * N + c] * x[c];
+            for (std::size_t c = 0; c < N; ++c) sum += A[r * N + c] * x[c];
             y_ref[r] = sum;
         }
         matvec_fixed<M, N>(A, x, y);
-        for (int r = 0; r < M; ++r) AUDIT_ASSERT(std::abs(y[r] - y_ref[r]) < 1e-12, "matvec_fixed mismatch");
+        for (std::size_t r = 0; r < M; ++r) AUDIT_ASSERT(std::abs(y[r] - y_ref[r]) < 1e-12, "matvec_fixed mismatch");
 
         // Fixed square aliased
         double Asq[M * M], x_alias[M];
-        for (int i = 0; i < M * M; ++i) Asq[i] = i * 0.25 + 0.5;
-        for (int i = 0; i < M; ++i) x_alias[i] = i + 1.0;
+        for (std::size_t i = 0; i < M * M; ++i) Asq[i] = static_cast<double>(i) * 0.25 + 0.5;
+        for (std::size_t i = 0; i < M; ++i) x_alias[i] = static_cast<double>(i) + 1.0;
         double ref_alias[M];
-        for (int r = 0; r < M; ++r) {
+        for (std::size_t r = 0; r < M; ++r) {
             double sum = 0;
-            for (int c = 0; c < M; ++c) sum += Asq[r * M + c] * x_alias[c];
+            for (std::size_t c = 0; c < M; ++c) sum += Asq[r * M + c] * x_alias[c];
             ref_alias[r] = sum;
         }
         matvec_fixed<M, M>(Asq, x_alias, x_alias);
-        for (int r = 0; r < M; ++r) AUDIT_ASSERT(std::abs(x_alias[r] - ref_alias[r]) < 1e-12, "matvec_fixed aliased mismatch");
+        for (std::size_t r = 0; r < M; ++r) AUDIT_ASSERT(std::abs(x_alias[r] - ref_alias[r]) < 1e-12, "matvec_fixed aliased mismatch");
     }
 
     std::cout << "  -> matvec: PASSED all tests!" << std::endl;
