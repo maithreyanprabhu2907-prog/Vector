@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 
 
 
@@ -12,6 +12,9 @@ project(vec_math
 
 )
 
+set(CMAKE_CXX_STANDARD 26)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(GNUInstallDirs)
 
@@ -27,7 +30,7 @@ add_library(vec_math::vec_math ALIAS vec_math)
 
 
 
-target_compile_features(vec_math INTERFACE cxx_std_20)
+target_compile_features(vec_math INTERFACE cxx_std_26)
 
 target_include_directories(vec_math
 
@@ -48,45 +51,53 @@ target_include_directories(vec_math
 option(VEC_MATH_BUILD_TESTS "Build vec_math unit and zero-malloc tests" ${PROJECT_IS_TOP_LEVEL})
 option(VEC_MATH_BUILD_BENCHMARKS "Build vec_math performance benchmarks" ${PROJECT_IS_TOP_LEVEL})
 
-if(VEC_MATH_BUILD_TESTS)
-    enable_testing()
-    add_executable(vector_math_test tests/vector_math_test.cpp)
-    target_link_libraries(vector_math_test PRIVATE vec_math::vec_math)
+function(vec_math_apply_warnings target)
     if(MSVC)
-        target_compile_options(vector_math_test PRIVATE /W4 /WX /wd4702 /EHsc)
+        target_compile_options(${target} PRIVATE /W4 /WX /wd4702 /EHsc)
     else()
-        target_compile_options(vector_math_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
         if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 11)
-            target_compile_options(vector_math_test PRIVATE -Wno-mismatched-new-delete)
+            target_compile_options(${target} PRIVATE -Wno-mismatched-new-delete)
         elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            target_compile_options(vector_math_test PRIVATE -Wno-pass-failed)
+            target_compile_options(${target} PRIVATE -Wno-pass-failed)
         endif()
     endif()
+endfunction()
+
+if(VEC_MATH_BUILD_TESTS)
+    enable_testing()
+    find_package(OpenMP)
+
+    add_executable(vector_math_test tests/vector_math_test.cpp)
+    target_link_libraries(vector_math_test PRIVATE vec_math::vec_math)
+    vec_math_apply_warnings(vector_math_test)
     add_test(NAME vector_math_test COMMAND vector_math_test)
 
     add_executable(audit_math tests/audit_math.cpp)
     target_link_libraries(audit_math PRIVATE vec_math::vec_math)
-    if(MSVC)
-        target_compile_options(audit_math PRIVATE /W4 /WX /wd4702 /EHsc)
-    else()
-        target_compile_options(audit_math PRIVATE -Wall -Wextra -Wpedantic -Werror)
-        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 11)
-            target_compile_options(audit_math PRIVATE -Wno-mismatched-new-delete)
-        elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-            target_compile_options(audit_math PRIVATE -Wno-pass-failed)
-        endif()
-    endif()
+    vec_math_apply_warnings(audit_math)
     add_test(NAME audit_math COMMAND audit_math)
+
+    add_executable(edge_cases_test tests/edge_cases_test.cpp)
+    target_link_libraries(edge_cases_test PRIVATE vec_math::vec_math)
+    if(TARGET OpenMP::OpenMP_CXX)
+        target_link_libraries(edge_cases_test PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    vec_math_apply_warnings(edge_cases_test)
+    add_test(NAME edge_cases_test COMMAND edge_cases_test)
+
+    add_executable(no_intrinsics_test tests/edge_cases_test.cpp)
+    target_link_libraries(no_intrinsics_test PRIVATE vec_math::vec_math)
+    target_compile_definitions(no_intrinsics_test PRIVATE VEC_MATH_NO_INTRINSICS)
+    if(TARGET OpenMP::OpenMP_CXX)
+        target_link_libraries(no_intrinsics_test PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    vec_math_apply_warnings(no_intrinsics_test)
+    add_test(NAME no_intrinsics_test COMMAND no_intrinsics_test)
 endif()
 
 if(VEC_MATH_BUILD_BENCHMARKS)
     find_package(OpenMP)
-    add_executable(benchmark benchmarks/benchmark.cpp)
-    target_link_libraries(benchmark PRIVATE vec_math::vec_math)
-    if(TARGET OpenMP::OpenMP_CXX)
-        target_link_libraries(benchmark PRIVATE OpenMP::OpenMP_CXX)
-    endif()
-
     set(VEC_MATH_ARCH_FLAGS "")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64|AMD64")
         if(MSVC)
@@ -96,11 +107,15 @@ if(VEC_MATH_BUILD_BENCHMARKS)
         endif()
     endif()
 
+    add_executable(benchmark benchmarks/benchmark.cpp)
+    target_link_libraries(benchmark PRIVATE vec_math::vec_math)
+    if(TARGET OpenMP::OpenMP_CXX)
+        target_link_libraries(benchmark PRIVATE OpenMP::OpenMP_CXX)
+    endif()
     if(MSVC)
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:/O2>
             $<$<CONFIG:Release>:/fp:fast>
-            $<$<CONFIG:Release>:/openmp>
             ${VEC_MATH_ARCH_FLAGS}
             /W4
         )
@@ -108,10 +123,32 @@ if(VEC_MATH_BUILD_BENCHMARKS)
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:-Ofast>
             ${VEC_MATH_ARCH_FLAGS}
-            -fopenmp
             -Wall
             -Wextra
         )
+    endif()
+
+    add_executable(regression_bench benchmarks/regression_bench.cpp)
+    target_link_libraries(regression_bench PRIVATE vec_math::vec_math)
+    if(TARGET OpenMP::OpenMP_CXX)
+        target_link_libraries(regression_bench PRIVATE OpenMP::OpenMP_CXX)
+    endif()
+    if(MSVC)
+        target_compile_options(regression_bench PRIVATE
+            $<$<CONFIG:Release>:/O2>
+            $<$<CONFIG:Release>:/fp:fast>
+            ${VEC_MATH_ARCH_FLAGS}
+            /W4 /WX
+        )
+    else()
+        target_compile_options(regression_bench PRIVATE
+            $<$<CONFIG:Release>:-O3>
+            ${VEC_MATH_ARCH_FLAGS}
+            -Wall -Wextra -Wpedantic -Werror
+        )
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+            target_compile_options(regression_bench PRIVATE -Wno-pass-failed)
+        endif()
     endif()
 
     # Optimization Comparison Benchmarks (-Ofast vs -O3 vs -Os)

@@ -17,85 +17,65 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux GCC
-          - name: "Linux GCC Release (AVX2+FMA)"
+          # Linux GCC 16 (C++26)
+          - name: "Linux GCC 16 Release (AVX2+FMA)"
             os: ubuntu-latest
-            cxx: g++
+            cxx: g++-16
             build_type: Release
             cxx_flags: "-mavx2 -mfma"
-          - name: "Linux GCC Release (Default)"
+          - name: "Linux GCC 16 Release (Default)"
             os: ubuntu-latest
-            cxx: g++
+            cxx: g++-16
             build_type: Release
             cxx_flags: ""
-          - name: "Linux GCC Debug (-O0)"
+          - name: "Linux GCC 16 Debug (-O0)"
             os: ubuntu-latest
-            cxx: g++
+            cxx: g++-16
             build_type: Debug
             cxx_flags: "-O0"
 
-          # Linux Clang
-          - name: "Linux Clang Release (AVX2+FMA)"
+          # Linux GCC 16 Sanitizers (ASan + UBSan)
+          - name: "Linux GCC 16 ASan+UBSan"
             os: ubuntu-latest
-            cxx: clang++
-            build_type: Release
-            cxx_flags: "-mavx2 -mfma"
-          - name: "Linux Clang Debug (Default)"
-            os: ubuntu-latest
-            cxx: clang++
+            cxx: g++-16
             build_type: Debug
-            cxx_flags: ""
-
-          # Windows MSVC
-          - name: "Windows MSVC Release (/arch:AVX2)"
-            os: windows-latest
-            cxx: cl
-            build_type: Release
-            cxx_flags: "/arch:AVX2"
-          - name: "Windows MSVC Release (Default)"
-            os: windows-latest
-            cxx: cl
-            build_type: Release
-            cxx_flags: ""
-          - name: "Windows MSVC Debug"
-            os: windows-latest
-            cxx: cl
-            build_type: Debug
-            cxx_flags: ""
-
-          # macOS Apple Clang
-          - name: "macOS Clang Release"
-            os: macos-latest
-            cxx: clang++
-            build_type: Release
-            cxx_flags: ""
-          - name: "macOS Clang Debug"
-            os: macos-latest
-            cxx: clang++
-            build_type: Debug
-            cxx_flags: ""
+            cxx_flags: "-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -mavx2 -mfma"
+            build_benchmarks: "OFF"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure CMake
+      - name: Ensure GCC 16 is available
         run: |
-          if [ "${{ matrix.cxx }}" = "cl" ]; then
-            cmake -B build -S . \
-              -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
-              -DVEC_MATH_BUILD_TESTS=ON \
-              -DVEC_MATH_BUILD_BENCHMARKS=OFF
-          else
-            cmake -B build -S . \
-              -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}" \
-              -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" \
-              -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
-              -DVEC_MATH_BUILD_TESTS=ON \
-              -DVEC_MATH_BUILD_BENCHMARKS=OFF
+          if ! command -v g++-16 >/dev/null 2>&1; then
+            sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test || true
+            sudo apt-get update
+            sudo apt-get install -y g++-16
           fi
 
-      - name: Build Test Target
+      - name: Configure CMake
+        run: |
+          BENCH_OPT="${{ matrix.build_benchmarks }}"
+          if [ -z "$BENCH_OPT" ]; then
+            if [ "${{ matrix.build_type }}" = "Release" ]; then
+              BENCH_OPT="ON"
+            else
+              BENCH_OPT="OFF"
+            fi
+          fi
+          cmake -B build -S . \
+            -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}" \
+            -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DVEC_MATH_BUILD_TESTS=ON \
+            -DVEC_MATH_BUILD_BENCHMARKS="$BENCH_OPT"
+
+      - name: Build Test & Benchmark Targets
         run: cmake --build build --config ${{ matrix.build_type }}
 
       - name: Run Tests
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+      - name: Run Regression Benchmark Smoke Check
+        if: matrix.build_type == 'Release' && contains(matrix.cxx_flags, 'mavx2')
+        run: ./build/regression_bench --quick

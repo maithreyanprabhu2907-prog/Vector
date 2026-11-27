@@ -20,8 +20,10 @@ using namespace vec_math;
 using namespace vec_math::ops;
 
 // Compiler optimization barrier & memory clobber
-[[maybe_unused]] static volatile const void* g_escape_sink = nullptr;
-[[maybe_unused]] static volatile char g_escape_byte = 0;
+#if !defined(__GNUC__) && !defined(__clang__)
+static volatile const void* g_escape_sink = nullptr;
+static volatile char g_escape_byte = 0;
+#endif
 
 template <typename T>
 inline void do_not_optimize(const T& val) {
@@ -53,12 +55,12 @@ inline void do_not_optimize(T* ptr) {
 
 // STREAM roofline and validity guards
 inline double calc_bandwidth(double bytes, double avg_us, std::size_t n) {
-    if (avg_us <= 1e-6 || std::isnan(avg_us) || std::isinf(avg_us)) {
+    if (!(avg_us > 1e-6)) {
         return 0.0;
     }
     double sec = avg_us * 1e-6;
     double bw = (bytes / sec) / 1e9; // Decimal GB/s consistent with STREAM standards
-    if (std::isnan(bw) || std::isinf(bw) || bw < 0.0) return 0.0;
+    if (!(bw >= 0.0)) return 0.0;
     // Physical roofline guards:
     if (n >= 1'000'000) {
         if (bw > 55.0) return 55.0; // DDR4 dual channel theoretical peak ~51.2 GB/s
@@ -69,12 +71,12 @@ inline double calc_bandwidth(double bytes, double avg_us, std::size_t n) {
 }
 
 inline double calc_gflops(double flops, double avg_us) {
-    if (avg_us <= 1e-6 || std::isnan(avg_us) || std::isinf(avg_us)) {
+    if (!(avg_us > 1e-6)) {
         return 0.0;
     }
     double sec = avg_us * 1e-6;
     double gf = (flops / sec) / 1e9;
-    if (std::isnan(gf) || std::isinf(gf) || gf < 0.0) return 0.0;
+    if (!(gf >= 0.0)) return 0.0;
     if (gf > 500.0) return 500.0; // CPU FP64 theoretical ceiling across cores
     return gf;
 }

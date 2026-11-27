@@ -1,3 +1,7 @@
+#if defined(__GNUC__) && !defined(__clang__) && (__GNUC__ >= 11)
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+
 #if defined(_MSC_VER) && defined(_DEBUG)
 #define _ITERATOR_DEBUG_LEVEL 0
 #endif
@@ -67,8 +71,10 @@ void operator delete[](void* ptr, std::size_t) noexcept {
 }
 
 // Compiler optimization barrier & memory clobber
-[[maybe_unused]] static volatile const void* g_escape_sink = nullptr;
-[[maybe_unused]] static volatile char g_escape_byte = 0;
+#if !defined(__GNUC__) && !defined(__clang__)
+static volatile const void* g_escape_sink = nullptr;
+static volatile char g_escape_byte = 0;
+#endif
 
 template <typename T>
 inline void do_not_optimize(const T& val) {
@@ -110,11 +116,11 @@ inline void do_not_optimize(const vec_math::aligned_vector<T>& vec) {
 
 // STREAM roofline and physical throughput guards
 inline double calc_bandwidth(double bytes, double sec, std::size_t n) {
-    if (sec <= 1e-12 || std::isnan(sec) || std::isinf(sec)) {
+    if (!(sec > 1e-12)) {
         return 0.0;
     }
     double bw = (bytes / sec) / 1e9;
-    if (std::isnan(bw) || std::isinf(bw) || bw < 0.0) return 0.0;
+    if (!(bw >= 0.0)) return 0.0;
     if (n >= 1'000'000) {
         if (bw > 55.0) return 55.0; // DDR4 dual channel peak ~51.2 GB/s
     } else {
@@ -124,22 +130,21 @@ inline double calc_bandwidth(double bytes, double sec, std::size_t n) {
 }
 
 inline double calc_gflops(double flops, double sec) {
-    if (sec <= 1e-12 || std::isnan(sec) || std::isinf(sec)) {
+    if (!(sec > 1e-12)) {
         return 0.0;
     }
     double gf = (flops / sec) / 1e9;
-    if (std::isnan(gf) || std::isinf(gf) || gf < 0.0) return 0.0;
+    if (!(gf >= 0.0)) return 0.0;
     if (gf > 500.0) return 500.0; // CPU FP64 theoretical ceiling across cores
     return gf;
 }
 
 inline double calc_speedup(double base_sec, double opt_sec) {
-    if (opt_sec <= 1e-12 || std::isnan(opt_sec) || std::isinf(opt_sec) ||
-        base_sec <= 1e-12 || std::isnan(base_sec) || std::isinf(base_sec)) {
+    if (!(opt_sec > 1e-12) || !(base_sec > 1e-12)) {
         return 1.0;
     }
     double sp = base_sec / opt_sec;
-    if (std::isnan(sp) || std::isinf(sp) || sp < 0.0) return 1.0;
+    if (!(sp >= 0.0)) return 1.0;
     if (sp > 1000.0) return 1000.0;
     return sp;
 }
