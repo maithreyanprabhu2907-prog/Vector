@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 
 
 
-project(vec_math
+project(keisan
 
         VERSION 1.0.0
 
@@ -24,15 +24,15 @@ include(CMakePackageConfigHelpers)
 
 # Header-only INTERFACE target
 
-add_library(vec_math INTERFACE)
+add_library(keisan INTERFACE)
 
-add_library(vec_math::vec_math ALIAS vec_math)
+add_library(keisan::keisan ALIAS keisan)
 
 
 
-target_compile_features(vec_math INTERFACE cxx_std_26)
+target_compile_features(keisan INTERFACE cxx_std_26)
 
-target_include_directories(vec_math
+target_include_directories(keisan
 
         INTERFACE
 
@@ -44,14 +44,14 @@ target_include_directories(vec_math
 
 
 
-# Only build tests when vec_math is the top-level project (avoids polluting
+# Only build tests when keisan is the top-level project (avoids polluting
 
-# downstream projects that consume vec_math via FetchContent/add_subdirectory).
+# downstream projects that consume keisan via FetchContent/add_subdirectory).
 
-option(VEC_MATH_BUILD_TESTS "Build vec_math unit and zero-malloc tests" ${PROJECT_IS_TOP_LEVEL})
-option(VEC_MATH_BUILD_BENCHMARKS "Build vec_math performance benchmarks" ${PROJECT_IS_TOP_LEVEL})
+option(KEISAN_BUILD_TESTS "Build keisan unit and zero-malloc tests" ${PROJECT_IS_TOP_LEVEL})
+option(KEISAN_BUILD_BENCHMARKS "Build keisan performance benchmarks" ${PROJECT_IS_TOP_LEVEL})
 
-function(vec_math_apply_warnings target)
+function(keisan_apply_warnings target)
     if(MSVC)
         target_compile_options(${target} PRIVATE /W4 /WX /wd4702 /EHsc)
     else()
@@ -64,51 +64,51 @@ function(vec_math_apply_warnings target)
     endif()
 endfunction()
 
-if(VEC_MATH_BUILD_TESTS)
+if(KEISAN_BUILD_TESTS)
     enable_testing()
     find_package(OpenMP)
 
     add_executable(vector_math_test tests/vector_math_test.cpp)
-    target_link_libraries(vector_math_test PRIVATE vec_math::vec_math)
-    vec_math_apply_warnings(vector_math_test)
+    target_link_libraries(vector_math_test PRIVATE keisan::keisan)
+    keisan_apply_warnings(vector_math_test)
     add_test(NAME vector_math_test COMMAND vector_math_test)
 
     add_executable(audit_math tests/audit_math.cpp)
-    target_link_libraries(audit_math PRIVATE vec_math::vec_math)
-    vec_math_apply_warnings(audit_math)
+    target_link_libraries(audit_math PRIVATE keisan::keisan)
+    keisan_apply_warnings(audit_math)
     add_test(NAME audit_math COMMAND audit_math)
 
     add_executable(edge_cases_test tests/edge_cases_test.cpp)
-    target_link_libraries(edge_cases_test PRIVATE vec_math::vec_math)
+    target_link_libraries(edge_cases_test PRIVATE keisan::keisan)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(edge_cases_test PRIVATE OpenMP::OpenMP_CXX)
     endif()
-    vec_math_apply_warnings(edge_cases_test)
+    keisan_apply_warnings(edge_cases_test)
     add_test(NAME edge_cases_test COMMAND edge_cases_test)
 
     add_executable(no_intrinsics_test tests/edge_cases_test.cpp)
-    target_link_libraries(no_intrinsics_test PRIVATE vec_math::vec_math)
-    target_compile_definitions(no_intrinsics_test PRIVATE VEC_MATH_NO_INTRINSICS)
+    target_link_libraries(no_intrinsics_test PRIVATE keisan::keisan)
+    target_compile_definitions(no_intrinsics_test PRIVATE KEISAN_NO_INTRINSICS)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(no_intrinsics_test PRIVATE OpenMP::OpenMP_CXX)
     endif()
-    vec_math_apply_warnings(no_intrinsics_test)
+    keisan_apply_warnings(no_intrinsics_test)
     add_test(NAME no_intrinsics_test COMMAND no_intrinsics_test)
 endif()
 
-if(VEC_MATH_BUILD_BENCHMARKS)
+if(KEISAN_BUILD_BENCHMARKS)
     find_package(OpenMP)
-    set(VEC_MATH_ARCH_FLAGS "")
+    set(KEISAN_ARCH_FLAGS "")
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "amd64|x86_64|AMD64")
         if(MSVC)
-            set(VEC_MATH_ARCH_FLAGS "/arch:AVX2")
+            set(KEISAN_ARCH_FLAGS "/arch:AVX2")
         else()
-            set(VEC_MATH_ARCH_FLAGS "-mavx2" "-mfma")
+            set(KEISAN_ARCH_FLAGS "-mavx2" "-mfma")
         endif()
     endif()
 
     add_executable(benchmark benchmarks/benchmark.cpp)
-    target_link_libraries(benchmark PRIVATE vec_math::vec_math)
+    target_link_libraries(benchmark PRIVATE keisan::keisan)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(benchmark PRIVATE OpenMP::OpenMP_CXX)
     endif()
@@ -116,20 +116,20 @@ if(VEC_MATH_BUILD_BENCHMARKS)
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:/O2>
             $<$<CONFIG:Release>:/fp:fast>
-            ${VEC_MATH_ARCH_FLAGS}
+            ${KEISAN_ARCH_FLAGS}
             /W4
         )
     else()
         target_compile_options(benchmark PRIVATE
             $<$<CONFIG:Release>:-Ofast>
-            ${VEC_MATH_ARCH_FLAGS}
+            ${KEISAN_ARCH_FLAGS}
             -Wall
             -Wextra
         )
     endif()
 
     add_executable(regression_bench benchmarks/regression_bench.cpp)
-    target_link_libraries(regression_bench PRIVATE vec_math::vec_math)
+    target_link_libraries(regression_bench PRIVATE keisan::keisan)
     if(TARGET OpenMP::OpenMP_CXX)
         target_link_libraries(regression_bench PRIVATE OpenMP::OpenMP_CXX)
     endif()
@@ -137,13 +137,13 @@ if(VEC_MATH_BUILD_BENCHMARKS)
         target_compile_options(regression_bench PRIVATE
             $<$<CONFIG:Release>:/O2>
             $<$<CONFIG:Release>:/fp:fast>
-            ${VEC_MATH_ARCH_FLAGS}
+            ${KEISAN_ARCH_FLAGS}
             /W4 /WX
         )
     else()
         target_compile_options(regression_bench PRIVATE
             $<$<CONFIG:Release>:-O3>
-            ${VEC_MATH_ARCH_FLAGS}
+            ${KEISAN_ARCH_FLAGS}
             -Wall -Wextra -Wpedantic -Werror
         )
         if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -153,37 +153,52 @@ if(VEC_MATH_BUILD_BENCHMARKS)
 
     # Optimization Comparison Benchmarks (-Ofast vs -O3 vs -Os)
     add_executable(bench_ofast benchmarks/opt_compare.cpp)
-    target_link_libraries(bench_ofast PRIVATE vec_math::vec_math)
+    target_link_libraries(bench_ofast PRIVATE keisan::keisan)
     target_compile_definitions(bench_ofast PRIVATE OPT_OFAST)
 
     add_executable(bench_o3 benchmarks/opt_compare.cpp)
-    target_link_libraries(bench_o3 PRIVATE vec_math::vec_math)
+    target_link_libraries(bench_o3 PRIVATE keisan::keisan)
     target_compile_definitions(bench_o3 PRIVATE OPT_O3)
 
     add_executable(bench_os benchmarks/opt_compare.cpp)
-    target_link_libraries(bench_os PRIVATE vec_math::vec_math)
+    target_link_libraries(bench_os PRIVATE keisan::keisan)
     target_compile_definitions(bench_os PRIVATE OPT_OS)
 
     if(MSVC)
-        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:fast> ${VEC_MATH_ARCH_FLAGS} /W4)
-        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:precise> ${VEC_MATH_ARCH_FLAGS} /W4)
-        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:/O1> $<$<CONFIG:Release>:/Os> $<$<CONFIG:Release>:/fp:precise> ${VEC_MATH_ARCH_FLAGS} /W4)
+        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:fast> ${KEISAN_ARCH_FLAGS} /W4)
+        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/fp:precise> ${KEISAN_ARCH_FLAGS} /W4)
+        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:/O1> $<$<CONFIG:Release>:/Os> $<$<CONFIG:Release>:/fp:precise> ${KEISAN_ARCH_FLAGS} /W4)
     else()
-        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:-Ofast> ${VEC_MATH_ARCH_FLAGS} -Wall -Wextra)
-        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:-O3> ${VEC_MATH_ARCH_FLAGS} -Wall -Wextra)
-        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:-Os> ${VEC_MATH_ARCH_FLAGS} -Wall -Wextra)
+        target_compile_options(bench_ofast PRIVATE $<$<CONFIG:Release>:-Ofast> ${KEISAN_ARCH_FLAGS} -Wall -Wextra)
+        target_compile_options(bench_o3 PRIVATE $<$<CONFIG:Release>:-O3> ${KEISAN_ARCH_FLAGS} -Wall -Wextra)
+        target_compile_options(bench_os PRIVATE $<$<CONFIG:Release>:-Os> ${KEISAN_ARCH_FLAGS} -Wall -Wextra)
     endif()
 endif()
 
+option(KEISAN_BUILD_EXAMPLES "Build keisan runnable examples" OFF)
+if(KEISAN_BUILD_EXAMPLES)
+    foreach(ex_name
+            01_fused_expressions
+            02_zero_malloc_rk
+            03_sum_factorization
+            04_batched_imex
+            05_repro_openmp)
+        add_executable(${ex_name} examples/${ex_name}.cpp)
+        target_link_libraries(${ex_name} PRIVATE keisan::keisan)
+        if(TARGET OpenMP::OpenMP_CXX)
+            target_link_libraries(${ex_name} PRIVATE OpenMP::OpenMP_CXX)
+        endif()
+        keisan_apply_warnings(${ex_name})
+    endforeach()
+endif()
 
-
-# Installation & find_package(vec_math) export rules
+# Installation & find_package(keisan) export rules
 
 install(
 
-        TARGETS vec_math
+        TARGETS keisan
 
-        EXPORT vec_mathTargets
+        EXPORT keisanTargets
 
 )
 
@@ -201,11 +216,11 @@ install(
 
 configure_package_config_file(
 
-        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/vec_mathConfig.cmake.in"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/keisanConfig.cmake.in"
 
-        "${CMAKE_CURRENT_BINARY_DIR}/vec_mathConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/keisanConfig.cmake"
 
-        INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/vec_math"
+        INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/keisan"
 
 )
 
@@ -213,7 +228,7 @@ configure_package_config_file(
 
 write_basic_package_version_file(
 
-        "${CMAKE_CURRENT_BINARY_DIR}/vec_mathConfigVersion.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/keisanConfigVersion.cmake"
 
         VERSION ${PROJECT_VERSION}
 
@@ -225,13 +240,13 @@ write_basic_package_version_file(
 
 install(
 
-        EXPORT vec_mathTargets
+        EXPORT keisanTargets
 
-        FILE vec_mathTargets.cmake
+        FILE keisanTargets.cmake
 
-        NAMESPACE vec_math::
+        NAMESPACE keisan::
 
-        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/vec_math"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/keisan"
 
 )
 
@@ -241,11 +256,11 @@ install(
 
         FILES
 
-        "${CMAKE_CURRENT_BINARY_DIR}/vec_mathConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/keisanConfig.cmake"
 
-        "${CMAKE_CURRENT_BINARY_DIR}/vec_mathConfigVersion.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/keisanConfigVersion.cmake"
 
-        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/vec_math"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/keisan"
 
 )
 

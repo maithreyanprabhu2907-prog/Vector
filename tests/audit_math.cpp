@@ -1,4 +1,4 @@
-#include <vec_math/vector_math.hpp>
+#include <keisan/keisan.hpp>
 #include <iostream>
 #include <vector>
 #include <span>
@@ -19,7 +19,7 @@
 
 void audit_contract_axis() {
     std::cout << "[AUDIT] 1. Testing contract_axis..." << std::endl;
-    using namespace vec_math;
+    using namespace keisan;
 
     // Helper to evaluate tensor indexing (X-fastest): index(x, y, z) = x + y*nx + z*nx*ny
     auto idx3d = [](std::size_t x, std::size_t y, std::size_t z, std::size_t nx, std::size_t ny) {
@@ -196,7 +196,7 @@ void audit_contract_axis() {
 
 void audit_matvec() {
     std::cout << "[AUDIT] 2. Testing matvec & matvec_fixed..." << std::endl;
-    using namespace vec_math;
+    using namespace keisan;
 
     std::vector<std::pair<std::size_t, std::size_t>> dims = {
         {1, 1}, {1, 5}, {5, 1}, {3, 3}, {4, 4}, {5, 5}, {7, 13}, {13, 7},
@@ -296,7 +296,7 @@ void audit_matvec() {
 
 void audit_solve_4x4() {
     std::cout << "[AUDIT] 3. Testing solve_4x4_batched..." << std::endl;
-    using namespace vec_math;
+    using namespace keisan;
 
     const std::size_t num_elements = 3;
     std::vector<std::vector<double>> A_soa_storage(16, std::vector<double>(num_elements));
@@ -400,7 +400,7 @@ void audit_solve_4x4() {
 
 void audit_sum_dot_repro() {
     std::cout << "[AUDIT] 4. Testing sum_repro & dot_repro..." << std::endl;
-    using namespace vec_math;
+    using namespace keisan;
 
     // Boundary sizes around BLOCK_SIZE (512)
     std::vector<std::size_t> sizes = {0, 1, 2, 511, 512, 513, 1023, 1024, 1025, 2048, 5000};
@@ -467,7 +467,7 @@ void audit_sum_dot_repro() {
 
 void audit_workspace_arena() {
     std::cout << "[AUDIT] 5. Testing WorkspaceArena..." << std::endl;
-    using namespace vec_math;
+    using namespace keisan;
 
     WorkspaceArena arena(64 * 1024); // 64 KB
     AUDIT_ASSERT(arena.capacity() == 64 * 1024, "Capacity mismatch");
@@ -514,7 +514,7 @@ void audit_workspace_arena() {
 
 void audit_primitives() {
     std::cout << "[AUDIT] 6. Testing StridedSpan, broadcast_multiply, gather, scatter_add..." << std::endl;
-    using namespace vec_math;
+    using namespace keisan;
 
     // StridedSpan
     {

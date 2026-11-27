@@ -1,7 +1,7 @@
 // benchmarks/regression_bench.cpp — Standardized anti-hoisted benchmark & regression suite
 // Usage: regression_bench [--quick]
 
-#include <vec_math/vector_math.hpp>
+#include <keisan/keisan.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -25,7 +25,7 @@
 #define BENCH_NOINLINE __attribute__((noinline))
 #endif
 
-using namespace vec_math;
+using namespace keisan;
 
 namespace {
 
@@ -458,7 +458,7 @@ void section_solve_nxn() {
 int main(int argc, char** argv) {
     g_quick = (argc > 1 && std::string(argv[1]) == "--quick");
 
-    std::printf("# vec_math regression benchmark%s\n", g_quick ? " (quick)" : "");
+    std::printf("# keisan regression benchmark%s\n", g_quick ? " (quick)" : "");
 #if defined(_OPENMP)
     std::printf("THREADS=%d\n", omp_get_max_threads());
 #else

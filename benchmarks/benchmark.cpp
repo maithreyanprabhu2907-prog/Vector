@@ -6,10 +6,10 @@
 #define _ITERATOR_DEBUG_LEVEL 0
 #endif
 
-#include <vec_math/vector_math.hpp>
+#include <keisan/keisan.hpp>
 
-using namespace vec_math;
-using namespace vec_math::ops;
+using namespace keisan;
+using namespace keisan::ops;
 
 #include <algorithm>
 #include <atomic>
@@ -110,7 +110,7 @@ inline void do_not_optimize(const std::vector<T, Alloc>& vec) {
 }
 
 template <typename T>
-inline void do_not_optimize(const vec_math::aligned_vector<T>& vec) {
+inline void do_not_optimize(const keisan::aligned_vector<T>& vec) {
     do_not_optimize(vec.data());
 }
 
@@ -386,7 +386,7 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     r_scalar.gflops = calc_gflops(total_flops, scalar_sec);
     r_scalar.bandwidth_gb_s = calc_bandwidth(total_bytes, scalar_sec, n);
 
-    // 3. vec_math (Zero-Allocation Expression Template)
+    // 3. keisan (Zero-Allocation Expression Template)
     std::size_t expr_allocs = 0;
     std::size_t expr_alloc_bytes = 0;
     {
@@ -414,7 +414,7 @@ SizeBenchmarkGroup run_size_benchmark(std::size_t n, const std::string& label, s
     double expr_us = (expr_sec / static_cast<double>(iters)) * 1e6;
 
     BenchmarkResult r_expr;
-    r_expr.name = "vec_math (Expr Template)";
+    r_expr.name = "keisan (Expr Template)";
     r_expr.vector_size = n;
     r_expr.iterations = iters;
     r_expr.time_ms = expr_ms;
@@ -459,9 +459,9 @@ std::vector<DgRkResult> run_dg_rk_benchmark(std::size_t n, std::size_t iters) {
     std::vector<double> y(n, 0.95);
     std::vector<double> out(n, 0.0);
 
-    vec_math::aligned_vector<double> ax(n, 1.05);
-    vec_math::aligned_vector<double> ay(n, 0.95);
-    vec_math::aligned_vector<double> aout(n, 0.0);
+    keisan::aligned_vector<double> ax(n, 1.05);
+    keisan::aligned_vector<double> ay(n, 0.95);
+    keisan::aligned_vector<double> aout(n, 0.0);
 
     const double alpha = 0.75;
     const double beta = 0.25;
@@ -529,7 +529,7 @@ std::vector<DgRkResult> run_dg_rk_benchmark(std::size_t n, std::size_t iters) {
     r_scalar.bandwidth_gb_s = calc_bandwidth(total_bytes, scalar_sec, n);
     results.push_back(r_scalar);
 
-    // 3. vec_math operator overload (out <<= alpha * x + beta * y)
+    // 3. keisan operator overload (out <<= alpha * x + beta * y)
     t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
         x[i % n] = x[i % n] * 1.00001 + 0.01;
@@ -542,7 +542,7 @@ std::vector<DgRkResult> run_dg_rk_benchmark(std::size_t n, std::size_t iters) {
     if (vm_sec < 1e-12) vm_sec = 1e-12;
 
     DgRkResult r_vm;
-    r_vm.implementation = "vec_math Operator `y <<= a*x + b*y`";
+    r_vm.implementation = "keisan Operator `y <<= a*x + b*y`";
     r_vm.size = n;
     r_vm.latency_us = (vm_sec / static_cast<double>(iters)) * 1e6;
     r_vm.speedup = calc_speedup(naive_sec, vm_sec);
@@ -551,7 +551,7 @@ std::vector<DgRkResult> run_dg_rk_benchmark(std::size_t n, std::size_t iters) {
     r_vm.bandwidth_gb_s = calc_bandwidth(total_bytes, vm_sec, n);
     results.push_back(r_vm);
 
-    // 4. vec_math aligned_vector (64-byte cache line aligned)
+    // 4. keisan aligned_vector (64-byte cache line aligned)
     t0 = std::chrono::high_resolution_clock::now();
     for (std::size_t i = 0; i < iters; ++i) {
         ax[i % n] = ax[i % n] * 1.00001 + 0.01;
@@ -564,7 +564,7 @@ std::vector<DgRkResult> run_dg_rk_benchmark(std::size_t n, std::size_t iters) {
     if (align_sec < 1e-12) align_sec = 1e-12;
 
     DgRkResult r_align;
-    r_align.implementation = "vec_math `aligned_vector` (64-byte)";
+    r_align.implementation = "keisan `aligned_vector` (64-byte)";
     r_align.size = n;
     r_align.latency_us = (align_sec / static_cast<double>(iters)) * 1e6;
     r_align.speedup = calc_speedup(naive_sec, align_sec);
@@ -606,12 +606,12 @@ std::vector<StreamBenchResult> run_streaming_benchmark() {
 
     for (const auto& cfg : configs) {
         const std::size_t n = cfg.size;
-        vec_math::aligned_vector<double> src(n, 3.14159);
-        vec_math::aligned_vector<double> dst(n, 0.0);
+        keisan::aligned_vector<double> src(n, 3.14159);
+        keisan::aligned_vector<double> dst(n, 0.0);
 
         // Warmup
         dst <<= src;
-        vec_math::assign_stream(dst, src);
+        keisan::assign_stream(dst, src);
 
         // Bytes transferred:
         // STREAM standard benchmark for copy transfers 16 bytes/elem: 8 bytes read + 8 bytes write
@@ -633,7 +633,7 @@ std::vector<StreamBenchResult> run_streaming_benchmark() {
         t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t i = 0; i < cfg.iters; ++i) {
             src[i % n] = src[i % n] * 1.00001 + 0.01;
-            vec_math::assign_stream(dst, src);
+            keisan::assign_stream(dst, src);
             do_not_optimize(dst.data());
             do_not_optimize(src.data());
         }
@@ -702,7 +702,7 @@ std::vector<ParallelBenchResult> run_parallel_benchmark() {
 
         // Warmup
         out <<= 2.5 * a + 1.5 * b;
-        vec_math::assign_par(out, 2.5 * a + 1.5 * b);
+        keisan::assign_par(out, 2.5 * a + 1.5 * b);
 
         // 1. Single-threaded SIMD
         auto t0 = std::chrono::high_resolution_clock::now();
@@ -720,7 +720,7 @@ std::vector<ParallelBenchResult> run_parallel_benchmark() {
         t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t i = 0; i < cfg.iters; ++i) {
             a[i % n] = a[i % n] * 1.00001 + 0.01;
-            vec_math::assign_par(out, 2.5 * a + 1.5 * b);
+            keisan::assign_par(out, 2.5 * a + 1.5 * b);
             do_not_optimize(out.data());
             do_not_optimize(a.data());
         }
@@ -752,8 +752,8 @@ struct ExtendedResult {
     std::string operation;
     std::string baseline_name;
     double baseline_ms;
-    std::string vec_math_name;
-    double vec_math_ms;
+    std::string keisan_name;
+    double keisan_ms;
     double speedup;
     double gflops;
 };
@@ -764,7 +764,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
     std::vector<double> b(n, 0.9999);
     std::vector<double> out(n, 0.5);
 
-    // 1. Dot Product: std::inner_product vs vec_math (operator|)
+    // 1. Dot Product: std::inner_product vs keisan (operator|)
     {
         auto t0 = std::chrono::high_resolution_clock::now();
         double sum_base = 0.0;
@@ -794,8 +794,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.operation = "Dot Product (a | b)";
         res.baseline_name = "std::inner_product";
         res.baseline_ms = base_sec * 1000.0;
-        res.vec_math_name = "vec_math `a | b` (8x SIMD)";
-        res.vec_math_ms = vm_sec * 1000.0;
+        res.keisan_name = "keisan `a | b` (8x SIMD)";
+        res.keisan_ms = vm_sec * 1000.0;
         res.speedup = calc_speedup(base_sec, vm_sec);
         res.gflops = calc_gflops(2.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
@@ -807,7 +807,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         double sum_vm = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
             a[i % n] = a[i % n] * 1.00001 + 0.01;
-            sum_vm += vec_math::dot(a, b);
+            sum_vm += keisan::dot(a, b);
             do_not_optimize(sum_vm);
             do_not_optimize(a.data());
         }
@@ -819,7 +819,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         double sum_par = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
             a[i % n] = a[i % n] * 1.00001 + 0.01;
-            sum_par += vec_math::dot_par(a, b);
+            sum_par += keisan::dot_par(a, b);
             do_not_optimize(sum_par);
             do_not_optimize(a.data());
         }
@@ -829,16 +829,16 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
 
         ExtendedResult res;
         res.operation = "Parallel Dot Product";
-        res.baseline_name = "vec_math::dot (Single)";
+        res.baseline_name = "keisan::dot (Single)";
         res.baseline_ms = vm_sec * 1000.0;
-        res.vec_math_name = "vec_math::dot_par (OpenMP)";
-        res.vec_math_ms = par_sec * 1000.0;
+        res.keisan_name = "keisan::dot_par (OpenMP)";
+        res.keisan_ms = par_sec * 1000.0;
         res.speedup = calc_speedup(vm_sec, par_sec);
         res.gflops = calc_gflops(2.0 * static_cast<double>(n) * static_cast<double>(iters), par_sec);
         ext_results.push_back(res);
     }
 
-    // 3. Sum Reduction: std::accumulate vs vec_math::sum
+    // 3. Sum Reduction: std::accumulate vs keisan::sum
     {
         auto t0 = std::chrono::high_resolution_clock::now();
         double sum_base = 0.0;
@@ -856,7 +856,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         double sum_vm = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
             a[i % n] = a[i % n] * 1.00001 + 0.01;
-            sum_vm += vec_math::sum(a);
+            sum_vm += keisan::sum(a);
             do_not_optimize(sum_vm);
             do_not_optimize(a.data());
         }
@@ -868,8 +868,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.operation = "Sum Reduction (sum)";
         res.baseline_name = "std::accumulate";
         res.baseline_ms = base_sec * 1000.0;
-        res.vec_math_name = "vec_math::sum (8x tree)";
-        res.vec_math_ms = vm_sec * 1000.0;
+        res.keisan_name = "keisan::sum (8x tree)";
+        res.keisan_ms = vm_sec * 1000.0;
         res.speedup = calc_speedup(base_sec, vm_sec);
         res.gflops = calc_gflops(1.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
@@ -881,7 +881,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         double sum_vm = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
             a[i % n] = a[i % n] * 1.00001 + 0.01;
-            sum_vm += vec_math::sum(a);
+            sum_vm += keisan::sum(a);
             do_not_optimize(sum_vm);
             do_not_optimize(a.data());
         }
@@ -893,7 +893,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         double sum_par = 0.0;
         for (std::size_t i = 0; i < iters; ++i) {
             a[i % n] = a[i % n] * 1.00001 + 0.01;
-            sum_par += vec_math::sum_par(a);
+            sum_par += keisan::sum_par(a);
             do_not_optimize(sum_par);
             do_not_optimize(a.data());
         }
@@ -903,10 +903,10 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
 
         ExtendedResult res;
         res.operation = "Parallel Sum (sum_par)";
-        res.baseline_name = "vec_math::sum (Single)";
+        res.baseline_name = "keisan::sum (Single)";
         res.baseline_ms = vm_sec * 1000.0;
-        res.vec_math_name = "vec_math::sum_par (OpenMP)";
-        res.vec_math_ms = par_sec * 1000.0;
+        res.keisan_name = "keisan::sum_par (OpenMP)";
+        res.keisan_ms = par_sec * 1000.0;
         res.speedup = calc_speedup(vm_sec, par_sec);
         res.gflops = calc_gflops(1.0 * static_cast<double>(n) * static_cast<double>(iters), par_sec);
         ext_results.push_back(res);
@@ -935,7 +935,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         double max_vm = 0.0;
         for (std::size_t it = 0; it < iters; ++it) {
             a[it % n] = a[it % n] * 1.00001 + 0.01;
-            max_vm += vec_math::norm_inf(a);
+            max_vm += keisan::norm_inf(a);
             do_not_optimize(max_vm);
             do_not_optimize(a.data());
         }
@@ -947,8 +947,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.operation = "L_inf Norm (norm_inf)";
         res.baseline_name = "Scalar std::abs + max";
         res.baseline_ms = base_sec * 1000.0;
-        res.vec_math_name = "vec_math::norm_inf";
-        res.vec_math_ms = vm_sec * 1000.0;
+        res.keisan_name = "keisan::norm_inf";
+        res.keisan_ms = vm_sec * 1000.0;
         res.speedup = calc_speedup(base_sec, vm_sec);
         res.gflops = calc_gflops(2.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
@@ -972,7 +972,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         double acc_vm = 0.0;
         for (std::size_t it = 0; it < iters; ++it) {
             a[it % n] = a[it % n] * 1.00001 + 0.01;
-            acc_vm += vec_math::min_val(a);
+            acc_vm += keisan::min_val(a);
             do_not_optimize(acc_vm);
             do_not_optimize(a.data());
         }
@@ -984,8 +984,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.operation = "Min Element (min_val)";
         res.baseline_name = "std::min_element";
         res.baseline_ms = base_sec * 1000.0;
-        res.vec_math_name = "vec_math::min_val";
-        res.vec_math_ms = vm_sec * 1000.0;
+        res.keisan_name = "keisan::min_val";
+        res.keisan_ms = vm_sec * 1000.0;
         res.speedup = calc_speedup(base_sec, vm_sec);
         res.gflops = calc_gflops(1.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
@@ -1009,7 +1009,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t it = 0; it < iters; ++it) {
             a[it % n] = a[it % n] * 1.00001 + 0.01;
-            out <<= vec_math::fma(a, b, 1.5);
+            out <<= keisan::fma(a, b, 1.5);
             do_not_optimize(out.data());
             do_not_optimize(a.data());
         }
@@ -1021,8 +1021,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.operation = "Fused Multiply-Add (fma)";
         res.baseline_name = "Scalar a*b + c";
         res.baseline_ms = base_sec * 1000.0;
-        res.vec_math_name = "vec_math::fma (Ternary)";
-        res.vec_math_ms = vm_sec * 1000.0;
+        res.keisan_name = "keisan::fma (Ternary)";
+        res.keisan_ms = vm_sec * 1000.0;
         res.speedup = calc_speedup(base_sec, vm_sec);
         res.gflops = calc_gflops(2.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
@@ -1046,7 +1046,7 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         t0 = std::chrono::high_resolution_clock::now();
         for (std::size_t it = 0; it < iters; ++it) {
             a[it % n] = a[it % n] * 1.00001 + 0.01;
-            out <<= vec_math::clamp(a, 0.0, 1.0);
+            out <<= keisan::clamp(a, 0.0, 1.0);
             do_not_optimize(out.data());
             do_not_optimize(a.data());
         }
@@ -1058,8 +1058,8 @@ std::vector<ExtendedResult> run_extended_benchmarks(std::size_t n, std::size_t i
         res.operation = "WENO Limiter (clamp)";
         res.baseline_name = "Scalar std::clamp";
         res.baseline_ms = base_sec * 1000.0;
-        res.vec_math_name = "vec_math::clamp (Ternary)";
-        res.vec_math_ms = vm_sec * 1000.0;
+        res.keisan_name = "keisan::clamp (Ternary)";
+        res.keisan_ms = vm_sec * 1000.0;
         res.speedup = calc_speedup(base_sec, vm_sec);
         res.gflops = calc_gflops(2.0 * static_cast<double>(n) * static_cast<double>(iters), vm_sec);
         ext_results.push_back(res);
@@ -1125,14 +1125,14 @@ std::string generate_markdown_report(const std::vector<SizeBenchmarkGroup>& grou
     }
     ss << "]\n";
 
-    // Series for vec_math Expr
+    // Series for keisan Expr
     ss << "    line [";
     for (std::size_t i = 0; i < groups.size(); ++i) {
         ss << std::fixed << std::setprecision(2) << groups[i].results[2].gflops << (i + 1 < groups.size() ? ", " : "");
     }
     ss << "]\n";
     ss << "```\n\n";
-    ss << "> **Chart Legend (Throughput)**: Line 1 = Naive `std::vector` (temporary heap mallocs) | Line 2 = Hand-written Scalar Loop | Line 3 = `vec_math` Expression Templates (zero mallocs)\n\n";
+    ss << "> **Chart Legend (Throughput)**: Line 1 = Naive `std::vector` (temporary heap mallocs) | Line 2 = Hand-written Scalar Loop | Line 3 = `keisan` Expression Templates (zero mallocs)\n\n";
 
     // Chart 2: Speedup comparison
     ss << "```mermaid\n";
@@ -1168,7 +1168,7 @@ std::string generate_markdown_report(const std::vector<SizeBenchmarkGroup>& grou
     }
     ss << "]\n";
     ss << "```\n\n";
-    ss << "> **Chart Legend (Speedup vs Naive)**: Line 1 = Hand-written Scalar Loop | Line 2 = `vec_math` Expression Templates (zero mallocs)\n\n";
+    ss << "> **Chart Legend (Speedup vs Naive)**: Line 1 = Hand-written Scalar Loop | Line 2 = `keisan` Expression Templates (zero mallocs)\n\n";
 
     // 2. Formatted Markdown Tables with Visual ASCII Progress Bars
     ss << "### Core Multi-Scale Benchmark Results (1K to 5M Elements)\n\n";
@@ -1253,12 +1253,12 @@ std::string generate_markdown_report(const std::vector<SizeBenchmarkGroup>& grou
 
     // 6. Reductions & Extended Math Utilities
     ss << "### Reductions & Extended DG Math Kit (1M Elements)\n\n";
-    ss << "| Operation | Baseline | `vec_math` Implementation | Baseline Time | `vec_math` Time | Speedup | Throughput |\n";
+    ss << "| Operation | Baseline | `keisan` Implementation | Baseline Time | `keisan` Time | Speedup | Throughput |\n";
     ss << "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n";
     for (const auto& ext : ext_results) {
-        ss << "| **" << ext.operation << "** | " << ext.baseline_name << " | **" << ext.vec_math_name << "** | "
+        ss << "| **" << ext.operation << "** | " << ext.baseline_name << " | **" << ext.keisan_name << "** | "
            << std::fixed << std::setprecision(2) << ext.baseline_ms << " ms | **"
-           << std::fixed << std::setprecision(2) << ext.vec_math_ms << " ms** | **"
+           << std::fixed << std::setprecision(2) << ext.keisan_ms << " ms** | **"
            << std::fixed << std::setprecision(2) << ext.speedup << "x** | "
            << std::fixed << std::setprecision(2) << ext.gflops << " GFLOPS |\n";
     }
@@ -1268,17 +1268,17 @@ std::string generate_markdown_report(const std::vector<SizeBenchmarkGroup>& grou
     ss << "### `-Ofast` Microarchitectural Optimization Analysis\n\n";
     ss << "Building with `-Ofast` (or MSVC `/fp:fast /O2 /openmp /arch:AVX2`) yields critical performance enhancements on modern x86-64 processors:\n\n";
     ss << "1. **Hardware FMA Fusing**: Allows the compiler to fuse multiplication and addition operations into single-cycle hardware `vfmadd213pd` / `vfmadd231pd` instructions, doubling theoretical peak floating-point throughput.\n";
-    ss << "2. **Tree Reassociation**: Enables out-of-order algebraic reassociation across `vec_math`'s 8-way unrolled reduction trees (`sum`, `dot`), breaking serial accumulator dependency chains and saturating CPU execution ports.\n";
+    ss << "2. **Tree Reassociation**: Enables out-of-order algebraic reassociation across `keisan`'s 8-way unrolled reduction trees (`sum`, `dot`), breaking serial accumulator dependency chains and saturating CPU execution ports.\n";
     ss << "3. **64-Byte Cache Alignment**: `aligned_vector<T>` ensures zero split-cache-line loads and unaligned penalties across AVX2 256-bit registers.\n";
     ss << "4. **Streaming Stores Bypassing RFO**: `assign_stream` utilizes `_mm256_stream_pd` non-temporal stores to eliminate cache write-allocate reads when vectors exceed CPU L3 cache size (16 MB).\n";
     ss << "5. **Selective Domain Parallelism**: Single-threaded default operators eliminate OpenMP thread pool overhead in fine-grained DG element quadrature loops, while `assign_par` accelerates bulk global mesh updates across all CPU cores.\n\n";
 
     // 8. SYCL Compatibility Documentation
     ss << "## SYCL Compatibility\n\n";
-    ss << "`vec_math` is engineered for full compatibility with modern heterogeneous C++ frameworks, including SYCL compilers (such as Intel oneAPI DPC++ and AdaptiveCpp):\n\n";
+    ss << "`keisan` is engineered for full compatibility with modern heterogeneous C++ frameworks, including SYCL compilers (such as Intel oneAPI DPC++ and AdaptiveCpp):\n\n";
     ss << "- **Zero SYCL Headers Included**: The library contains strictly zero `#include <sycl/sycl.hpp>` or proprietary vendor header dependencies. Host code compiles cleanly under standard C++20 with no foreign runtime or SDK overhead.\n";
     ss << "- **TriviallyCopyable Expression Templates**: All expression nodes (`VecRef`, `ScalarVal`, `BinExpr`, `UnaryExpr`, `TernaryExpr`) are standard-layout and satisfy `std::is_trivially_copyable_v<T>`. This allows expressions to be captured by value in SYCL device kernel lambdas (`cgh.parallel_for`) without violating device capture rules.\n";
-    ss << "- **Device-Callable Core Annotations**: All core evaluation operators and expression evaluators are decorated with `VEC_MATH_DEVICE`, `VEC_MATH_HOST_DEVICE`, and `SYCL_EXTERNAL` macros when compiled under SYCL device compilation modes (`__SYCL_DEVICE_ONLY__` or `SYCL_LANGUAGE_VERSION`), enabling direct device execution.\n";
+    ss << "- **Device-Callable Core Annotations**: All core evaluation operators and expression evaluators are decorated with `KEISAN_DEVICE`, `KEISAN_HOST_DEVICE`, and `SYCL_EXTERNAL` macros when compiled under SYCL device compilation modes (`__SYCL_DEVICE_ONLY__` or `SYCL_LANGUAGE_VERSION`), enabling direct device execution.\n";
 
     return ss.str();
 }
@@ -1326,7 +1326,7 @@ void update_readme_file(const std::string& benchmark_md) {
 int main() {
     try {
         std::cout << "======================================================================\n";
-        std::cout << " vec_math High-Performance Zero-Allocation Benchmark Suite\n";
+        std::cout << " keisan High-Performance Zero-Allocation Benchmark Suite\n";
         std::cout << " Hardware: AMD Ryzen 5 5500 (6 Cores / 12 Threads, AVX2, FMA3)\n";
         std::cout << "======================================================================\n\n";
 

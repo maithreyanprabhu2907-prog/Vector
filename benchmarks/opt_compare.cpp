@@ -2,7 +2,7 @@
 #define _ITERATOR_DEBUG_LEVEL 0
 #endif
 
-#include <vec_math/vector_math.hpp>
+#include <keisan/keisan.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -16,8 +16,8 @@
 #include <string>
 #include <vector>
 
-using namespace vec_math;
-using namespace vec_math::ops;
+using namespace keisan;
+using namespace keisan::ops;
 
 // Compiler optimization barrier & memory clobber
 #if !defined(__GNUC__) && !defined(__clang__)

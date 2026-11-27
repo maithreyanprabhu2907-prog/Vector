@@ -67,8 +67,8 @@ jobs:
             -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}" \
             -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
-            -DVEC_MATH_BUILD_TESTS=ON \
-            -DVEC_MATH_BUILD_BENCHMARKS="$BENCH_OPT"
+            -DKEISAN_BUILD_TESTS=ON \
+            -DKEISAN_BUILD_BENCHMARKS="$BENCH_OPT"
 
       - name: Build Test & Benchmark Targets
         run: cmake --build build --config ${{ matrix.build_type }}

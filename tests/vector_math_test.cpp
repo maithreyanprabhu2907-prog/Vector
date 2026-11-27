@@ -5,7 +5,7 @@
 #if defined(_MSC_VER) && defined(_DEBUG)
 #define _ITERATOR_DEBUG_LEVEL 0
 #endif
-#include "vec_math/vector_math.hpp"
+#include "keisan/keisan.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -116,7 +116,7 @@ struct CustomAlloc {
 };
 
 int main() {
-    using namespace vec_math;
+    using namespace keisan;
 
     // ========================================================================
     // SYCL Compatibility & TriviallyCopyable Static Assertions
@@ -130,30 +130,30 @@ int main() {
     std::vector<double> out(4, 0.0);
 
     static_assert(sycl_compatible<decltype(2.0 * a + b)>);
-    static_assert(sycl_compatible<decltype(vec_math::abs(a))>);
-    static_assert(sycl_compatible<decltype(vec_math::fma(a, b, c))>);
-    static_assert(sycl_compatible<decltype(vec_math::min(a, b))>);
-    static_assert(sycl_compatible<decltype(vec_math::max(a, 2.0))>);
-    static_assert(sycl_compatible<decltype(vec_math::clamp(a, 0.0, 1.0))>);
-    static_assert(sycl_compatible<decltype(vec_math::sqrt(a))>);
-    static_assert(sycl_compatible<decltype(vec_math::pow(a, 2.0))>);
-    static_assert(sycl_compatible<decltype(vec_math::exp(a))>);
-    static_assert(sycl_compatible<decltype(vec_math::log(a))>);
-    static_assert(sycl_compatible<decltype(vec_math::sin(a))>);
-    static_assert(sycl_compatible<decltype(vec_math::cos(a))>);
+    static_assert(sycl_compatible<decltype(keisan::abs(a))>);
+    static_assert(sycl_compatible<decltype(keisan::fma(a, b, c))>);
+    static_assert(sycl_compatible<decltype(keisan::min(a, b))>);
+    static_assert(sycl_compatible<decltype(keisan::max(a, 2.0))>);
+    static_assert(sycl_compatible<decltype(keisan::clamp(a, 0.0, 1.0))>);
+    static_assert(sycl_compatible<decltype(keisan::sqrt(a))>);
+    static_assert(sycl_compatible<decltype(keisan::pow(a, 2.0))>);
+    static_assert(sycl_compatible<decltype(keisan::exp(a))>);
+    static_assert(sycl_compatible<decltype(keisan::log(a))>);
+    static_assert(sycl_compatible<decltype(keisan::sin(a))>);
+    static_assert(sycl_compatible<decltype(keisan::cos(a))>);
 
     static_assert(std::is_trivially_copyable_v<decltype(2.0 * a + b)>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::abs(a))>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::fma(a, b, c))>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::min(a, b))>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::max(a, 2.0))>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::clamp(a, 0.0, 1.0))>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::sqrt(a))>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::pow(a, 2.0))>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::exp(a))>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::log(a))>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::sin(a))>);
-    static_assert(std::is_trivially_copyable_v<decltype(vec_math::cos(a))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::abs(a))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::fma(a, b, c))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::min(a, b))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::max(a, 2.0))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::clamp(a, 0.0, 1.0))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::sqrt(a))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::pow(a, 2.0))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::exp(a))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::log(a))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::sin(a))>);
+    static_assert(std::is_trivially_copyable_v<decltype(keisan::cos(a))>);
 
     // Original battle test 1: compound operations
     {
@@ -495,34 +495,34 @@ int main() {
         {
             ZeroMallocGuard guard("limiters_zero_malloc");
             // clamp with scalar bounds
-            res_lim <<= vec_math::clamp(v_lim, -1.0, 5.0);
+            res_lim <<= keisan::clamp(v_lim, -1.0, 5.0);
             assert(approx_eq(res_lim[0], -1.0));
             assert(approx_eq(res_lim[1], 0.5));
             assert(approx_eq(res_lim[2], 3.0));
             assert(approx_eq(res_lim[3], 5.0));
 
             // clamp with vector bounds
-            res_lim <<= vec_math::clamp(v_lim, vlo, vhi);
+            res_lim <<= keisan::clamp(v_lim, vlo, vhi);
             assert(approx_eq(res_lim[0], -1.0));
             assert(approx_eq(res_lim[1], 0.5));
             assert(approx_eq(res_lim[2], 3.0));
             assert(approx_eq(res_lim[3], 5.0));
 
             // min / max expressions
-            res_lim <<= vec_math::min(v_lim, 2.0);
+            res_lim <<= keisan::min(v_lim, 2.0);
             assert(approx_eq(res_lim[0], -2.0));
             assert(approx_eq(res_lim[1], 0.5));
             assert(approx_eq(res_lim[2], 2.0));
             assert(approx_eq(res_lim[3], 2.0));
 
-            res_lim <<= vec_math::max(v_lim, 1.0);
+            res_lim <<= keisan::max(v_lim, 1.0);
             assert(approx_eq(res_lim[0], 1.0));
             assert(approx_eq(res_lim[1], 1.0));
             assert(approx_eq(res_lim[2], 3.0));
             assert(approx_eq(res_lim[3], 10.0));
 
             // binary vector min / max
-            res_lim <<= vec_math::max(v_lim, vlo);
+            res_lim <<= keisan::max(v_lim, vlo);
             assert(approx_eq(res_lim[0], -1.0));
         }
     }
@@ -573,7 +573,7 @@ int main() {
     // ========================================================================
     // Error Handling Tests
     // ========================================================================
-#if !defined(VEC_MATH_NO_CHECKS) && !defined(VEC_MATH_NO_EXCEPTIONS)
+#if !defined(KEISAN_NO_CHECKS) && !defined(KEISAN_NO_EXCEPTIONS)
     bool caught_mismatch = false;
     try {
         std::vector<double> small = {1.0, 2.0};
@@ -788,7 +788,7 @@ int main() {
             std::complex<double>(3.0, 4.0),
             std::complex<double>(1.0, -2.0)
         };
-        static_assert(std::is_same_v<typename vec_math::real_of<std::complex<double>>::type, double>);
+        static_assert(std::is_same_v<typename keisan::real_of<std::complex<double>>::type, double>);
         double c_norm_sq = 0.0;
         double c_norm = 0.0;
         {
@@ -852,11 +852,11 @@ int main() {
         assert(approx_eq(x_tr_inplace[3], 50.0));
     }
 
-    // 12. VEC_MATH_NO_INTRINSICS compilation check
+    // 12. KEISAN_NO_INTRINSICS compilation check
     {
-#if defined(VEC_MATH_NO_INTRINSICS)
-#if defined(VEC_MATH_HAS_AVX2_FMA) || defined(VEC_MATH_HAS_X86_INTRIN)
-        static_assert(false, "VEC_MATH_NO_INTRINSICS violated: intrinsics detected");
+#if defined(KEISAN_NO_INTRINSICS)
+#if defined(KEISAN_HAS_AVX2_FMA) || defined(KEISAN_HAS_X86_INTRIN)
+        static_assert(false, "KEISAN_NO_INTRINSICS violated: intrinsics detected");
 #endif
 #endif
         std::vector<double> v_test = {2.0, 4.0, 6.0, 8.0};

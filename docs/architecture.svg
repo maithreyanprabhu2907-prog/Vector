@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 680" width="1100" height="680" font-family="ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace">
+  <!-- Background -->
+  <rect width="1100" height="680" fill="#f5f5f5" rx="8"/>
+
+  <!-- Header -->
+  <text x="36" y="48" font-size="26" font-weight="bold" fill="#222222">keisan++ ARCHITECTURE</text>
+  <text x="365" y="48" font-size="26" font-weight="bold" fill="#c62828">C++26</text>
+  <text x="560" y="34" font-size="13" fill="#444444">A zero-allocation, header-only C++26</text>
+  <text x="560" y="52" font-size="13" fill="#444444">vector &amp; Discontinuous Galerkin math library</text>
+
+  <!-- Raylib-style corner logo -->
+  <rect x="984" y="16" width="80" height="80" fill="#ffffff" stroke="#111111" stroke-width="5"/>
+  <text x="994" y="84" font-size="15" font-weight="bold" fill="#111111">keisan++</text>
+
+  <!-- Top Layer: User Application -->
+  <rect x="36" y="108" width="1028" height="72" fill="#dcedc8" stroke="#689f38" stroke-width="3" rx="4"/>
+  <text x="550" y="150" text-anchor="middle" font-size="18" fill="#33691e">build your   DG solver | CFD | IMEX | FEM | particle simulation   here!</text>
+
+  <!-- Middle Layer: 4 Color-Coded Modules -->
+  <!-- 1. vcore -->
+  <rect x="36" y="196" width="244" height="256" fill="#e0e0e0" stroke="#616161" stroke-width="3" rx="4"/>
+  <text x="158" y="440" text-anchor="middle" font-size="18" font-weight="bold" fill="#424242">vcore</text>
+  <rect x="48" y="208" width="220" height="30" fill="#f5f5f5" stroke="#757575" stroke-width="1.5" rx="2"/>
+  <text x="158" y="228" text-anchor="middle" font-size="13" fill="#212121">VecRef / ScalarVal</text>
+  <rect x="48" y="244" width="220" height="30" fill="#f5f5f5" stroke="#757575" stroke-width="1.5" rx="2"/>
+  <text x="158" y="264" text-anchor="middle" font-size="13" fill="#212121">Unary / Bin / TernaryExpr</text>
+  <rect x="48" y="280" width="220" height="30" fill="#f5f5f5" stroke="#757575" stroke-width="1.5" rx="2"/>
+  <text x="158" y="300" text-anchor="middle" font-size="13" fill="#212121">assign / eval_into</text>
+  <rect x="48" y="316" width="220" height="30" fill="#f5f5f5" stroke="#757575" stroke-width="1.5" rx="2"/>
+  <text x="158" y="336" text-anchor="middle" font-size="13" fill="#212121">assign_stream (NT)</text>
+  <rect x="48" y="352" width="220" height="30" fill="#f5f5f5" stroke="#757575" stroke-width="1.5" rx="2"/>
+  <text x="158" y="372" text-anchor="middle" font-size="13" fill="#212121">assign_par (OpenMP)</text>
+  <rect x="48" y="388" width="220" height="30" fill="#f5f5f5" stroke="#757575" stroke-width="1.5" rx="2"/>
+  <text x="158" y="408" text-anchor="middle" font-size="13" fill="#212121">fma / clamp / math ops</text>
+
+  <!-- 2. vmem -->
+  <rect x="296" y="196" width="244" height="256" fill="#c8e6c9" stroke="#2e7d32" stroke-width="3" rx="4"/>
+  <text x="418" y="440" text-anchor="middle" font-size="18" font-weight="bold" fill="#1b5e20">vmem</text>
+  <rect x="308" y="208" width="220" height="36" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5" rx="2"/>
+  <text x="418" y="231" text-anchor="middle" font-size="13" fill="#1b5e20">aligned_vector&lt;64&gt;</text>
+  <rect x="308" y="252" width="220" height="36" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5" rx="2"/>
+  <text x="418" y="275" text-anchor="middle" font-size="13" fill="#1b5e20">std::span / std::array</text>
+  <rect x="308" y="296" width="220" height="36" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5" rx="2"/>
+  <text x="418" y="319" text-anchor="middle" font-size="13" fill="#1b5e20">StridedSpan&lt;T&gt;</text>
+  <rect x="308" y="340" width="220" height="36" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5" rx="2"/>
+  <text x="418" y="363" text-anchor="middle" font-size="13" fill="#1b5e20">WorkspaceArena (64B)</text>
+  <rect x="308" y="384" width="220" height="34" fill="#e8f5e9" stroke="#43a047" stroke-width="1.5" rx="2"/>
+  <text x="418" y="406" text-anchor="middle" font-size="13" fill="#1b5e20">KEISAN_STRICT_ZERO_MALLOC</text>
+
+  <!-- 3. vreduce -->
+  <rect x="556" y="196" width="244" height="256" fill="#b2dfdb" stroke="#00695c" stroke-width="3" rx="4"/>
+  <text x="678" y="440" text-anchor="middle" font-size="18" font-weight="bold" fill="#004d40">vreduce</text>
+  <rect x="568" y="208" width="220" height="30" fill="#e0f2f1" stroke="#00897b" stroke-width="1.5" rx="2"/>
+  <text x="678" y="228" text-anchor="middle" font-size="13" fill="#004d40">sum / sum_par</text>
+  <rect x="568" y="244" width="220" height="30" fill="#e0f2f1" stroke="#00897b" stroke-width="1.5" rx="2"/>
+  <text x="678" y="264" text-anchor="middle" font-size="13" fill="#004d40">dot / dot_par</text>
+  <rect x="568" y="280" width="220" height="30" fill="#e0f2f1" stroke="#00897b" stroke-width="1.5" rx="2"/>
+  <text x="678" y="300" text-anchor="middle" font-size="13" fill="#004d40">sum_repro / dot_repro</text>
+  <rect x="568" y="316" width="220" height="30" fill="#e0f2f1" stroke="#00897b" stroke-width="1.5" rx="2"/>
+  <text x="678" y="336" text-anchor="middle" font-size="13" fill="#004d40">norm / norm_sq / l1 / inf</text>
+  <rect x="568" y="352" width="220" height="30" fill="#e0f2f1" stroke="#00897b" stroke-width="1.5" rx="2"/>
+  <text x="678" y="372" text-anchor="middle" font-size="13" fill="#004d40">min_val / max_val</text>
+  <rect x="568" y="388" width="220" height="30" fill="#e0f2f1" stroke="#00897b" stroke-width="1.5" rx="2"/>
+  <text x="678" y="408" text-anchor="middle" font-size="13" fill="#004d40">ReductionPolicy::FAST|REPRO</text>
+
+  <!-- 4. vdg -->
+  <rect x="816" y="196" width="248" height="256" fill="#bbdefb" stroke="#1565c0" stroke-width="3" rx="4"/>
+  <text x="940" y="440" text-anchor="middle" font-size="18" font-weight="bold" fill="#0d47a1">vdg</text>
+  <rect x="828" y="208" width="224" height="30" fill="#e3f2fd" stroke="#1e88e5" stroke-width="1.5" rx="2"/>
+  <text x="940" y="228" text-anchor="middle" font-size="13" fill="#0d47a1">matvec / matvec_fixed&lt;R,C&gt;</text>
+  <rect x="828" y="244" width="224" height="30" fill="#e3f2fd" stroke="#1e88e5" stroke-width="1.5" rx="2"/>
+  <text x="940" y="264" text-anchor="middle" font-size="13" fill="#0d47a1">matvec_transposed[_fixed]</text>
+  <rect x="828" y="280" width="224" height="30" fill="#e3f2fd" stroke="#1e88e5" stroke-width="1.5" rx="2"/>
+  <text x="940" y="300" text-anchor="middle" font-size="13" fill="#0d47a1">contract_axis (X / Y / Z)</text>
+  <rect x="828" y="316" width="224" height="30" fill="#e3f2fd" stroke="#1e88e5" stroke-width="1.5" rx="2"/>
+  <text x="940" y="336" text-anchor="middle" font-size="13" fill="#0d47a1">solve_nxn_batched&lt;N&gt;</text>
+  <rect x="828" y="352" width="224" height="30" fill="#e3f2fd" stroke="#1e88e5" stroke-width="1.5" rx="2"/>
+  <text x="940" y="372" text-anchor="middle" font-size="13" fill="#0d47a1">gather / scatter_add</text>
+  <rect x="828" y="388" width="224" height="30" fill="#e3f2fd" stroke="#1e88e5" stroke-width="1.5" rx="2"/>
+  <text x="940" y="408" text-anchor="middle" font-size="13" fill="#0d47a1">broadcast_multiply / AoS&lt;-&gt;SoA</text>
+
+  <!-- Execution / Portability Layer (rlgl equivalent) -->
+  <rect x="36" y="468" width="1028" height="80" fill="#e1bee7" stroke="#7b1fa2" stroke-width="3" rx="4"/>
+  <text x="550" y="496" text-anchor="middle" font-size="16" font-weight="bold" fill="#4a148c">vsimd  —  Unified Execution &amp; Portability Layer</text>
+  <text x="550" y="524" text-anchor="middle" font-size="13.5" fill="#4a148c">C++26 &lt;simd&gt; (std::simd::vec)   |   if !consteval (constexpr)   |   OpenMP (_par)   |   KEISAN_HOST_DEVICE (SYCL)</text>
+
+  <!-- Hardware / Backend Layer -->
+  <rect x="36" y="564" width="1028" height="84" fill="#b3e5fc" stroke="#0277bd" stroke-width="3" rx="4"/>
+  <text x="550" y="596" text-anchor="middle" font-size="15" font-weight="bold" fill="#01579b">x86-64 (AVX2+FMA / AVX-512)   •   ARM (NEON / SVE)   •   Multi-Core CPU   •   SYCL Device   •   Scalar Fallback</text>
+  <text x="550" y="624" text-anchor="middle" font-size="13" fill="#01579b">Tested with GCC 16 (-std=c++26 -Werror)  |  ASan + UBSan  |  KEISAN_NO_INTRINSICS  |  KEISAN_STRICT_ZERO_MALLOC</text>
+</svg>

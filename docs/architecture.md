@@ -1,188 +1,68 @@
-# Architecture & Design Principles
+# `keisan++` Architectural Design Guide
 
-`vec_math` is engineered to solve fundamental performance bottlenecks in scientific computing, particularly high-order **Discontinuous Galerkin (DG)** finite element methods:
-1. **Elimination of temporary heap allocations** in vector mathematical expressions.
-2. **Microarchitectural hardware saturation** via cache alignment, non-temporal streaming stores, and dual-FMA execution port saturation.
-3. **Coexistence with domain-decomposition concurrency** through a hybrid single-thread SIMD / multi-thread domain model.
+![keisan Architecture](architecture.svg)
 
----
-
-## 1. The Problem with Naive Vector Operators
-
-In standard C++, implementing overloaded operators for `std::vector` naively leads to catastrophic performance degradation:
-
-```cpp
-// Naive operator implementation
-std::vector<double> operator+(const std::vector<double>& a, const std::vector<double>& b) {
-    std::vector<double> res(a.size());
-    for (size_t i = 0; i < a.size(); ++i) res[i] = a[i] + b[i];
-    return res;
-}
-```
-
-Evaluating an expression such as:
-```cpp
-out = 2.5 * a + 1.5 * b - 0.5 * c;
-```
-creates **5 intermediate `std::vector` heap allocations and deallocations** (`malloc` + `free`) per evaluation, along with 5 full memory passes that flood the CPU L1/L2 caches with redundant intermediate buffers.
+This document explains **why** `keisan` is structured the way it is—so you can both use it effectively and apply the same patterns when architecting your own zero-allocation C++26 scientific or SIMD libraries.
 
 ---
 
-## 2. Zero-Allocation Expression Templates
+## 1. The Four-Layer Architecture
 
-`vec_math` utilizes **Expression Templates** to represent mathematical expressions as lightweight, compile-time abstract syntax trees (ASTs) rather than immediately evaluating them.
+Like raylib, `keisan` separates **what the user writes** from **how loops are fused** and **what hardware executes them**:
 
-```
-                  BinExpr<OpSub>
-                  /            \
-          BinExpr<OpAdd>    ScalarVal(0.5) * c
-          /            \
-  ScalarVal(2.5) * a   ScalarVal(1.5) * b
-```
-
-### AST Representation
-- **`VecRef<T>`**: Non-owning lightweight reference wrapping a pointer to an existing vector's underlying contiguous data (`data()`) and its size. Size: 16 bytes (pointer + size).
-- **`ScalarVal<S>`**: Stores a numeric scalar value.
-- **`BinExpr<Op, Lhs, Rhs>`**: Encapsulates a binary operation (`OpAdd`, `OpSub`, `OpMul`, `OpDiv`, `OpMin`, `OpMax`, `OpPow`) and two sub-expressions.
-- **`UnaryExpr<Op, Arg>`**: Encapsulates a unary operation (`OpPos`, `OpNeg`, `OpAbs`, `OpSqrt`, `OpExp`, `OpLog`, `OpSin`, `OpCos`).
-- **`TernaryExpr<Op, A, B, C>`**: Encapsulates a three-operand operation, such as `OpFma` ($a \times b + c$) and `OpClamp`.
-
-### Lazy Element-Wise Access
-Each AST node implements:
-```cpp
-[[nodiscard]] VEC_MATH_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept;
-```
-No computation occurs when the expression is declared. The entire tree is evaluated lazily, element by element, in a single loop pass when assigned to a destination buffer.
+1. **Application Layer**: Your DG solver, RK time-integrator, or CFD kernel.
+2. **Domain Modules (`vcore`, `vmem`, `vreduce`, `vdg`)**: Clean, composable C++26 APIs with zero hidden heap allocations.
+3. **Execution & Portability Layer (`vsimd`)**:
+   - **C++26 `<simd>` (`std::simd::vec`)** provides a single portable SIMD implementation for AVX2+FMA, AVX-512, and ARM NEON/SVE.
+   - **`if !consteval`** keeps `sum`, `dot`, and expression evaluation `constexpr`-capable without duplicating functions.
+   - **`KEISAN_HOST_DEVICE`** (`SYCL_EXTERNAL` when compiled under SYCL) allows expression nodes and scalar kernels to run inside GPU/accelerator kernels without `#include <sycl/sycl.hpp>`.
+   - **Non-temporal stores (`assign_stream`)** retain a small `#ifdef __AVX__` / `__SSE2__` fast path because C++26 `<simd>` does not expose cache-bypassing store hints.
+4. **Hardware Backends**: x86-64, ARM, OpenMP multi-core, SYCL devices, and `KEISAN_NO_INTRINSICS` scalar fallback.
 
 ---
 
-## 3. Assignment Semantics & Evaluation
+## 2. Core Design Patterns (How to Architect Similar Libraries)
 
-`vec_math` provides three distinct evaluation pathways:
+### Pattern A: Trivially-Copyable Expression DAG (`VecRef` + `OperandStorage`)
+**Problem**: Traditional expression templates store `const std::vector<T>&` references inside `BinExpr` nodes. That breaks SYCL/GPU kernel capture (host references aren't device-copyable), prevents `constexpr` evaluation, and risks dangling references.
 
-### A. Pre-Allocated Zero-Malloc Assignment (`<<=`)
-```cpp
-out <<= 2.0 * a + b / 2.0;
-```
-- Validates that `out.capacity() >= src.size()`. If capacity is insufficient, throws `std::length_error` (or aborts under `VEC_MATH_NO_EXCEPTIONS`).
-- Resizes `out` without reallocating.
-- Writes each computed element directly into `out.data()[i]`.
-- **Heap Allocations: 0**.
+**Solution in `keisan`**:
+- `detail::OperandStorage<T>` lowers any contiguous `NumericVector` (`std::vector`, `aligned_vector`, `std::span`, `std::array`) into **`VecRef<Vec>`**—a 16-byte `{const T* ptr_, std::size_t size_}` view.
+- `ScalarVal<S>` wraps scalars by value; `StridedSpan<T>` is already a `{T*, size_, stride_}` view.
+- Every `UnaryExpr`, `BinExpr`, and `TernaryExpr` is **`TriviallyCopyable`** (`sycl_compatible<T>`), so expression trees pass by value into lambdas, OpenMP regions, and SYCL kernels with zero heap traffic.
 
-### B. In-Place Compound Operators (`+=`, `-=`, `*=`, `/=`)
-```cpp
-out += 2.0 * a; // BLAS-1 AXPY with zero allocations
-out *= 0.5;
-```
-- Operates directly on the destination buffer in place.
-- Eliminates any destination memory reallocation.
-- **Heap Allocations: 0**.
+### Pattern B: Explicit Evaluation Sinks & Zero-Malloc Enforcement
+**Problem**: Operator overloading (`a + b * c`) in naive libraries allocates temporary vectors at every `+` or `*`, destroying L1/L2 cache locality.
 
-### C. Rvalue Buffer Recycling
-```cpp
-auto res = 2.0 * std::move(a) + b;
-```
-- Reuses the memory buffer of rvalue `std::vector&&` parameters.
-- If an operand is a temporary or moved vector, `vec_math` performs in-place mutation on that buffer and moves it to the result.
-- **Heap Allocations: 0**.
+**Solution in `keisan`**:
+- Operators only construct lightweight AST types; **no memory is touched until a sink** (`assign`, `eval_into`, `assign_stream`, `assign_par`, `+=`, or a reduction).
+- `WorkspaceArena` pre-allocates a 64-byte-aligned slab once at solver startup and hands out `std::span<T>` slices via bump-pointer arithmetic (`O(1)`, zero `malloc`/`free` inside RK stages).
+- Defining `KEISAN_STRICT_ZERO_MALLOC` turns any accidental `std::vector` resize inside `assign()` into an immediate `std::bad_alloc`.
 
----
+### Pattern C: Dual-Accumulator Unrolling (`acc0`, `acc1`) for FMA Latency
+**Problem**: On modern out-of-order CPUs (Zen 3, Skylake, Neoverse), floating-point `add`/`fma` has a 3–4 cycle latency. A single SIMD accumulator (`acc += load * load`) stalls at 1 operation every 4 cycles—leaving 75% of FMA throughput on the table.
 
-## 4. Discontinuous Galerkin (DG) Solver Microarchitectural Optimizations
+**Solution in `keisan`**:
+- `sum`, `dot`, `matvec`, and `contract_axis` maintain **two or four independent accumulators** (`acc0`, `acc1`) and merge them only after the loop. That breaks the loop-carried dependency chain and saturates dual FMA pipes.
 
-Discontinuous Galerkin (DG) methods for hyperbolic conservation laws (e.g. compressible Navier-Stokes, Euler, Maxwell's equations) execute millions of high-order polynomial evaluations per time step. `vec_math` incorporates four specialized microarchitectural optimizations designed specifically for DG solvers:
+### Pattern D: Aliasing Isolation (`KEISAN_RESTRICT` Behind Runtime Alias Checks)
+**Problem**: C++ compilers must assume `y[i]` might alias `A[...]` or `x[...]`, forcing them to reload `y[i]` every iteration and blocking SIMD vectorization. Putting `__restrict__` blindly on public APIs causes UB when users pass `matvec(A, x, x, ...)`.
 
-```
-+-------------------------------------------------------------------------------+
-|                       DG Solver Hardware Optimizations                        |
-+-------------------------------------------------------------------------------+
-| 1. 64-Byte Cache Alignment  | 2. Non-Temporal Streaming Stores                |
-|    - aligned_vector<T, 64>  |    - assign_stream(dst, expr)                   |
-|    - Zero split-line faults |    - Bypasses RFO bus read penalty              |
-|    - Aligned AVX2/512 loads |    - 2.47x memory bandwidth on out-of-cache data |
-+-----------------------------+-------------------------------------------------+
-| 3. Dual-FMA Pipe Saturation | 4. Hybrid Execution Model                       |
-|    - 8-way unrolled trees   |    - Element kernels: Single-threaded SIMD      |
-|    - Independent accumulators|    - Whole-domain: assign_par / dot_par / sum_par|
-|    - Port 0 & Port 1 active |    - Zero OpenMP thread contention              |
-+-------------------------------------------------------------------------------+
-```
+**Solution in `keisan`**:
+- Public entry points (`matvec`, `matvec_transposed`, `contract_axis`) perform a cheap pointer-overlap check (`ranges_overlap(y, ...)`).
+- When disjoint (the 99.9% case), they dispatch to `detail::*_noalias` helpers whose pointer parameters carry `KEISAN_RESTRICT` (`__restrict__` / `__restrict`).
+- `matvec_fixed<Rows, Cols>` buffers `y` into a small stack array when `y` overlaps `x`, avoiding heap allocation.
 
-### 1. 64-Byte Cache-Line Alignment (`aligned_vector<T>`)
-Modern x86-64 microarchitectures feature 64-byte L1 data cache lines. Standard 256-bit AVX2 registers hold 4 `double` values (32 bytes), while AVX-512 registers hold 8 `double` values (64 bytes).
-- **The Split-Line Hazard**: When an unaligned array is loaded, a single SIMD vector instruction often straddles two separate 64-byte cache lines. The CPU memory execution unit must issue two cache accesses, lock cache lines, and perform dynamic alignment splicing, adding 2–4 cycles of latency per vector load.
-- **The Solution**: `vec_math::aligned_allocator<T, 64>` and `vec_math::aligned_vector<T>` align memory allocations directly to 64-byte boundaries using `_aligned_malloc` on Windows and `posix_memalign` / `std::aligned_alloc` on POSIX systems.
-- **Result**: Compilers generate direct aligned SIMD loads/stores (`vmovapd`, `vmovaps`), completely bypassing compiler alignment peel loops and avoiding split-line cache penalties.
+### Pattern E: Scale-Invariant Singularity Detection in Batched Solvers
+**Problem**: In `solve_nxn_batched<N>`, branching inside the element loop (`if (diag == 0) throw`) completely blocks SIMD vectorization across the batch. Meanwhile, a fixed absolute threshold like `1e-20` misses `float` singularities, while a fixed `1e-7` falsely rejects well-conditioned `1e-8 * I` physics Jacobians.
 
-### 2. Streaming Stores Bypassing RFO Cache Pollution (`assign_stream`)
-Standard CPU write instructions employ a **Read-For-Ownership (RFO)** cache protocol:
-1. When a core writes to a memory location not present in L1/L2/L3 cache, it must first load the entire 64-byte cache line from DRAM into L3/L2/L1 cache.
-2. The core modifies the requested bytes in cache.
-3. The modified cache line is eventually evicted back to DRAM.
+**Solution in `keisan`**:
+- Load $N\times N$ matrices across `W = std::simd::vec<T>::size()` elements in SoA layout.
+- Track `max_abs = max(|A[r][c]|)` in registers during the initial load, then set `sing_tol = max_abs * (float ? 1e-6 : 1e-14)`.
+- Use branchless `std::simd::select` for partial pivoting and `!(abs_diag > sing_tol)` (which also catches `NaN`), accumulating `any_singular` into a mask and throwing **after** the SIMD loop finishes.
 
-For large DG state vectors that exceed the CPU L3 cache (e.g. 1M – 5M elements, representing 8 MB – 40 MB vs the 16 MB L3 cache on AMD Ryzen 5 5500), RFO causes **double memory bus traffic**: 1 byte read + 1 byte written for every byte stored. Furthermore, it completely evicts hot solver state (polynomial quadrature weights, geometric Jacobians) from cache.
+### Pattern F: Bit-Identical Reproducibility (`ReductionPolicy::REPRO`)
+**Problem**: SIMD lanes and OpenMP threads reassociate floating-point additions, causing `sum()` / `dot()` results to drift across CPU widths (AVX2 vs AVX-512) or thread counts.
 
-`assign_stream` solves this by utilizing **non-temporal AVX streaming stores**:
-- Evaluates the expression directly into destination memory using `_mm256_stream_pd` / `_mm256_stream_ps`.
-- Writes bypass L1/L2/L3 cache entirely and accumulate in CPU Write-Combining (WC) store buffers before being written directly to DRAM.
-- Emits `_mm_sfence()` to establish memory ordering and visibility.
-- **Result**: Eliminates the 50% RFO read penalty on large datasets, delivering up to a **2.47x speedup** (42.08 GB/s streaming vs 17.06 GB/s standard assignment on 1M `double` elements).
-
-### 3. Dual-FMA Pipe Interleaving & Instruction-Level Parallelism
-Modern CPU cores (such as AMD Zen 3 / Zen 4 and Intel Golden Cove / Raptor Cove) feature **two 256-bit FMA (Fused Multiply-Add) execution units** capable of retiring two 256-bit FMA instructions per cycle:
-- AMD Zen 3: Port 0 and Port 1 both support 256-bit FMA operations, offering a theoretical throughput of two 4-wide `double` FMAs per cycle (8 DP FLOPs/cycle).
-- **The Dependency Chain Problem**: If a loop accumulates into a single register (`total += a[i] * b[i]`), each FMA instruction must wait for the previous FMA's 4-cycle execution latency to complete before starting, starving the second execution port and capping throughput at ~25% of theoretical peak.
-- **The Solution**: `vec_math` loops are unrolled 8-way and maintain 8 independent accumulator registers:
-  ```cpp
-  ResType acc0{0}, acc1{0}, acc2{0}, acc3{0};
-  ResType acc4{0}, acc5{0}, acc6{0}, acc7{0};
-  for (; i < n8; i += 8) {
-      acc0 += lhs[i + 0] * rhs[i + 0];
-      acc1 += lhs[i + 1] * rhs[i + 1];
-      acc2 += lhs[i + 2] * rhs[i + 2];
-      acc3 += lhs[i + 3] * rhs[i + 3];
-      acc4 += lhs[i + 4] * rhs[i + 4];
-      acc5 += lhs[i + 5] * rhs[i + 5];
-      acc6 += lhs[i + 6] * rhs[i + 6];
-      acc7 += lhs[i + 7] * rhs[i + 7];
-  }
-  ```
-- **Result**: Under `-Ofast` / `/fp:fast`, the compiler pairs independent FMA instructions across Port 0 and Port 1 every cycle, breaking dependency bottlenecks and achieving **43.41 GFLOPS** on a single core.
-
-### 4. Hybrid Single-Thread SIMD / Multi-Thread Domain Execution Model
-In practical DG codes, spatial meshes are partitioned into thousands or millions of elements (e.g. order $P=3$ to $P=7$ with 64 to 512 degrees of freedom per element). The outer solver harness already parallelizes over mesh elements using OpenMP (`#pragma omp parallel for`) or MPI domain decomposition.
-- **The Nested Contention Trap**: If mathematical operators (`+=`, `<<=`, `*`) automatically spawned internal OpenMP threads, thousands of fine-grained thread fork/join barriers would be triggered per element, inducing catastrophic thread synchronization overhead and cache thrashing.
-- **The Solution**:
-  1. **Single-Threaded SIMD by Default**: All core operators (`+=`, `-=`, `*=`, `/=`, `<<=`, `|`, `clamp`, `sqrt`, etc.) are strictly single-threaded SIMD. They vectorize within CPU registers without spawning threads, making them ideal for inner element-quadrature loops.
-  2. **Explicit Multi-Core Domain Acceleration**: For global mesh-wide state updates and whole-domain reductions, explicit OpenMP-guarded functions are provided:
-     - `assign_par(dst, expr)`: Parallel multi-threaded expression assignment.
-     - `dot_par(u, v)`: Parallel multi-threaded inner product reduction.
-     - `sum_par(v)`: Parallel multi-threaded summation reduction.
-- **Result**: Maximum parallelism across all scales: fine-grained element loops run SIMD-vectorized with zero thread overhead, while macroscopic domain updates scale across all 12 hardware threads with up to **6.10x parallel speedup**.
-
----
-
-## 5. SYCL Compiler Compatibility & Heterogeneous Readiness
-
-`vec_math` is designed for seamless use in projects targeting heterogeneous accelerators (GPUs, FPGAs) with SYCL compilers (such as Intel oneAPI DPC++ and AdaptiveCpp) **without including SYCL headers**:
-
-### Zero Header Inclusions
-- The library does not include `<sycl/sycl.hpp>` or any vendor-specific header.
-- Pure standard C++20 host applications compile cleanly without requiring SYCL toolchains or runtime libraries.
-
-### TriviallyCopyable Expression Templates
-- In SYCL, any object captured by value inside a device kernel lambda (`cgh.parallel_for([=](sycl::id<1> idx) { ... })`) must be TriviallyCopyable (`std::is_trivially_copyable_v<T>`).
-- All `vec_math` expression templates (`VecRef`, `ScalarVal`, `BinExpr`, `UnaryExpr`, `TernaryExpr`) are standard layout and TriviallyCopyable.
-- The `sycl_compatible` concept verifies this compile-time property:
-  ```cpp
-  template<typename T>
-  concept sycl_compatible = std::is_trivially_copyable_v<std::remove_cvref_t<T>>;
-  ```
-
-### Predefined Macro Annotations
-- The core math functors and expression node indexing operators are decorated with `VEC_MATH_HD_INLINE` (`VEC_MATH_HOST_DEVICE VEC_MATH_FORCE_INLINE`) and `SYCL_EXTERNAL`.
-- These macros detect SYCL device compilation passes (`__SYCL_DEVICE_ONLY__` or `SYCL_LANGUAGE_VERSION`) and apply the appropriate attributes (`__attribute__((sycl_device))` or `__declspec(sycl_device)`). On pure host compilers, they expand to standard inline qualifiers.
-
-### Zero Dynamic Allocation
-- SYCL device kernels forbid dynamic allocations (`malloc`, `new`).
-- All `vec_math` expression trees reside entirely in CPU/GPU registers and thread stack frames, guaranteeing zero runtime allocations.
+**Solution in `keisan`**:
+- `ReductionPolicy::REPRO` (`sum_repro`, `dot_repro`) executes an iterative **pairwise binary-tree reduction** over a fixed 64-element stack buffer—producing bit-identical IEEE-754 results regardless of SIMD ISA or thread count, at ~15–22 GB/s.

@@ -6,7 +6,7 @@
 #define _ITERATOR_DEBUG_LEVEL 0
 #endif
 
-#include <vec_math/vector_math.hpp>
+#include <keisan/keisan.hpp>
 
 #include <algorithm>
 #include <array>
@@ -113,7 +113,7 @@ bool bitwise_eq(T a, T b) {
 // ============================================================================
 
 constexpr double test_constexpr_ops() {
-    using namespace vec_math;
+    using namespace keisan;
     constexpr std::array<double, 4> a{1.0, 2.0, 3.0, 4.0};
     constexpr std::array<double, 4> b{5.0, 6.0, 7.0, 8.0};
     constexpr std::array<double, 4> c{-1.0, 0.5, -2.0, 3.0};
@@ -139,14 +139,14 @@ constexpr double test_constexpr_ops() {
 }
 
 constexpr int test_constexpr_integral() {
-    using namespace vec_math;
+    using namespace keisan;
     constexpr std::array<int, 5> a{1, 2, 3, 4, 5};
     constexpr std::array<int, 5> b{2, 2, 2, 2, 2};
     return sum(3 * a - b) + dot(a, b);
 }
 
 void test_complex_runtime() {
-    using namespace vec_math;
+    using namespace keisan;
     std::vector<std::complex<double>> zd{{1.0, 2.0}, {3.0, 4.0}};
     std::vector<std::complex<double>> wd{{1.0, 0.0}, {0.0, 1.0}};
     std::vector<std::complex<double>> outd(2);
@@ -173,7 +173,7 @@ void test_complex_runtime() {
 }
 
 void test_concepts_and_constexpr() {
-    using namespace vec_math;
+    using namespace keisan;
 
     // Positive concept checks
     static_assert(Scalar<float>);
@@ -219,7 +219,7 @@ void test_concepts_and_constexpr() {
 
 template <typename T>
 void test_sizes_for_type() {
-    using namespace vec_math;
+    using namespace keisan;
     const std::vector<std::size_t> sizes = {0, 1, 3, 7, 15, 31, 37, 64, 511, 512, 513, 1023};
 
     for (std::size_t n : sizes) {
@@ -287,7 +287,7 @@ void test_sizes_for_type() {
                 TEST_ASSERT(approx_eq(max_val(a), ref_max, 1e-5));
             }
         }
-#if !defined(VEC_MATH_NO_CHECKS) && !defined(VEC_MATH_NO_EXCEPTIONS)
+#if !defined(KEISAN_NO_CHECKS) && !defined(KEISAN_NO_EXCEPTIONS)
         if (n == 0) {
             bool threw_min = false;
             try { (void)min_val(a); } catch (const std::invalid_argument&) { threw_min = true; }
@@ -302,7 +302,7 @@ void test_sizes_for_type() {
 }
 
 void test_integral_types() {
-    using namespace vec_math;
+    using namespace keisan;
     const std::vector<std::size_t> sizes = {0, 1, 7, 15, 37, 64};
     for (std::size_t n : sizes) {
         std::vector<int> a(n), b(n), out(n, 0);
@@ -335,7 +335,7 @@ void test_integral_types() {
 // ============================================================================
 
 void test_strided_span_and_views() {
-    using namespace vec_math;
+    using namespace keisan;
 
     // Empty StridedSpan
     {
@@ -414,7 +414,7 @@ void test_strided_span_and_views() {
 // ============================================================================
 
 void test_dg_kernels_edge_cases() {
-    using namespace vec_math;
+    using namespace keisan;
 
     // matvec_fixed & matvec_transposed_fixed: aliasing
     {
@@ -519,7 +519,7 @@ void test_dg_kernels_edge_cases() {
             }
         }
 
-#if !defined(VEC_MATH_NO_EXCEPTIONS)
+#if !defined(KEISAN_NO_EXCEPTIONS)
         // Singular matrix check (both SIMD body at e=0 and tail at e=E-1)
         for (std::size_t E : {std::size_t{1}, std::size_t{9}}) {
             for (std::size_t bad_e : {std::size_t{0}, E - 1}) {
@@ -559,6 +559,48 @@ void test_dg_kernels_edge_cases() {
     run_solve_nxn.template operator()<5, float>();
     run_solve_nxn.template operator()<6, float>();
 
+    // Scale-invariant singularity check for float:
+    // 1) Small-scale well-conditioned (1e-8 * I) must succeed.
+    // 2) O(1) numerically singular (pivot 1e-9 after elimination) must throw.
+    {
+        constexpr std::size_t E = 9; // exercises both SIMD body and scalar tail
+        std::vector<float> A(4 * E, 0.0f), b(2 * E, 0.0f), x(2 * E, 0.0f);
+        std::vector<const float*> Ap = {A.data(), A.data() + E, A.data() + 2 * E, A.data() + 3 * E};
+        std::vector<const float*> bp = {b.data(), b.data() + E};
+        std::vector<float*> xp = {x.data(), x.data() + E};
+        for (std::size_t e = 0; e < E; ++e) {
+            A[0 * E + e] = 1e-8f;
+            A[3 * E + e] = 1e-8f;
+            b[0 * E + e] = 2e-8f;
+            b[1 * E + e] = 3e-8f;
+        }
+        solve_nxn_batched<2>(Ap.data(), bp.data(), xp.data(), E);
+        for (std::size_t e = 0; e < E; ++e) {
+            TEST_ASSERT(approx_eq(x[0 * E + e], 2.0f, 1e-5f));
+            TEST_ASSERT(approx_eq(x[1 * E + e], 3.0f, 1e-5f));
+        }
+
+#if !defined(KEISAN_NO_EXCEPTIONS)
+        for (std::size_t bad_e : {std::size_t{0}, E - 1}) {
+            std::fill(A.begin(), A.end(), 0.0f);
+            std::fill(b.begin(), b.end(), 1.0f);
+            for (std::size_t e = 0; e < E; ++e) {
+                A[0 * E + e] = 1.0f;
+                A[1 * E + e] = 1.0f;
+                A[2 * E + e] = 1.0f;
+                A[3 * E + e] = (e == bad_e) ? (1.0f + 2e-7f) : 2.0f;
+            }
+            bool threw = false;
+            try {
+                solve_nxn_batched<2>(Ap.data(), bp.data(), xp.data(), E);
+            } catch (const std::runtime_error&) {
+                threw = true;
+            }
+            TEST_ASSERT(threw);
+        }
+#endif
+    }
+
     // Latent bug regression checks: matvec_fixed<0,0> and sum(StridedSpan<const T>)
     {
         double dummy = 42.0;
@@ -597,7 +639,7 @@ void test_dg_kernels_edge_cases() {
 // ============================================================================
 
 void test_nan_inf_and_errors() {
-    using namespace vec_math;
+    using namespace keisan;
 
     const double qnan = std::numeric_limits<double>::quiet_NaN();
     const double inf = std::numeric_limits<double>::infinity();
@@ -617,7 +659,7 @@ void test_nan_inf_and_errors() {
     TEST_ASSERT(std::isinf(norm_inf(v_inf)));
     TEST_ASSERT(std::isinf(norm_l1(v_inf)));
 
-#if !defined(VEC_MATH_NO_CHECKS) && !defined(VEC_MATH_NO_EXCEPTIONS)
+#if !defined(KEISAN_NO_CHECKS) && !defined(KEISAN_NO_EXCEPTIONS)
     // Size mismatch exceptions
     std::vector<double> a(4, 1.0), b(5, 1.0);
     auto expect_throw = [](auto&& fn) {
@@ -644,7 +686,7 @@ void test_nan_inf_and_errors() {
 // ============================================================================
 
 void test_openmp_determinism() {
-    using namespace vec_math;
+    using namespace keisan;
 
     std::mt19937_64 rng(42);
     std::uniform_real_distribution<double> dist(-100.0, 100.0);
@@ -693,7 +735,7 @@ int main() {
 #if defined(_OPENMP)
     // Warm up OpenMP runtime thread pool before ZeroMallocGuard checks.
     {
-        using namespace vec_math;
+        using namespace keisan;
         std::vector<double> w_in(64, 1.0), w_out(64, 0.0);
         assign_par(w_out, 2.0 * w_in);
     }

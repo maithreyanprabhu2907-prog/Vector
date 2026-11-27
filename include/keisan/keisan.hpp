@@ -1,19 +1,20 @@
 #pragma once
 
 /*
- * Author: Maithreyan(maithreyanprabu2907-prog)
- * Extended & Optimized for Zero-Allocation Vector Math & SYCL Device Compatibility
+ * TL;DR (keisan++):
+ *   Header-only, zero-allocation C++26 vector and Discontinuous Galerkin (DG) math library
+ *   powered by portable std::simd, OpenMP, and SYCL-compatible expression templates.
  *
- * Purpose:
- *   Provide a modern, expressive, intensely optimized vector math library for std::vector.
- *   Operator overloading keeps mathematical expressions short, readable, and fully fused.
+ * Author: Maithreyan (maithreyanprabu2907-prog)
  *
- * Goals:
- *      - Modern C++26 style, zero-allocation throughout all operations.
- *      - Portable C++26 std::simd vectorized kernels (AVX2, AVX-512, ARM NEON/SVE).
- *      - TriviallyCopyable expression templates for seamless SYCL device kernel capture.
- *      - SYCL device annotations without requiring SYCL header dependencies.
- *      - Extended math utilities: dot product, sum, norm, norm_sq, fma, abs.
+ * Architecture & Modules:
+ *   - vcore   : TriviallyCopyable expression AST, fused assign / assign_stream / assign_par, fma, clamp.
+ *   - vmem    : 64B-aligned aligned_vector, StridedSpan, WorkspaceArena, KEISAN_STRICT_ZERO_MALLOC.
+ *   - vreduce : Portable std::simd sum/dot/norms (FAST) & bit-identical pairwise tree reductions (REPRO).
+ *   - vdg     : matvec[_fixed], 3D sum-factorization contract_axis, std::simd solve_nxn_batched<N>,
+ *               gather / scatter_add, broadcast_multiply, and AoS <-> SoA transpositions.
+ *   - vsimd   : C++26 <simd> (AVX2+FMA, AVX-512, ARM NEON/SVE), constexpr (if !consteval),
+ *               and headerless SYCL device compatibility (KEISAN_HOST_DEVICE).
  */
 
 #include <array>
@@ -29,7 +30,7 @@
 #if !defined(__SYCL_DEVICE_ONLY__) && __has_include(<simd>)
 #include <simd>
 #if defined(__glibcxx_simd) || defined(__cpp_lib_simd)
-#define VEC_MATH_HAS_STD_SIMD 1
+#define KEISAN_HAS_STD_SIMD 1
 #endif
 #endif
 #include <span>
@@ -42,9 +43,9 @@
 #include <malloc.h>
 #endif
 
-#if !defined(VEC_MATH_NO_INTRINSICS) && (defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86))
+#if !defined(KEISAN_NO_INTRINSICS) && (defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86))
 #include <immintrin.h>
-#define VEC_MATH_HAS_X86_INTRIN 1
+#define KEISAN_HAS_X86_INTRIN 1
 #endif
 
 #if defined(_OPENMP)
@@ -67,19 +68,19 @@
 #endif
 #endif
 
-#ifndef VEC_MATH_DEVICE
+#ifndef KEISAN_DEVICE
 #if defined(__SYCL_DEVICE_ONLY__)
-#define VEC_MATH_DEVICE SYCL_EXTERNAL
+#define KEISAN_DEVICE SYCL_EXTERNAL
 #else
-#define VEC_MATH_DEVICE
+#define KEISAN_DEVICE
 #endif
 #endif
 
-#ifndef VEC_MATH_HOST_DEVICE
+#ifndef KEISAN_HOST_DEVICE
 #if defined(__SYCL_DEVICE_ONLY__) || defined(SYCL_LANGUAGE_VERSION)
-#define VEC_MATH_HOST_DEVICE SYCL_EXTERNAL
+#define KEISAN_HOST_DEVICE SYCL_EXTERNAL
 #else
-#define VEC_MATH_HOST_DEVICE
+#define KEISAN_HOST_DEVICE
 #endif
 #endif
 
@@ -88,25 +89,25 @@
 // ============================================================================
 
 #if defined(_MSC_VER)
-#define VEC_MATH_FORCE_INLINE __forceinline
-#define VEC_MATH_NOINLINE __declspec(noinline)
+#define KEISAN_FORCE_INLINE __forceinline
+#define KEISAN_NOINLINE __declspec(noinline)
 #elif defined(__GNUC__) || defined(__clang__)
-#define VEC_MATH_FORCE_INLINE inline __attribute__((always_inline))
-#define VEC_MATH_NOINLINE __attribute__((noinline))
+#define KEISAN_FORCE_INLINE inline __attribute__((always_inline))
+#define KEISAN_NOINLINE __attribute__((noinline))
 #else
-#define VEC_MATH_FORCE_INLINE inline
-#define VEC_MATH_NOINLINE
+#define KEISAN_FORCE_INLINE inline
+#define KEISAN_NOINLINE
 #endif
 
-#define VEC_MATH_HD_INLINE VEC_MATH_HOST_DEVICE VEC_MATH_FORCE_INLINE
-#define VEC_MATH_D_INLINE VEC_MATH_DEVICE VEC_MATH_FORCE_INLINE
+#define KEISAN_HD_INLINE KEISAN_HOST_DEVICE KEISAN_FORCE_INLINE
+#define KEISAN_D_INLINE KEISAN_DEVICE KEISAN_FORCE_INLINE
 
 #if defined(__GNUC__) || defined(__clang__)
-#define VEC_MATH_RESTRICT __restrict__
+#define KEISAN_RESTRICT __restrict__
 #elif defined(_MSC_VER)
-#define VEC_MATH_RESTRICT __restrict
+#define KEISAN_RESTRICT __restrict
 #else
-#define VEC_MATH_RESTRICT
+#define KEISAN_RESTRICT
 #endif
 
 #if defined(__clang__)
@@ -115,46 +116,46 @@
 #endif
 
 #if defined(_MSC_VER) && !defined(__clang__)
-#define VEC_MATH_PRAGMA_SIMD __pragma(loop(ivdep))
+#define KEISAN_PRAGMA_SIMD __pragma(loop(ivdep))
 #elif defined(__clang__)
-#define VEC_MATH_PRAGMA_SIMD _Pragma("clang loop vectorize(assume_safety)")
+#define KEISAN_PRAGMA_SIMD _Pragma("clang loop vectorize(assume_safety)")
 #elif defined(__GNUC__)
-#define VEC_MATH_PRAGMA_SIMD _Pragma("GCC ivdep")
+#define KEISAN_PRAGMA_SIMD _Pragma("GCC ivdep")
 #elif defined(_OPENMP)
-#define VEC_MATH_PRAGMA_SIMD _Pragma("omp simd")
+#define KEISAN_PRAGMA_SIMD _Pragma("omp simd")
 #else
-#define VEC_MATH_PRAGMA_SIMD
+#define KEISAN_PRAGMA_SIMD
 #endif
 
 #if defined(__SYCL_DEVICE_ONLY__)
 #include <cassert>
-#define VEC_MATH_THROW_OR_ABORT(exc_type, msg) ((void)0)
-#define VEC_MATH_THROW_BAD_ALLOC(msg) ((void)0)
-#define VEC_MATH_DEVICE_ASSERT(cond, msg) assert((cond) && (msg))
-#elif defined(VEC_MATH_NO_EXCEPTIONS)
+#define KEISAN_THROW_OR_ABORT(exc_type, msg) ((void)0)
+#define KEISAN_THROW_BAD_ALLOC(msg) ((void)0)
+#define KEISAN_DEVICE_ASSERT(cond, msg) assert((cond) && (msg))
+#elif defined(KEISAN_NO_EXCEPTIONS)
 #include <cassert>
 #include <cstdlib>
-#define VEC_MATH_THROW_OR_ABORT(exc_type, msg) do { assert(false && (msg)); std::abort(); } while (false)
-#define VEC_MATH_THROW_BAD_ALLOC(msg) do { assert(false && (msg)); std::abort(); } while (false)
-#define VEC_MATH_DEVICE_ASSERT(cond, msg) do { if (!(cond)) { assert(false && (msg)); std::abort(); } } while (false)
+#define KEISAN_THROW_OR_ABORT(exc_type, msg) do { assert(false && (msg)); std::abort(); } while (false)
+#define KEISAN_THROW_BAD_ALLOC(msg) do { assert(false && (msg)); std::abort(); } while (false)
+#define KEISAN_DEVICE_ASSERT(cond, msg) do { if (!(cond)) { assert(false && (msg)); std::abort(); } } while (false)
 #else
-#define VEC_MATH_THROW_OR_ABORT(exc_type, msg) throw exc_type(msg)
-#define VEC_MATH_THROW_BAD_ALLOC(msg) throw std::bad_alloc()
-#define VEC_MATH_DEVICE_ASSERT(cond, msg) do { if (!(cond)) { throw std::invalid_argument(msg); } } while (false)
+#define KEISAN_THROW_OR_ABORT(exc_type, msg) throw exc_type(msg)
+#define KEISAN_THROW_BAD_ALLOC(msg) throw std::bad_alloc()
+#define KEISAN_DEVICE_ASSERT(cond, msg) do { if (!(cond)) { throw std::invalid_argument(msg); } } while (false)
 #endif
 
-#if defined(VEC_MATH_NO_CHECKS)
-#define VEC_MATH_CHECK_SIZE_EQ(sz1, sz2, msg) ((void)0)
+#if defined(KEISAN_NO_CHECKS)
+#define KEISAN_CHECK_SIZE_EQ(sz1, sz2, msg) ((void)0)
 #else
-#define VEC_MATH_CHECK_SIZE_EQ(sz1, sz2, msg) \
+#define KEISAN_CHECK_SIZE_EQ(sz1, sz2, msg) \
     do { \
         if ((sz1) != (sz2)) [[unlikely]] { \
-            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, msg); \
+            KEISAN_THROW_OR_ABORT(std::invalid_argument, msg); \
         } \
     } while (false)
 #endif
 
-namespace vec_math {
+namespace keisan {
 
     template<typename T>
     class StridedSpan;
@@ -222,7 +223,7 @@ namespace vec_math {
         using real_of_t = typename real_of<T>::type;
 
         template<typename T>
-        VEC_MATH_HD_INLINE constexpr auto mag2(const T& v) noexcept {
+        KEISAN_HD_INLINE constexpr auto mag2(const T& v) noexcept {
             if constexpr (is_complex_v<T>) {
                 const auto re = v.real();
                 const auto im = v.imag();
@@ -233,7 +234,7 @@ namespace vec_math {
         }
 
         template<typename T>
-        VEC_MATH_HD_INLINE constexpr auto conj_helper(const T& v) {
+        KEISAN_HD_INLINE constexpr auto conj_helper(const T& v) {
             if constexpr (is_complex_v<T>) {
                 return std::conj(v);
             } else {
@@ -357,37 +358,37 @@ namespace vec_math {
         // Arithmetic Functors
         struct OpAdd {
             template<typename L, typename R>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept { return l + r; }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept { return l + r; }
         };
 
         struct OpSub {
             template<typename L, typename R>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept { return l - r; }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept { return l - r; }
         };
 
         struct OpMul {
             template<typename L, typename R>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept { return l * r; }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept { return l * r; }
         };
 
         struct OpDiv {
             template<typename L, typename R>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept { return l / r; }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept { return l / r; }
         };
 
         struct OpNeg {
             template<typename T>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const T &x) const noexcept { return -x; }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const T &x) const noexcept { return -x; }
         };
 
         struct OpPos {
             template<typename T>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const T &x) const noexcept { return +x; }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const T &x) const noexcept { return +x; }
         };
 
         struct OpAbs {
             template<typename T>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const T &x) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const T &x) const noexcept {
                 if constexpr (std::is_signed_v<T> || std::is_floating_point_v<T>) {
                     return x < static_cast<T>(0) ? -x : x;
                 } else {
@@ -398,35 +399,35 @@ namespace vec_math {
 
         struct OpFma {
             template<typename A, typename B, typename C>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const A &a, const B &b, const C &c) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const A &a, const B &b, const C &c) const noexcept {
                 return a * b + c;
             }
         };
 
         struct OpMin {
             template<typename L, typename R>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept {
                 return l < r ? l : r;
             }
         };
 
         struct OpMax {
             template<typename L, typename R>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const L &l, const R &r) const noexcept {
                 return l > r ? l : r;
             }
         };
 
         struct OpClamp {
             template<typename V, typename Lo, typename Hi>
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr auto operator()(const V &v, const Lo &lo, const Hi &hi) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE constexpr auto operator()(const V &v, const Lo &lo, const Hi &hi) const noexcept {
                 return v < lo ? lo : (v > hi ? hi : v);
             }
         };
 
         struct OpSqrt {
             template<typename T>
-            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const T &x) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE auto operator()(const T &x) const noexcept {
                 using std::sqrt;
                 return sqrt(x);
             }
@@ -434,7 +435,7 @@ namespace vec_math {
 
         struct OpExp {
             template<typename T>
-            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const T &x) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE auto operator()(const T &x) const noexcept {
                 using std::exp;
                 return exp(x);
             }
@@ -442,7 +443,7 @@ namespace vec_math {
 
         struct OpLog {
             template<typename T>
-            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const T &x) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE auto operator()(const T &x) const noexcept {
                 using std::log;
                 return log(x);
             }
@@ -450,7 +451,7 @@ namespace vec_math {
 
         struct OpSin {
             template<typename T>
-            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const T &x) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE auto operator()(const T &x) const noexcept {
                 using std::sin;
                 return sin(x);
             }
@@ -458,7 +459,7 @@ namespace vec_math {
 
         struct OpCos {
             template<typename T>
-            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const T &x) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE auto operator()(const T &x) const noexcept {
                 using std::cos;
                 return cos(x);
             }
@@ -466,7 +467,7 @@ namespace vec_math {
 
         struct OpPow {
             template<typename B, typename E>
-            [[nodiscard]] VEC_MATH_HD_INLINE auto operator()(const B &base, const E &exp) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE auto operator()(const B &base, const E &exp) const noexcept {
                 using std::pow;
                 return pow(base, exp);
             }
@@ -489,12 +490,12 @@ namespace vec_math {
             explicit constexpr VecRef(const Vec &v) noexcept
                 : ptr_(v.data()), size_(v.size()) {}
 
-            VEC_MATH_HD_INLINE constexpr VecRef(const value_type* ptr, std::size_t count) noexcept
+            KEISAN_HD_INLINE constexpr VecRef(const value_type* ptr, std::size_t count) noexcept
                 : ptr_(ptr), size_(count) {}
 
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr std::size_t size() const noexcept { return size_; }
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept { return ptr_[i]; }
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr const value_type* data() const noexcept { return ptr_; }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr std::size_t size() const noexcept { return size_; }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept { return ptr_[i]; }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr const value_type* data() const noexcept { return ptr_; }
         };
 
         template<Scalar S>
@@ -511,7 +512,7 @@ namespace vec_math {
 
             explicit constexpr ScalarVal(S s) noexcept : val(s) {}
 
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr S operator[](std::size_t) const noexcept { return val; }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr S operator[](std::size_t) const noexcept { return val; }
         };
 
         template<typename T>
@@ -564,8 +565,8 @@ namespace vec_math {
             constexpr BinExpr(Op o, const Lhs& l, const Rhs& r) : op(o), lhs(l), rhs(r) {
                 if constexpr (!is_scalar_val_v<Lhs> && !is_scalar_val_v<Rhs>) {
                     if (lhs.size() != rhs.size()) [[unlikely]] {
-                        VEC_MATH_THROW_OR_ABORT(std::invalid_argument,
-                                                "vec_math: vector size mismatch in binary expression");
+                        KEISAN_THROW_OR_ABORT(std::invalid_argument,
+                                                "keisan: vector size mismatch in binary expression");
                     }
                 }
             }
@@ -576,11 +577,11 @@ namespace vec_math {
             constexpr BinExpr& operator=(BinExpr&&) noexcept = default;
             ~BinExpr() = default;
 
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr std::size_t size() const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE constexpr std::size_t size() const noexcept {
                 if constexpr (is_scalar_val_v<Lhs>) { return rhs.size(); } else { return lhs.size(); }
             }
 
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept {
                 return static_cast<value_type>(op(lhs[i], rhs[i]));
             }
 
@@ -588,9 +589,9 @@ namespace vec_math {
             [[nodiscard]] std::vector<value_type, Alloc> eval(const Alloc &alloc = Alloc{}) const {
                 std::vector<value_type, Alloc> result(size(), alloc);
                 const std::size_t n = result.size();
-                value_type * VEC_MATH_RESTRICT dst = result.data();
+                value_type * KEISAN_RESTRICT dst = result.data();
 
-                VEC_MATH_PRAGMA_SIMD
+                KEISAN_PRAGMA_SIMD
                 for (std::size_t i = 0; i < n; ++i) { dst[i] = (*this)[i]; }
                 return result;
             }
@@ -614,9 +615,9 @@ namespace vec_math {
             constexpr UnaryExpr& operator=(UnaryExpr&&) noexcept = default;
             ~UnaryExpr() = default;
 
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr std::size_t size() const noexcept { return operand.size(); }
+            [[nodiscard]] KEISAN_HD_INLINE constexpr std::size_t size() const noexcept { return operand.size(); }
 
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept {
                 return static_cast<value_type>(op(operand[i]));
             }
 
@@ -624,9 +625,9 @@ namespace vec_math {
             [[nodiscard]] std::vector<value_type, Alloc> eval(const Alloc &alloc = Alloc{}) const {
                 std::vector<value_type, Alloc> result(size(), alloc);
                 const std::size_t n = result.size();
-                value_type * VEC_MATH_RESTRICT dst = result.data();
+                value_type * KEISAN_RESTRICT dst = result.data();
 
-                VEC_MATH_PRAGMA_SIMD
+                KEISAN_PRAGMA_SIMD
                 for (std::size_t i = 0; i < n; ++i) { dst[i] = (*this)[i]; }
                 return result;
             }
@@ -659,8 +660,8 @@ namespace vec_math {
                             expected_size = operand.size();
                             has_size = true;
                         } else if (operand.size() != expected_size) {
-                            VEC_MATH_THROW_OR_ABORT(std::invalid_argument,
-                                                    "vec_math: vector size mismatch in ternary expression");
+                            KEISAN_THROW_OR_ABORT(std::invalid_argument,
+                                                    "keisan: vector size mismatch in ternary expression");
                         }
                     }
                 };
@@ -675,13 +676,13 @@ namespace vec_math {
             constexpr TernaryExpr& operator=(TernaryExpr&&) noexcept = default;
             ~TernaryExpr() = default;
 
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr std::size_t size() const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE constexpr std::size_t size() const noexcept {
                 if constexpr (!is_scalar_val_v<A>) { return a.size(); }
                 else if constexpr (!is_scalar_val_v<B>) { return b.size(); }
                 else { return c.size(); }
             }
 
-            [[nodiscard]] VEC_MATH_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept {
+            [[nodiscard]] KEISAN_HD_INLINE constexpr value_type operator[](std::size_t i) const noexcept {
                 return static_cast<value_type>(op(a[i], b[i], c[i]));
             }
 
@@ -689,9 +690,9 @@ namespace vec_math {
             [[nodiscard]] std::vector<value_type, Alloc> eval(const Alloc &alloc = Alloc{}) const {
                 std::vector<value_type, Alloc> result(size(), alloc);
                 const std::size_t n = result.size();
-                value_type * VEC_MATH_RESTRICT dst = result.data();
+                value_type * KEISAN_RESTRICT dst = result.data();
 
-                VEC_MATH_PRAGMA_SIMD
+                KEISAN_PRAGMA_SIMD
                 for (std::size_t i = 0; i < n; ++i) { dst[i] = (*this)[i]; }
                 return result;
             }
@@ -719,12 +720,12 @@ namespace vec_math {
         }
 
         template<typename S>
-        VEC_MATH_HD_INLINE constexpr bool has_partial_overlap(const ScalarVal<S>&, const char*, const char*) noexcept {
+        KEISAN_HD_INLINE constexpr bool has_partial_overlap(const ScalarVal<S>&, const char*, const char*) noexcept {
             return false;
         }
 
         template<typename Vec>
-        VEC_MATH_HD_INLINE bool has_partial_overlap(const VecRef<Vec>& ref, const char* dst_begin, const char* dst_end) noexcept {
+        KEISAN_HD_INLINE bool has_partial_overlap(const VecRef<Vec>& ref, const char* dst_begin, const char* dst_end) noexcept {
             if (!ref.data()) return false;
             const char* p_begin = reinterpret_cast<const char*>(ref.data());
             const char* p_end = p_begin + ref.size() * sizeof(typename VecRef<Vec>::value_type);
@@ -732,7 +733,7 @@ namespace vec_math {
         }
 
         template<typename T>
-        VEC_MATH_HD_INLINE bool has_partial_overlap(const StridedSpan<T>& ref, const char* dst_begin, const char* dst_end) noexcept {
+        KEISAN_HD_INLINE bool has_partial_overlap(const StridedSpan<T>& ref, const char* dst_begin, const char* dst_end) noexcept {
             if (!ref.data() || ref.size() == 0) return false;
             const char* p_begin = reinterpret_cast<const char*>(ref.data());
             const char* p_end = p_begin + ref.size() * ref.stride() * sizeof(T);
@@ -740,17 +741,17 @@ namespace vec_math {
         }
 
         template<typename Op, typename L, typename R>
-        VEC_MATH_HD_INLINE bool has_partial_overlap(const BinExpr<Op, L, R>& expr, const char* dst_begin, const char* dst_end) noexcept {
+        KEISAN_HD_INLINE bool has_partial_overlap(const BinExpr<Op, L, R>& expr, const char* dst_begin, const char* dst_end) noexcept {
             return has_partial_overlap(expr.lhs, dst_begin, dst_end) || has_partial_overlap(expr.rhs, dst_begin, dst_end);
         }
 
         template<typename Op, typename Arg>
-        VEC_MATH_HD_INLINE bool has_partial_overlap(const UnaryExpr<Op, Arg>& expr, const char* dst_begin, const char* dst_end) noexcept {
+        KEISAN_HD_INLINE bool has_partial_overlap(const UnaryExpr<Op, Arg>& expr, const char* dst_begin, const char* dst_end) noexcept {
             return has_partial_overlap(expr.operand, dst_begin, dst_end);
         }
 
         template<typename Op, typename A, typename B, typename C>
-        VEC_MATH_HD_INLINE bool has_partial_overlap(const TernaryExpr<Op, A, B, C>& expr, const char* dst_begin, const char* dst_end) noexcept {
+        KEISAN_HD_INLINE bool has_partial_overlap(const TernaryExpr<Op, A, B, C>& expr, const char* dst_begin, const char* dst_end) noexcept {
             return has_partial_overlap(expr.a, dst_begin, dst_end) ||
                    has_partial_overlap(expr.b, dst_begin, dst_end) ||
                    has_partial_overlap(expr.c, dst_begin, dst_end);
@@ -758,9 +759,9 @@ namespace vec_math {
     }
 
     template<typename T, VectorOperand Src>
-    VEC_MATH_HD_INLINE void eval_into(T* dst, std::size_t n, const Src& src) {
+    KEISAN_HD_INLINE void eval_into(T* dst, std::size_t n, const Src& src) {
         if (n != src.size()) [[unlikely]] {
-            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: destination size mismatch in eval_into");
+            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: destination size mismatch in eval_into");
         }
         if (n == 0) return;
         auto storage = detail::make_operand(src);
@@ -778,9 +779,9 @@ namespace vec_math {
                 }
                 return;
             }
-#if defined(VEC_MATH_STRICT_ZERO_MALLOC)
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
             else {
-                VEC_MATH_THROW_BAD_ALLOC("vec_math: eval_into partial overlap exceeds stack buffer capacity under VEC_MATH_STRICT_ZERO_MALLOC");
+                KEISAN_THROW_BAD_ALLOC("keisan: eval_into partial overlap exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
             }
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
@@ -796,7 +797,7 @@ namespace vec_math {
 #endif
         }
 
-        VEC_MATH_PRAGMA_SIMD
+        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < n; ++i) {
             dst[i] = static_cast<T>(storage[i]);
         }
@@ -808,86 +809,86 @@ namespace vec_math {
         // ============================================================================
 
         template<typename T, typename Alloc, Scalar S, typename CompoundFn>
-        VEC_MATH_FORCE_INLINE void apply_scalar_inplace(std::vector<T, Alloc> &dst, const S &scalar, CompoundFn fn) noexcept {
+        KEISAN_FORCE_INLINE void apply_scalar_inplace(std::vector<T, Alloc> &dst, const S &scalar, CompoundFn fn) noexcept {
             const std::size_t n = dst.size();
             T * p = dst.data();
             const T s = static_cast<T>(scalar);
 
-            VEC_MATH_PRAGMA_SIMD
+            KEISAN_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) { fn(p[i], s); }
         }
 
         template<typename T, typename Alloc, VectorOperand Src, typename CompoundFn>
-        VEC_MATH_FORCE_INLINE void apply_vec_inplace(std::vector<T, Alloc> &dst, const Src &src, CompoundFn fn) {
-            VEC_MATH_CHECK_SIZE_EQ(dst.size(), src.size(), "vec_math: vector size mismatch in compound assignment");
+        KEISAN_FORCE_INLINE void apply_vec_inplace(std::vector<T, Alloc> &dst, const Src &src, CompoundFn fn) {
+            KEISAN_CHECK_SIZE_EQ(dst.size(), src.size(), "keisan: vector size mismatch in compound assignment");
             const std::size_t n = dst.size();
             T * p = dst.data();
             auto storage = make_operand(src);
 
-            VEC_MATH_PRAGMA_SIMD
+            KEISAN_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
         }
 
         template<typename T, std::size_t Extent, Scalar S, typename CompoundFn>
-        VEC_MATH_FORCE_INLINE void apply_scalar_inplace(std::span<T, Extent> dst, const S &scalar, CompoundFn fn) noexcept {
+        KEISAN_FORCE_INLINE void apply_scalar_inplace(std::span<T, Extent> dst, const S &scalar, CompoundFn fn) noexcept {
             const std::size_t n = dst.size();
             T * p = dst.data();
             const T s = static_cast<T>(scalar);
 
-            VEC_MATH_PRAGMA_SIMD
+            KEISAN_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) { fn(p[i], s); }
         }
 
         template<typename T, std::size_t Extent, VectorOperand Src, typename CompoundFn>
-        VEC_MATH_FORCE_INLINE void apply_vec_inplace(std::span<T, Extent> dst, const Src &src, CompoundFn fn) {
-            VEC_MATH_CHECK_SIZE_EQ(dst.size(), src.size(), "vec_math: span size mismatch in compound assignment");
+        KEISAN_FORCE_INLINE void apply_vec_inplace(std::span<T, Extent> dst, const Src &src, CompoundFn fn) {
+            KEISAN_CHECK_SIZE_EQ(dst.size(), src.size(), "keisan: span size mismatch in compound assignment");
             const std::size_t n = dst.size();
             T * p = dst.data();
             auto storage = make_operand(src);
 
-            VEC_MATH_PRAGMA_SIMD
+            KEISAN_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) { fn(p[i], static_cast<T>(storage[i])); }
         }
 
         template<typename T, std::size_t N, Scalar S, typename CompoundFn>
-        VEC_MATH_FORCE_INLINE void apply_scalar_inplace(std::array<T, N> &dst, const S &scalar, CompoundFn fn) noexcept {
+        KEISAN_FORCE_INLINE void apply_scalar_inplace(std::array<T, N> &dst, const S &scalar, CompoundFn fn) noexcept {
             T * p = dst.data();
             const T s = static_cast<T>(scalar);
 
-            VEC_MATH_PRAGMA_SIMD
+            KEISAN_PRAGMA_SIMD
             for (std::size_t i = 0; i < N; ++i) { fn(p[i], s); }
         }
 
         template<typename T, std::size_t N, VectorOperand Src, typename CompoundFn>
-        VEC_MATH_FORCE_INLINE void apply_vec_inplace(std::array<T, N> &dst, const Src &src, CompoundFn fn) {
-            VEC_MATH_CHECK_SIZE_EQ(N, src.size(), "vec_math: array size mismatch in compound assignment");
+        KEISAN_FORCE_INLINE void apply_vec_inplace(std::array<T, N> &dst, const Src &src, CompoundFn fn) {
+            KEISAN_CHECK_SIZE_EQ(N, src.size(), "keisan: array size mismatch in compound assignment");
             T * p = dst.data();
             auto storage = make_operand(src);
 
-            VEC_MATH_PRAGMA_SIMD
+            KEISAN_PRAGMA_SIMD
             for (std::size_t i = 0; i < N; ++i) { fn(p[i], static_cast<T>(storage[i])); }
         }
 
         template<typename T, typename Alloc, VectorOperand Src>
-        VEC_MATH_FORCE_INLINE void assign_zero_malloc(std::vector<T, Alloc> &dst, const Src &src) {
+        KEISAN_FORCE_INLINE void assign_zero_malloc(std::vector<T, Alloc> &dst, const Src &src) {
             const std::size_t n = src.size();
             if (dst.capacity() < n) [[unlikely]] {
-                VEC_MATH_THROW_OR_ABORT(std::length_error,
-                                        "vec_math: destination capacity < source size (zero-malloc invariant violated)");
+                KEISAN_THROW_OR_ABORT(std::length_error,
+                                        "keisan: destination capacity < source size (zero-malloc invariant violated)");
             }
             dst.resize(n);
             eval_into(dst.data(), n, src);
         }
 
         template<typename T, std::size_t Extent, VectorOperand Src>
-        VEC_MATH_FORCE_INLINE void assign_zero_malloc(std::span<T, Extent> dst, const Src &src) {
-            VEC_MATH_CHECK_SIZE_EQ(dst.size(), src.size(), "vec_math: span size mismatch in assignment");
+        KEISAN_FORCE_INLINE void assign_zero_malloc(std::span<T, Extent> dst, const Src &src) {
+            KEISAN_CHECK_SIZE_EQ(dst.size(), src.size(), "keisan: span size mismatch in assignment");
             eval_into(dst.data(), dst.size(), src);
         }
 
         template<typename T, std::size_t N, VectorOperand Src>
-        VEC_MATH_FORCE_INLINE void assign_zero_malloc(std::array<T, N> &dst, const Src &src) {
-            VEC_MATH_CHECK_SIZE_EQ(N, src.size(), "vec_math: array size mismatch in assignment");
+        KEISAN_FORCE_INLINE void assign_zero_malloc(std::array<T, N> &dst, const Src &src) {
+            KEISAN_CHECK_SIZE_EQ(N, src.size(), "keisan: array size mismatch in assignment");
             eval_into(dst.data(), N, src);
         }
     }
@@ -1140,8 +1141,8 @@ namespace vec_math {
         template<typename T, typename Alloc> requires detail::is_valid_numeric_v<T>
         [[nodiscard]] inline std::vector<T, Alloc> operator-(std::vector<T, Alloc> &&v) noexcept {
             const std::size_t n = v.size();
-            T * VEC_MATH_RESTRICT p = v.data();
-            VEC_MATH_PRAGMA_SIMD
+            T * KEISAN_RESTRICT p = v.data();
+            KEISAN_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) { p[i] = -p[i]; }
             return std::move(v);
         }
@@ -1410,7 +1411,7 @@ namespace vec_math {
     // dot_repro: Blocked tree inner product guaranteeing bit-identical results across thread counts and bounded FP32 error
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] constexpr auto dot_repro(const Lhs &lhs_in, const Rhs &rhs_in) {
-        VEC_MATH_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "vec_math: vector size mismatch in dot_repro");
+        KEISAN_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "keisan: vector size mismatch in dot_repro");
         auto lhs_op = detail::make_operand(lhs_in);
         auto rhs_op = detail::make_operand(rhs_in);
         using ResType = std::common_type_t<
@@ -1437,7 +1438,7 @@ namespace vec_math {
     // dot_deterministic: bit-identical strictly sequential inner product for regression tests
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] constexpr auto dot_deterministic(const Lhs &lhs_in, const Rhs &rhs_in) {
-        VEC_MATH_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "vec_math: vector size mismatch in dot_deterministic");
+        KEISAN_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "keisan: vector size mismatch in dot_deterministic");
         auto lhs_op = detail::make_operand(lhs_in);
         auto rhs_op = detail::make_operand(rhs_in);
         using ResType = std::common_type_t<
@@ -1467,13 +1468,13 @@ namespace vec_math {
         const std::size_t n = op.size();
         if (n == 0) { return value_type{0}; }
 
-#if defined(VEC_MATH_HAS_STD_SIMD)
+#if defined(KEISAN_HAS_STD_SIMD)
         if !consteval {
             if constexpr (!detail::is_strided_span_v<decltype(op)> && requires { { op.data() }; } &&
                           (std::is_same_v<value_type, double> || std::is_same_v<value_type, float>)) {
                 using V = std::simd::vec<value_type>;
                 constexpr std::size_t W = V::size();
-                const value_type* VEC_MATH_RESTRICT p = op.data();
+                const value_type* KEISAN_RESTRICT p = op.data();
                 V acc0(value_type{0});
                 V acc1(value_type{0});
                 std::size_t i = 0;
@@ -1516,7 +1517,7 @@ namespace vec_math {
         if (policy == ReductionPolicy::REPRO) {
             return dot_repro(lhs_in, rhs_in);
         }
-        VEC_MATH_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "vec_math: vector size mismatch in dot product");
+        KEISAN_CHECK_SIZE_EQ(lhs_in.size(), rhs_in.size(), "keisan: vector size mismatch in dot product");
         auto lhs_op = detail::make_operand(lhs_in);
         auto rhs_op = detail::make_operand(rhs_in);
         using LhsVal = std::remove_const_t<typename detail::operand_storage_t<Lhs>::value_type>;
@@ -1525,7 +1526,7 @@ namespace vec_math {
         const std::size_t n = lhs_in.size();
         if (n == 0) { return ResType{0}; }
 
-#if defined(VEC_MATH_HAS_STD_SIMD)
+#if defined(KEISAN_HAS_STD_SIMD)
         if !consteval {
             if constexpr (!detail::is_strided_span_v<decltype(lhs_op)> && !detail::is_strided_span_v<decltype(rhs_op)> &&
                           requires { { lhs_op.data() }; { rhs_op.data() }; } &&
@@ -1533,8 +1534,8 @@ namespace vec_math {
                           (std::is_same_v<ResType, double> || std::is_same_v<ResType, float>)) {
                 using V = std::simd::vec<ResType>;
                 constexpr std::size_t W = V::size();
-                const ResType* VEC_MATH_RESTRICT p1 = lhs_op.data();
-                const ResType* VEC_MATH_RESTRICT p2 = rhs_op.data();
+                const ResType* KEISAN_RESTRICT p1 = lhs_op.data();
+                const ResType* KEISAN_RESTRICT p2 = rhs_op.data();
                 V acc0(ResType{0});
                 V acc1(ResType{0});
                 std::size_t i = 0;
@@ -1620,7 +1621,7 @@ namespace vec_math {
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] constexpr auto dotc(const Lhs &lhs_in, const Rhs &rhs_in) {
         if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
-            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: vector size mismatch in dotc");
+            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: vector size mismatch in dotc");
         }
         auto lhs_op = detail::make_operand(lhs_in);
         auto rhs_op = detail::make_operand(rhs_in);
@@ -1668,16 +1669,16 @@ namespace vec_math {
     inline void assign_stream(std::vector<T, Alloc> &dst, const Src &src) {
         const std::size_t n = src.size();
         if (dst.capacity() < n) [[unlikely]] {
-            VEC_MATH_THROW_OR_ABORT(std::length_error,
-                                    "vec_math: destination capacity < source size in assign_stream");
+            KEISAN_THROW_OR_ABORT(std::length_error,
+                                    "keisan: destination capacity < source size in assign_stream");
         }
         dst.resize(n);
         if (n == 0) return;
 
-        T * VEC_MATH_RESTRICT p = dst.data();
+        T * KEISAN_RESTRICT p = dst.data();
         auto storage = detail::make_operand(src);
 
-#if defined(VEC_MATH_HAS_X86_INTRIN)
+#if defined(KEISAN_HAS_X86_INTRIN)
         if constexpr (std::is_same_v<T, double>) {
             std::size_t i = 0;
 #if defined(__AVX__)
@@ -1686,7 +1687,7 @@ namespace vec_math {
                 ++i;
             }
             if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, double>) {
-                const double* VEC_MATH_RESTRICT sp = storage.data();
+                const double* KEISAN_RESTRICT sp = storage.data();
                 for (; i + 4 <= n; i += 4) {
                     _mm256_stream_pd(p + i, _mm256_loadu_pd(sp + i));
                 }
@@ -1711,7 +1712,7 @@ namespace vec_math {
                 ++i;
             }
             if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, double>) {
-                const double* VEC_MATH_RESTRICT sp = storage.data();
+                const double* KEISAN_RESTRICT sp = storage.data();
                 for (; i + 2 <= n; i += 2) {
                     _mm_stream_pd(p + i, _mm_loadu_pd(sp + i));
                 }
@@ -1729,7 +1730,7 @@ namespace vec_math {
             }
             _mm_sfence();
 #else
-            VEC_MATH_PRAGMA_SIMD
+            KEISAN_PRAGMA_SIMD
             for (std::size_t j = 0; j < n; ++j) {
                 p[j] = static_cast<double>(storage[j]);
             }
@@ -1742,7 +1743,7 @@ namespace vec_math {
                 ++i;
             }
             if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, float>) {
-                const float* VEC_MATH_RESTRICT sp = storage.data();
+                const float* KEISAN_RESTRICT sp = storage.data();
                 for (; i + 8 <= n; i += 8) {
                     _mm256_stream_ps(p + i, _mm256_loadu_ps(sp + i));
                 }
@@ -1771,7 +1772,7 @@ namespace vec_math {
                 ++i;
             }
             if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } && std::is_same_v<typename decltype(storage)::value_type, float>) {
-                const float* VEC_MATH_RESTRICT sp = storage.data();
+                const float* KEISAN_RESTRICT sp = storage.data();
                 for (; i + 4 <= n; i += 4) {
                     _mm_stream_ps(p + i, _mm_loadu_ps(sp + i));
                 }
@@ -1791,7 +1792,7 @@ namespace vec_math {
             }
             _mm_sfence();
 #else
-            VEC_MATH_PRAGMA_SIMD
+            KEISAN_PRAGMA_SIMD
             for (std::size_t j = 0; j < n; ++j) {
                 p[j] = static_cast<float>(storage[j]);
             }
@@ -1799,13 +1800,13 @@ namespace vec_math {
         } else
 #endif
         {
-#if defined(VEC_MATH_HAS_STD_SIMD)
+#if defined(KEISAN_HAS_STD_SIMD)
             if constexpr (!detail::is_strided_span_v<decltype(storage)> && requires { { storage.data() }; } &&
                           std::is_same_v<std::remove_const_t<typename decltype(storage)::value_type>, T> &&
                           (std::is_same_v<T, double> || std::is_same_v<T, float>)) {
                 using V = std::simd::vec<T>;
                 constexpr std::size_t W = V::size();
-                const T* VEC_MATH_RESTRICT sp = storage.data();
+                const T* KEISAN_RESTRICT sp = storage.data();
                 std::size_t i = 0;
                 for (; i + W <= n; i += W) {
                     const V v = std::simd::unchecked_load<V>(std::span<const T>(sp + i, W));
@@ -1817,7 +1818,7 @@ namespace vec_math {
                 return;
             }
 #endif
-            VEC_MATH_PRAGMA_SIMD
+            KEISAN_PRAGMA_SIMD
             for (std::size_t i = 0; i < n; ++i) {
                 p[i] = static_cast<T>(storage[i]);
             }
@@ -1830,16 +1831,16 @@ namespace vec_math {
 
     namespace detail {
         template<typename MatT, typename VecInT, typename VecOutT>
-        VEC_MATH_HOST_DEVICE inline void matvec_noalias(
-            const MatT* VEC_MATH_RESTRICT A,
-            const VecInT* VEC_MATH_RESTRICT x,
-            VecOutT* VEC_MATH_RESTRICT y,
+        KEISAN_HOST_DEVICE inline void matvec_noalias(
+            const MatT* KEISAN_RESTRICT A,
+            const VecInT* KEISAN_RESTRICT x,
+            VecOutT* KEISAN_RESTRICT y,
             std::size_t rows,
             std::size_t cols
         ) {
             for (std::size_t r = 0; r < rows; ++r) {
-                const MatT* VEC_MATH_RESTRICT row = A + r * cols;
-#if defined(VEC_MATH_HAS_STD_SIMD)
+                const MatT* KEISAN_RESTRICT row = A + r * cols;
+#if defined(KEISAN_HAS_STD_SIMD)
                 if constexpr (std::is_same_v<MatT, VecOutT> && std::is_same_v<VecInT, VecOutT> &&
                               (std::is_same_v<VecOutT, double> || std::is_same_v<VecOutT, float>)) {
                     using V = std::simd::vec<VecOutT>;
@@ -1882,10 +1883,10 @@ namespace vec_math {
         }
 
         template<typename MatT, typename VecInT, typename VecOutT>
-        VEC_MATH_HOST_DEVICE inline void matvec_transposed_noalias(
-            const MatT* VEC_MATH_RESTRICT A,
-            const VecInT* VEC_MATH_RESTRICT x,
-            VecOutT* VEC_MATH_RESTRICT y,
+        KEISAN_HOST_DEVICE inline void matvec_transposed_noalias(
+            const MatT* KEISAN_RESTRICT A,
+            const VecInT* KEISAN_RESTRICT x,
+            VecOutT* KEISAN_RESTRICT y,
             std::size_t rows,
             std::size_t cols
         ) {
@@ -1893,9 +1894,9 @@ namespace vec_math {
                 y[c] = VecOutT{0};
             }
             for (std::size_t r = 0; r < rows; ++r) {
-                const MatT* VEC_MATH_RESTRICT row = A + r * cols;
+                const MatT* KEISAN_RESTRICT row = A + r * cols;
                 const auto xr = static_cast<VecOutT>(x[r]);
-#if defined(VEC_MATH_HAS_STD_SIMD)
+#if defined(KEISAN_HAS_STD_SIMD)
                 if constexpr (std::is_same_v<MatT, VecOutT> &&
                               (std::is_same_v<VecOutT, double> || std::is_same_v<VecOutT, float>)) {
                     using V = std::simd::vec<VecOutT>;
@@ -1913,7 +1914,7 @@ namespace vec_math {
                     continue;
                 }
 #endif
-                VEC_MATH_PRAGMA_SIMD
+                KEISAN_PRAGMA_SIMD
                 for (std::size_t c = 0; c < cols; ++c) {
                     y[c] = y[c] + static_cast<VecOutT>(row[c]) * xr;
                 }
@@ -1922,7 +1923,7 @@ namespace vec_math {
     }
 
     template<typename MatT, typename VecInT, typename VecOutT>
-    VEC_MATH_HOST_DEVICE inline void matvec(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
+    KEISAN_HOST_DEVICE inline void matvec(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
         if (rows == 0 || cols == 0) return;
         const bool aliased = detail::memory_ranges_overlap(x, cols * sizeof(VecInT), y, rows * sizeof(VecOutT));
         constexpr std::size_t STACK_BUF_CAP = 128;
@@ -1935,9 +1936,9 @@ namespace vec_math {
                 }
                 return;
             }
-#if defined(VEC_MATH_STRICT_ZERO_MALLOC)
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
             else {
-                VEC_MATH_THROW_BAD_ALLOC("vec_math: matvec aliasing exceeds stack buffer capacity under VEC_MATH_STRICT_ZERO_MALLOC");
+                KEISAN_THROW_BAD_ALLOC("keisan: matvec aliasing exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
             }
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
@@ -1954,7 +1955,7 @@ namespace vec_math {
     }
 
     template<typename MatT, typename VecInT, typename VecOutT>
-    VEC_MATH_HOST_DEVICE inline void matvec_transposed(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
+    KEISAN_HOST_DEVICE inline void matvec_transposed(const MatT* A, const VecInT* x, VecOutT* y, std::size_t rows, std::size_t cols) {
         if (rows == 0 || cols == 0) return;
         const bool aliased = detail::memory_ranges_overlap(x, rows * sizeof(VecInT), y, cols * sizeof(VecOutT));
         constexpr std::size_t STACK_BUF_CAP = 128;
@@ -1967,9 +1968,9 @@ namespace vec_math {
                 }
                 return;
             }
-#if defined(VEC_MATH_STRICT_ZERO_MALLOC)
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
             else {
-                VEC_MATH_THROW_BAD_ALLOC("vec_math: matvec_transposed aliasing exceeds stack buffer capacity under VEC_MATH_STRICT_ZERO_MALLOC");
+                KEISAN_THROW_BAD_ALLOC("keisan: matvec_transposed aliasing exceeds stack buffer capacity under KEISAN_STRICT_ZERO_MALLOC");
             }
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
@@ -1987,7 +1988,7 @@ namespace vec_math {
 
     // Compile-time fixed Np small-matrix vector multiplication
     template<std::size_t Rows, std::size_t Cols, typename MatT, typename VecInT, typename VecOutT>
-    VEC_MATH_HOST_DEVICE inline void matvec_fixed(const MatT* A, const VecInT* x, VecOutT* y) {
+    KEISAN_HOST_DEVICE inline void matvec_fixed(const MatT* A, const VecInT* x, VecOutT* y) {
         if constexpr (Rows == 0 || Cols == 0) {
             return;
         } else {
@@ -2005,7 +2006,7 @@ namespace vec_math {
     }
 
     template<std::size_t Rows, std::size_t Cols, typename MatT, typename VecInT, typename VecOutT>
-    VEC_MATH_HOST_DEVICE inline void matvec_transposed_fixed(const MatT* A, const VecInT* x, VecOutT* y) {
+    KEISAN_HOST_DEVICE inline void matvec_transposed_fixed(const MatT* A, const VecInT* x, VecOutT* y) {
         if constexpr (Rows == 0 || Cols == 0) {
             return;
         } else {
@@ -2057,16 +2058,16 @@ namespace vec_math {
     };
 
     template<typename T, typename ScalarT>
-    VEC_MATH_HOST_DEVICE inline void broadcast_multiply(T* data, std::size_t count, ScalarT factor) {
+    KEISAN_HOST_DEVICE inline void broadcast_multiply(T* data, std::size_t count, ScalarT factor) {
         const auto f = static_cast<T>(factor);
-        VEC_MATH_PRAGMA_SIMD
+        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < count; ++i) {
             data[i] = data[i] * f;
         }
     }
 
     template<typename T, std::size_t Extent, typename ScalarT>
-    VEC_MATH_HOST_DEVICE inline void broadcast_multiply(std::span<T, Extent> span_data, ScalarT factor) {
+    KEISAN_HOST_DEVICE inline void broadcast_multiply(std::span<T, Extent> span_data, ScalarT factor) {
         broadcast_multiply(span_data.data(), span_data.size(), factor);
     }
 
@@ -2113,7 +2114,7 @@ namespace vec_math {
             std::size_t aligned_addr = (current_addr + alignment - 1) & ~(alignment - 1);
             std::size_t new_offset = (aligned_addr - reinterpret_cast<std::size_t>(buffer_)) + count * sizeof(T);
             if (new_offset > capacity_) [[unlikely]] {
-                VEC_MATH_THROW_OR_ABORT(std::length_error, "vec_math: WorkspaceArena capacity exceeded");
+                KEISAN_THROW_OR_ABORT(std::length_error, "keisan: WorkspaceArena capacity exceeded");
             }
             offset_ = new_offset;
             return std::span<T>(reinterpret_cast<T*>(aligned_addr), count);
@@ -2133,33 +2134,33 @@ namespace vec_math {
     };
 
     template<typename T, typename IndexT>
-    VEC_MATH_HOST_DEVICE inline void gather(T* dst, const T* src, const IndexT* indices, std::size_t count) {
-        VEC_MATH_PRAGMA_SIMD
+    KEISAN_HOST_DEVICE inline void gather(T* dst, const T* src, const IndexT* indices, std::size_t count) {
+        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < count; ++i) {
             dst[i] = src[indices[i]];
         }
     }
 
     template<typename T, std::size_t DstExt, typename SrcT, std::size_t SrcExt, typename IndexT, std::size_t IdxExt>
-    VEC_MATH_HOST_DEVICE inline void gather(std::span<T, DstExt> dst, std::span<SrcT, SrcExt> src, std::span<IndexT, IdxExt> indices) {
-        static_assert(std::is_convertible_v<SrcT, T>, "vec_math: source element type must be convertible to destination type in gather");
-        VEC_MATH_CHECK_SIZE_EQ(dst.size(), indices.size(), "vec_math: size mismatch in gather");
+    KEISAN_HOST_DEVICE inline void gather(std::span<T, DstExt> dst, std::span<SrcT, SrcExt> src, std::span<IndexT, IdxExt> indices) {
+        static_assert(std::is_convertible_v<SrcT, T>, "keisan: source element type must be convertible to destination type in gather");
+        KEISAN_CHECK_SIZE_EQ(dst.size(), indices.size(), "keisan: size mismatch in gather");
         for (std::size_t i = 0; i < indices.size(); ++i) {
             dst[i] = static_cast<T>(src[indices[i]]);
         }
     }
 
     template<typename T, typename IndexT>
-    VEC_MATH_HOST_DEVICE inline void scatter_add(T* dst, const IndexT* indices, const T* src, std::size_t count) {
+    KEISAN_HOST_DEVICE inline void scatter_add(T* dst, const IndexT* indices, const T* src, std::size_t count) {
         for (std::size_t i = 0; i < count; ++i) {
             dst[indices[i]] += src[i];
         }
     }
 
     template<typename T, std::size_t DstExt, typename IndexT, std::size_t IdxExt, typename SrcT, std::size_t SrcExt>
-    VEC_MATH_HOST_DEVICE inline void scatter_add(std::span<T, DstExt> dst, std::span<IndexT, IdxExt> indices, std::span<SrcT, SrcExt> src) {
-        static_assert(std::is_convertible_v<SrcT, T>, "vec_math: source element type must be convertible to destination type in scatter_add");
-        VEC_MATH_CHECK_SIZE_EQ(indices.size(), src.size(), "vec_math: size mismatch in scatter_add");
+    KEISAN_HOST_DEVICE inline void scatter_add(std::span<T, DstExt> dst, std::span<IndexT, IdxExt> indices, std::span<SrcT, SrcExt> src) {
+        static_assert(std::is_convertible_v<SrcT, T>, "keisan: source element type must be convertible to destination type in scatter_add");
+        KEISAN_CHECK_SIZE_EQ(indices.size(), src.size(), "keisan: size mismatch in scatter_add");
         for (std::size_t i = 0; i < src.size(); ++i) {
             dst[indices[i]] += static_cast<T>(src[i]);
         }
@@ -2167,7 +2168,7 @@ namespace vec_math {
 
     // Point-implicit NxN linear solve in SoA layout across elements: A_soa x_soa = b_soa
     template<std::size_t N, typename T>
-    VEC_MATH_HOST_DEVICE inline void solve_nxn_batched(
+    KEISAN_HOST_DEVICE inline void solve_nxn_batched(
         const T* const* A_soa, // N*N pointers, each pointing to array of size num_elements
         const T* const* b_soa, // N pointers, each pointing to array of size num_elements
         T* const* x_soa,       // N pointers, each pointing to array of size num_elements
@@ -2181,7 +2182,7 @@ namespace vec_math {
             int singular_flag = 0;
             std::size_t e = 0;
 
-#if defined(VEC_MATH_HAS_STD_SIMD)
+#if defined(KEISAN_HAS_STD_SIMD)
             if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
                 using V = std::simd::vec<T>;
                 using M = typename V::mask_type;
@@ -2191,14 +2192,20 @@ namespace vec_math {
                 for (; e + W <= num_elements; e += W) {
                     V a[N][N];
                     V rhs[N];
+                    V max_abs(T{0});
                     for (std::size_t r = 0; r < N; ++r) {
                         for (std::size_t c = 0; c < N; ++c) {
-                            a[r][c] = std::simd::unchecked_load<V>(
+                            const V val = std::simd::unchecked_load<V>(
                                 std::span<const T>(A_soa[r * N + c] + e, W));
+                            a[r][c] = val;
+                            const V aval = std::simd::select(val < V(T{0}), -val, val);
+                            max_abs = std::simd::select(aval > max_abs, aval, max_abs);
                         }
                         rhs[r] = std::simd::unchecked_load<V>(
                             std::span<const T>(b_soa[r] + e, W));
                     }
+                    constexpr T rel_eps = std::is_same_v<T, float> ? T{1e-6} : T{1e-14};
+                    const V sing_tol = max_abs * V(rel_eps);
 
                     for (std::size_t i = 0; i < N; ++i) {
                         for (std::size_t k = i + 1; k < N; ++k) {
@@ -2219,7 +2226,7 @@ namespace vec_math {
 
                         const V diag = a[i][i];
                         const V abs_diag = std::simd::select(diag < V(T{0}), -diag, diag);
-                        const M is_sing = abs_diag <= V(T{1e-20});
+                        const M is_sing = !(abs_diag > sing_tol);
                         any_singular = any_singular || is_sing;
                         const V safe_diag = std::simd::select(is_sing, V(T{1}), diag);
                         const V inv_diag = V(T{1}) / safe_diag;
@@ -2255,16 +2262,22 @@ namespace vec_math {
             }
 #endif
 
-            VEC_MATH_PRAGMA_SIMD
+            KEISAN_PRAGMA_SIMD
             for (; e < num_elements; ++e) {
                 T a[N][N];
                 T rhs[N];
+                T max_abs{0};
                 for (std::size_t r = 0; r < N; ++r) {
                     for (std::size_t c = 0; c < N; ++c) {
-                        a[r][c] = A_soa[r * N + c][e];
+                        const T val = A_soa[r * N + c][e];
+                        a[r][c] = val;
+                        const T aval = std::abs(val);
+                        if (aval > max_abs) max_abs = aval;
                     }
                     rhs[r] = b_soa[r][e];
                 }
+                constexpr T rel_eps = std::is_same_v<T, float> ? T{1e-6} : T{1e-14};
+                const T sing_tol = max_abs * rel_eps;
 
                 for (std::size_t i = 0; i < N; ++i) {
                     for (std::size_t k = i + 1; k < N; ++k) {
@@ -2282,7 +2295,7 @@ namespace vec_math {
                     }
 
                     const T diag = a[i][i];
-                    const bool is_sing = std::abs(diag) <= T{1e-20};
+                    const bool is_sing = !(std::abs(diag) > sing_tol);
                     if (is_sing) { singular_flag = 1; }
                     const T safe_diag = is_sing ? T{1} : diag;
                     const T inv_diag = T{1} / safe_diag;
@@ -2313,14 +2326,14 @@ namespace vec_math {
             }
 
             if (singular_flag) [[unlikely]] {
-                VEC_MATH_THROW_OR_ABORT(std::runtime_error, "vec_math: singular matrix in solve_nxn_batched");
+                KEISAN_THROW_OR_ABORT(std::runtime_error, "keisan: singular matrix in solve_nxn_batched");
             }
         }
     }
 
     // Point-implicit 4x4 linear solve in SoA layout across elements: A_soa x_soa = b_soa
     template<typename T>
-    VEC_MATH_HOST_DEVICE inline void solve_4x4_batched(
+    KEISAN_HOST_DEVICE inline void solve_4x4_batched(
         const T* const* A_soa, // 16 pointers, each pointing to array of size num_elements
         const T* const* b_soa, // 4 pointers, each pointing to array of size num_elements
         T* const* x_soa,       // 4 pointers, each pointing to array of size num_elements
@@ -2330,7 +2343,7 @@ namespace vec_math {
     }
 
     template<typename T>
-    VEC_MATH_HOST_DEVICE inline void transpose_aos_to_soa(
+    KEISAN_HOST_DEVICE inline void transpose_aos_to_soa(
         const T* aos,
         T* soa,
         std::size_t num_tuples,
@@ -2344,7 +2357,7 @@ namespace vec_math {
     }
 
     template<typename T>
-    VEC_MATH_HOST_DEVICE inline void transpose_soa_to_aos(
+    KEISAN_HOST_DEVICE inline void transpose_soa_to_aos(
         const T* soa,
         T* aos,
         std::size_t num_tuples,
@@ -2369,10 +2382,10 @@ namespace vec_math {
 
     namespace detail {
         template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
-        VEC_MATH_HOST_DEVICE inline void contract_axis_noalias(
-            const MatT* VEC_MATH_RESTRICT D,
-            const T* VEC_MATH_RESTRICT in,
-            T* VEC_MATH_RESTRICT out,
+        KEISAN_HOST_DEVICE inline void contract_axis_noalias(
+            const MatT* KEISAN_RESTRICT D,
+            const T* KEISAN_RESTRICT in,
+            T* KEISAN_RESTRICT out,
             [[maybe_unused]] std::size_t nx,
             [[maybe_unused]] std::size_t ny,
             [[maybe_unused]] std::size_t nz
@@ -2382,10 +2395,10 @@ namespace vec_math {
                 const std::size_t n_pencils = ny * nz;
                 const std::size_t dim = (N > 0) ? N : nx;
                 for (std::size_t p = 0; p < n_pencils; ++p) {
-                    const T* VEC_MATH_RESTRICT in_ptr = in + p * dim;
-                    T* VEC_MATH_RESTRICT out_ptr = out + p * dim;
+                    const T* KEISAN_RESTRICT in_ptr = in + p * dim;
+                    T* KEISAN_RESTRICT out_ptr = out + p * dim;
                     for (std::size_t i = 0; i < dim; ++i) {
-                        const MatT* VEC_MATH_RESTRICT row = D + i * dim;
+                        const MatT* KEISAN_RESTRICT row = D + i * dim;
                         T acc0{0}, acc1{0}, acc2{0}, acc3{0};
                         std::size_t j = 0;
                         for (; j + 4 <= dim; j += 4) {
@@ -2404,21 +2417,21 @@ namespace vec_math {
             } else if constexpr (axis_idx == 1) {
                 const std::size_t dim_y = (N > 0) ? N : ny;
                 for (std::size_t k = 0; k < nz; ++k) {
-                    const T* VEC_MATH_RESTRICT in_k = in + k * (nx * dim_y);
-                    T* VEC_MATH_RESTRICT out_k = out + k * (nx * dim_y);
+                    const T* KEISAN_RESTRICT in_k = in + k * (nx * dim_y);
+                    T* KEISAN_RESTRICT out_k = out + k * (nx * dim_y);
                     for (std::size_t j = 0; j < dim_y; ++j) {
-                        T* VEC_MATH_RESTRICT out_row = out_k + j * nx;
-                        const MatT* VEC_MATH_RESTRICT row = D + j * dim_y;
+                        T* KEISAN_RESTRICT out_row = out_k + j * nx;
+                        const MatT* KEISAN_RESTRICT row = D + j * dim_y;
                         const T d0 = static_cast<T>(row[0]);
-                        const T* VEC_MATH_RESTRICT in_0 = in_k;
-                        VEC_MATH_PRAGMA_SIMD
+                        const T* KEISAN_RESTRICT in_0 = in_k;
+                        KEISAN_PRAGMA_SIMD
                         for (std::size_t i = 0; i < nx; ++i) {
                             out_row[i] = d0 * in_0[i];
                         }
                         for (std::size_t q = 1; q < dim_y; ++q) {
                             const T dq = static_cast<T>(row[q]);
-                            const T* VEC_MATH_RESTRICT in_q = in_k + q * nx;
-                            VEC_MATH_PRAGMA_SIMD
+                            const T* KEISAN_RESTRICT in_q = in_k + q * nx;
+                            KEISAN_PRAGMA_SIMD
                             for (std::size_t i = 0; i < nx; ++i) {
                                 out_row[i] += dq * in_q[i];
                             }
@@ -2429,17 +2442,17 @@ namespace vec_math {
                 const std::size_t nxy = nx * ny;
                 const std::size_t dim_z = (N > 0) ? N : nz;
                 for (std::size_t k = 0; k < dim_z; ++k) {
-                    T* VEC_MATH_RESTRICT out_plane = out + k * nxy;
-                    const MatT* VEC_MATH_RESTRICT row = D + k * dim_z;
+                    T* KEISAN_RESTRICT out_plane = out + k * nxy;
+                    const MatT* KEISAN_RESTRICT row = D + k * dim_z;
                     const T d0 = static_cast<T>(row[0]);
-                    VEC_MATH_PRAGMA_SIMD
+                    KEISAN_PRAGMA_SIMD
                     for (std::size_t p = 0; p < nxy; ++p) {
                         out_plane[p] = d0 * in[p];
                     }
                     for (std::size_t r = 1; r < dim_z; ++r) {
                         const T dr = static_cast<T>(row[r]);
-                        const T* VEC_MATH_RESTRICT in_r = in + r * nxy;
-                        VEC_MATH_PRAGMA_SIMD
+                        const T* KEISAN_RESTRICT in_r = in + r * nxy;
+                        KEISAN_PRAGMA_SIMD
                         for (std::size_t p = 0; p < nxy; ++p) {
                             out_plane[p] += dr * in_r[p];
                         }
@@ -2450,7 +2463,7 @@ namespace vec_math {
     }
 
     template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
-    VEC_MATH_HOST_DEVICE inline void contract_axis(
+    KEISAN_HOST_DEVICE inline void contract_axis(
         const MatT* D,
         const T* in,
         T* out,
@@ -2459,22 +2472,22 @@ namespace vec_math {
         [[maybe_unused]] std::size_t nz = 1
     ) {
         constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
-        static_assert(axis_idx <= 2, "vec_math: contract_axis Axis must be 0 (X), 1 (Y), or 2 (Z)");
+        static_assert(axis_idx <= 2, "keisan: contract_axis Axis must be 0 (X), 1 (Y), or 2 (Z)");
 
         if (nx == 0 || ny == 0 || nz == 0) return;
 
-        VEC_MATH_DEVICE_ASSERT(D != nullptr, "vec_math: null matrix pointer in contract_axis");
-        VEC_MATH_DEVICE_ASSERT(in != nullptr, "vec_math: null input pointer in contract_axis");
-        VEC_MATH_DEVICE_ASSERT(out != nullptr, "vec_math: null output pointer in contract_axis");
+        KEISAN_DEVICE_ASSERT(D != nullptr, "keisan: null matrix pointer in contract_axis");
+        KEISAN_DEVICE_ASSERT(in != nullptr, "keisan: null input pointer in contract_axis");
+        KEISAN_DEVICE_ASSERT(out != nullptr, "keisan: null output pointer in contract_axis");
 
         if constexpr (axis_idx == 0 && N > 0) {
-            VEC_MATH_DEVICE_ASSERT(nx == N, "vec_math: nx must match N for Axis 0 contraction");
+            KEISAN_DEVICE_ASSERT(nx == N, "keisan: nx must match N for Axis 0 contraction");
         }
         if constexpr (axis_idx == 1 && N > 0) {
-            VEC_MATH_DEVICE_ASSERT(ny == N, "vec_math: ny must match N for Axis 1 contraction");
+            KEISAN_DEVICE_ASSERT(ny == N, "keisan: ny must match N for Axis 1 contraction");
         }
         if constexpr (axis_idx == 2 && N > 0) {
-            VEC_MATH_DEVICE_ASSERT(nz == N, "vec_math: nz must match N for Axis 2 contraction");
+            KEISAN_DEVICE_ASSERT(nz == N, "keisan: nz must match N for Axis 2 contraction");
         }
 
         const std::size_t total = nx * ny * nz;
@@ -2489,9 +2502,9 @@ namespace vec_math {
                 }
                 return;
             }
-#if defined(VEC_MATH_STRICT_ZERO_MALLOC)
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
             else {
-                VEC_MATH_THROW_BAD_ALLOC("vec_math: contract_axis aliased buffer exceeds stack capacity under VEC_MATH_STRICT_ZERO_MALLOC");
+                KEISAN_THROW_BAD_ALLOC("keisan: contract_axis aliased buffer exceeds stack capacity under KEISAN_STRICT_ZERO_MALLOC");
             }
 #elif !defined(__SYCL_DEVICE_ONLY__)
             else {
@@ -2509,7 +2522,7 @@ namespace vec_math {
     }
 
     template<auto AxisParam, std::size_t N = 0, typename MatT, typename InT, typename OutT, std::size_t DExt, std::size_t InExt, std::size_t OutExt>
-    VEC_MATH_HOST_DEVICE inline void contract_axis(
+    KEISAN_HOST_DEVICE inline void contract_axis(
         std::span<MatT, DExt> D,
         std::span<InT, InExt> in,
         std::span<OutT, OutExt> out,
@@ -2528,13 +2541,13 @@ namespace vec_math {
     inline void assign_par(std::vector<T, Alloc> &dst, const Src &src) {
         const std::size_t n = src.size();
         if (dst.capacity() < n) [[unlikely]] {
-            VEC_MATH_THROW_OR_ABORT(std::length_error,
-                                    "vec_math: destination capacity < source size in assign_par");
+            KEISAN_THROW_OR_ABORT(std::length_error,
+                                    "keisan: destination capacity < source size in assign_par");
         }
         dst.resize(n);
         if (n == 0) return;
 
-        T * VEC_MATH_RESTRICT p = dst.data();
+        T * KEISAN_RESTRICT p = dst.data();
         auto storage = detail::make_operand(src);
 
 #if defined(_OPENMP)
@@ -2544,7 +2557,7 @@ namespace vec_math {
             p[i] = static_cast<T>(storage[static_cast<std::size_t>(i)]);
         }
 #else
-        VEC_MATH_PRAGMA_SIMD
+        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < n; ++i) {
             p[i] = static_cast<T>(storage[i]);
         }
@@ -2554,7 +2567,7 @@ namespace vec_math {
     template<VectorOperand Lhs, VectorOperand Rhs>
     [[nodiscard]] inline auto dot_par(const Lhs &lhs_in, const Rhs &rhs_in) {
         if (lhs_in.size() != rhs_in.size()) [[unlikely]] {
-            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: vector size mismatch in dot_par");
+            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: vector size mismatch in dot_par");
         }
 #if defined(_OPENMP)
         const std::size_t n = lhs_in.size();
@@ -2698,10 +2711,10 @@ namespace vec_math {
         using value_type = typename detail::operand_storage_t<Op>::value_type;
         const std::size_t n = op.size();
         if (n == 0) [[unlikely]] {
-            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: min_val called on empty operand");
+            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: min_val called on empty operand");
         }
         value_type res = static_cast<value_type>(op[0]);
-        VEC_MATH_PRAGMA_SIMD
+        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 1; i < n; ++i) {
             value_type val = static_cast<value_type>(op[i]);
             if (val < res) { res = val; }
@@ -2715,10 +2728,10 @@ namespace vec_math {
         using value_type = typename detail::operand_storage_t<Op>::value_type;
         const std::size_t n = op.size();
         if (n == 0) [[unlikely]] {
-            VEC_MATH_THROW_OR_ABORT(std::invalid_argument, "vec_math: max_val called on empty operand");
+            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: max_val called on empty operand");
         }
         value_type res = static_cast<value_type>(op[0]);
-        VEC_MATH_PRAGMA_SIMD
+        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 1; i < n; ++i) {
             value_type val = static_cast<value_type>(op[i]);
             if (val > res) { res = val; }
@@ -2734,7 +2747,7 @@ namespace vec_math {
         const std::size_t n = op.size();
         if (n == 0) { return ResType{0}; }
         ResType res{0};
-        VEC_MATH_PRAGMA_SIMD
+        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < n; ++i) {
             ResType val = std::abs(static_cast<ResType>(op[i]));
             if (std::isnan(val) || val > res) { res = val; }
@@ -2750,7 +2763,7 @@ namespace vec_math {
         const std::size_t n = op.size();
         if (n == 0) { return ResType{0}; }
         ResType total{0};
-        VEC_MATH_PRAGMA_SIMD
+        KEISAN_PRAGMA_SIMD
         for (std::size_t i = 0; i < n; ++i) {
             total += std::abs(static_cast<ResType>(op[i]));
         }
