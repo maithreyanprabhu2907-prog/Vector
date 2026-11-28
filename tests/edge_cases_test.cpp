@@ -70,7 +70,11 @@ void* operator new(std::size_t size) {
     }
     void* p = std::malloc(size == 0 ? 1 : size);
     if (!p) {
+#if defined(KEISAN_NO_EXCEPTIONS) || (defined(__clang__) && !__has_feature(cxx_exceptions)) || (defined(__GNUC__) && !defined(__EXCEPTIONS))
+        std::abort();
+#else
         throw std::bad_alloc{};
+#endif
     }
     return p;
 }
@@ -1039,6 +1043,321 @@ void test_audit_regressions() {
     }
 }
 
+template<typename T>
+void test_option_a_for_type() {
+    using namespace keisan;
+    const T tol = std::is_same_v<T, float> ? T{1e-4} : T{1e-11};
+
+    // 1) contract_axis_rect across X, Y, Z axes (both M > N and M < N)
+    {
+        const std::size_t nx = 4, ny = 3, nz = 2;
+        std::vector<T> in(nx * ny * nz);
+        for (std::size_t i = 0; i < in.size(); ++i) {
+            in[i] = static_cast<T>(i + 1) * T{0.25};
+        }
+
+        // Axis X: 4 -> 6
+        {
+            const std::size_t out_dim = 6;
+            std::vector<T> D(out_dim * nx);
+            for (std::size_t r = 0; r < out_dim; ++r) {
+                for (std::size_t c = 0; c < nx; ++c) {
+                    D[r * nx + c] = static_cast<T>((r + 1) * (c + 2)) * T{0.1};
+                }
+            }
+            std::vector<T> out(out_dim * ny * nz, T{0});
+            {
+                ZeroMallocGuard guard("contract_axis_rect_x");
+                contract_axis_rect<Axis::X, 6, 4>(D.data(), in.data(), out.data(), out_dim, nx, ny, nz);
+            }
+            for (std::size_t k = 0; k < nz; ++k) {
+                for (std::size_t j = 0; j < ny; ++j) {
+                    for (std::size_t i = 0; i < out_dim; ++i) {
+                        T expected{0};
+                        for (std::size_t c = 0; c < nx; ++c) {
+                            expected += D[i * nx + c] * in[(k * ny + j) * nx + c];
+                        }
+                        TEST_ASSERT(approx_eq(out[(k * ny + j) * out_dim + i], expected, tol));
+                    }
+                }
+            }
+            // Aliasing / in-place when out_dim < nx (shrinks into same buffer)
+            std::vector<T> alias_buf = in;
+            std::vector<T> D_shrink(2 * nx, T{0.5});
+            {
+                ZeroMallocGuard guard("contract_axis_rect_x_alias");
+                contract_axis_rect<Axis::X>(std::span<const T>(D_shrink), std::span<const T>(alias_buf),
+                                            std::span<T>(alias_buf), 2, nx, ny, nz);
+            }
+            for (std::size_t k = 0; k < nz; ++k) {
+                for (std::size_t j = 0; j < ny; ++j) {
+                    T expected{0};
+                    for (std::size_t c = 0; c < nx; ++c) {
+                        expected += T{0.5} * in[(k * ny + j) * nx + c];
+                    }
+                    TEST_ASSERT(approx_eq(alias_buf[(k * ny + j) * 2 + 0], expected, tol));
+                    TEST_ASSERT(approx_eq(alias_buf[(k * ny + j) * 2 + 1], expected, tol));
+                }
+            }
+        }
+
+        // Axis Y: 3 -> 5
+        {
+            const std::size_t out_dim = 5;
+            std::vector<T> D(out_dim * ny);
+            for (std::size_t r = 0; r < out_dim; ++r) {
+                for (std::size_t c = 0; c < ny; ++c) {
+                    D[r * ny + c] = static_cast<T>(r + 2 * c + 1) * T{0.15};
+                }
+            }
+            std::vector<T> out(nx * out_dim * nz, T{0});
+            {
+                ZeroMallocGuard guard("contract_axis_rect_y");
+                contract_axis_rect<Axis::Y>(std::span<const T>(D), std::span<const T>(in), std::span<T>(out),
+                                            out_dim, nx, ny, nz);
+            }
+            for (std::size_t k = 0; k < nz; ++k) {
+                for (std::size_t j = 0; j < out_dim; ++j) {
+                    for (std::size_t i = 0; i < nx; ++i) {
+                        T expected{0};
+                        for (std::size_t q = 0; q < ny; ++q) {
+                            expected += D[j * ny + q] * in[(k * ny + q) * nx + i];
+                        }
+                        TEST_ASSERT(approx_eq(out[(k * out_dim + j) * nx + i], expected, tol));
+                    }
+                }
+            }
+        }
+
+        // Axis Z: 2 -> 4
+        {
+            const std::size_t out_dim = 4;
+            std::vector<T> D(out_dim * nz);
+            for (std::size_t r = 0; r < out_dim; ++r) {
+                for (std::size_t c = 0; c < nz; ++c) {
+                    D[r * nz + c] = static_cast<T>((r + 1) * 3 - c) * T{0.2};
+                }
+            }
+            std::vector<T> out(nx * ny * out_dim, T{0});
+            {
+                ZeroMallocGuard guard("contract_axis_rect_z");
+                contract_axis_rect<Axis::Z>(D.data(), in.data(), out.data(), out_dim, nx, ny, nz);
+            }
+            for (std::size_t k = 0; k < out_dim; ++k) {
+                for (std::size_t j = 0; j < ny; ++j) {
+                    for (std::size_t i = 0; i < nx; ++i) {
+                        T expected{0};
+                        for (std::size_t r = 0; r < nz; ++r) {
+                            expected += D[k * nz + r] * in[(r * ny + j) * nx + i];
+                        }
+                        TEST_ASSERT(approx_eq(out[(k * ny + j) * nx + i], expected, tol));
+                    }
+                }
+            }
+        }
+    }
+
+    // 2) contract_axis_batched: square (including exact in-place for >1024 total) and rectangular
+    {
+        const std::size_t nx = 5, ny = 4, nz = 3;
+        const std::size_t elem_in = nx * ny * nz; // 60
+        const std::size_t B = 24;                 // 24 * 60 = 1440 > STACK_TOTAL_CAP (1024)
+        std::vector<T> in(B * elem_in);
+        for (std::size_t i = 0; i < in.size(); ++i) {
+            in[i] = static_cast<T>((i % 19) + 1) * T{0.1};
+        }
+
+        // Square batched along Y (4 x 4)
+        std::vector<T> D_sq(ny * ny);
+        for (std::size_t r = 0; r < ny; ++r) {
+            for (std::size_t c = 0; c < ny; ++c) {
+                D_sq[r * ny + c] = (r == c) ? T{2} : T{-0.25};
+            }
+        }
+        std::vector<T> out_sq(B * elem_in, T{0});
+        {
+            ZeroMallocGuard guard("contract_axis_batched_sq");
+            contract_axis_batched<Axis::Y, 4>(D_sq.data(), in.data(), out_sq.data(), nx, ny, nz, B);
+        }
+        // Exact in-place batched (>1024 total elements, uses per-element stack buffer -> 0 mallocs)
+        std::vector<T> inplace_sq = in;
+        {
+            ZeroMallocGuard guard("contract_axis_batched_sq_inplace");
+            contract_axis_batched<Axis::Y, 4>(std::span<const T>(D_sq), std::span<const T>(inplace_sq),
+                                              std::span<T>(inplace_sq), nx, ny, nz, B);
+        }
+        for (std::size_t i = 0; i < out_sq.size(); ++i) {
+            TEST_ASSERT(approx_eq(inplace_sq[i], out_sq[i], tol));
+        }
+
+        // Rectangular batched along X (3 <- 5)
+        const std::size_t out_dim = 3;
+        std::vector<T> D_rect(out_dim * nx);
+        for (std::size_t r = 0; r < out_dim; ++r) {
+            for (std::size_t c = 0; c < nx; ++c) {
+                D_rect[r * nx + c] = static_cast<T>(r + c + 1) * T{0.1};
+            }
+        }
+        const std::size_t elem_out = out_dim * ny * nz;
+        std::vector<T> out_rect(B * elem_out, T{0});
+        {
+            ZeroMallocGuard guard("contract_axis_batched_rect");
+            contract_axis_batched<Axis::X>(std::span<const T>(D_rect), std::span<const T>(in),
+                                           std::span<T>(out_rect), out_dim, nx, ny, nz, B);
+        }
+        for (std::size_t b = 0; b < B; ++b) {
+            std::vector<T> single_out(elem_out, T{0});
+            contract_axis_rect<Axis::X>(D_rect.data(), in.data() + b * elem_in, single_out.data(),
+                                        out_dim, nx, ny, nz);
+            for (std::size_t i = 0; i < elem_out; ++i) {
+                TEST_ASSERT(approx_eq(out_rect[b * elem_out + i], single_out[i], tol));
+            }
+        }
+    }
+
+    // 3) lu_factor_nxn_batched + lu_solve_nxn_batched (multi-RHS IMEX reuse, in-place, span)
+    auto test_lu_n = [&](auto tag) {
+        constexpr std::size_t N = decltype(tag)::value;
+        for (std::size_t E : {std::size_t{1}, std::size_t{5}, std::size_t{17}}) {
+            std::vector<T> A(N * N * E), LU(N * N * E);
+            std::vector<std::uint8_t> piv(N * E, 0);
+            std::vector<T> b1(N * E), b2(N * E), x1(N * E), x2(N * E);
+            std::vector<T> x1_ref(N * E), x2_ref(N * E);
+
+            std::array<const T*, N * N> Ap{};
+            std::array<T*, N * N> LUp{};
+            std::array<std::uint8_t*, N> pivp{};
+            std::array<const T*, N> b1p{}, b2p{};
+            std::array<T*, N> x1p{}, x2p{}, x1_refp{}, x2_refp{};
+
+            for (std::size_t i = 0; i < N * N; ++i) {
+                Ap[i] = A.data() + i * E;
+                LUp[i] = LU.data() + i * E;
+            }
+            for (std::size_t i = 0; i < N; ++i) {
+                pivp[i] = piv.data() + i * E;
+                b1p[i] = b1.data() + i * E;
+                b2p[i] = b2.data() + i * E;
+                x1p[i] = x1.data() + i * E;
+                x2p[i] = x2.data() + i * E;
+                x1_refp[i] = x1_ref.data() + i * E;
+                x2_refp[i] = x2_ref.data() + i * E;
+            }
+
+            for (std::size_t e = 0; e < E; ++e) {
+                for (std::size_t r = 0; r < N; ++r) {
+                    const std::size_t pr = (r + e + 1) % N; // forces pivoting
+                    for (std::size_t c = 0; c < N; ++c) {
+                        T val = static_cast<T>(((r + 1) * 3 + c + e) % 7 + 1) * T{0.1};
+                        if (pr == c) val += static_cast<T>(N * 4);
+                        A[(r * N + c) * E + e] = val;
+                    }
+                    b1[r * E + e] = static_cast<T>(r + 1 + (e % 5)) * T{0.5};
+                    b2[r * E + e] = static_cast<T>(N - r + (e % 3)) * T{-0.75};
+                }
+            }
+
+            solve_nxn_batched<N>(Ap.data(), b1p.data(), x1_refp.data(), E);
+            solve_nxn_batched<N>(Ap.data(), b2p.data(), x2_refp.data(), E);
+
+            std::vector<T> b2_inplace = b2;
+            std::array<T*, N> b2_inp{};
+            for (std::size_t i = 0; i < N; ++i) b2_inp[i] = b2_inplace.data() + i * E;
+
+            {
+                ZeroMallocGuard guard("lu_factor_solve_nxn");
+                lu_factor_nxn_batched<N>(std::span(Ap), std::span(LUp), std::span(pivp), E);
+                lu_solve_nxn_batched<N>(std::span(LUp), std::span(pivp), std::span(b1p), std::span(x1p), E);
+                // Second RHS reusing the same LU factors + in-place x2 == b2
+                lu_solve_nxn_batched<N>(LUp.data(), pivp.data(), b2_inp.data(), b2_inp.data(), E);
+            }
+            x2 = b2_inplace;
+
+            for (std::size_t i = 0; i < N * E; ++i) {
+                TEST_ASSERT(approx_eq(x1[i], x1_ref[i], tol));
+                TEST_ASSERT(approx_eq(x2[i], x2_ref[i], tol));
+            }
+        }
+    };
+    test_lu_n(std::integral_constant<std::size_t, 2>{});
+    test_lu_n(std::integral_constant<std::size_t, 3>{});
+    test_lu_n(std::integral_constant<std::size_t, 4>{});
+    test_lu_n(std::integral_constant<std::size_t, 5>{});
+    test_lu_n(std::integral_constant<std::size_t, 6>{});
+
+#if !defined(KEISAN_NO_EXCEPTIONS)
+    // Singular & NaN/Inf detection in lu_factor_nxn_batched (SIMD N=4 + scalar tail)
+    if constexpr (std::is_same_v<T, double>) {
+        constexpr std::size_t B = 9;
+        std::vector<double> A(16 * B, 0.0), LU(16 * B, 0.0);
+        std::vector<std::uint8_t> piv(4 * B, 0);
+        std::array<const double*, 16> Ap{};
+        std::array<double*, 16> LUp{};
+        std::array<std::uint8_t*, 4> pivp{};
+        for (std::size_t i = 0; i < 16; ++i) {
+            Ap[i] = A.data() + i * B;
+            LUp[i] = LU.data() + i * B;
+        }
+        for (std::size_t i = 0; i < 4; ++i) pivp[i] = piv.data() + i * B;
+        for (std::size_t e = 0; e < B; ++e) {
+            for (std::size_t i = 0; i < 4; ++i) A[(i * 4 + i) * B + e] = 2.0;
+        }
+
+        // Singular in tail
+        A[0 * B + (B - 1)] = 0.0;
+        bool threw_sing = false;
+        try {
+            lu_factor_nxn_batched<4>(Ap.data(), LUp.data(), pivp.data(), B);
+        } catch (const std::runtime_error&) {
+            threw_sing = true;
+        }
+        TEST_ASSERT(threw_sing);
+
+        // NaN in SIMD lane
+        A[0 * B + (B - 1)] = 2.0;
+        A[0] = std::numeric_limits<double>::quiet_NaN();
+        bool threw_nan = false;
+        try {
+            lu_factor_nxn_batched<4>(Ap.data(), LUp.data(), pivp.data(), B);
+        } catch (const std::runtime_error&) {
+            threw_nan = true;
+        }
+        TEST_ASSERT(threw_nan);
+    }
+#endif
+}
+
+void test_static_extent_preservation() {
+    using namespace keisan;
+    std::array<float, 4> a_arr = {1.0f, 2.0f, 3.0f, 4.0f};
+    std::array<float, 4> b_arr = {5.0f, 6.0f, 7.0f, 8.0f};
+    std::array<float, 4> out_arr = {0.0f, 0.0f, 0.0f, 0.0f};
+    std::span<float, 4> a_sp(a_arr);
+    std::span<const float, 4> b_sp(b_arr);
+    std::span<float, 4> out_sp(out_arr);
+
+    auto expr = 2.0f * a_sp + b_sp;
+    static_assert(detail::static_extent_v<decltype(a_sp)> == 4);
+    static_assert(detail::static_extent_v<decltype(expr)> == 4);
+    static_assert(detail::static_extent_v<decltype(-expr)> == 4);
+    static_assert(detail::static_extent_v<decltype(fma(a_sp, 2.0f, b_sp))> == 4);
+    static_assert(detail::static_extent_v<std::span<float>> == std::dynamic_extent);
+
+    {
+        ZeroMallocGuard guard("static_extent_span4");
+        out_sp <<= expr;
+    }
+    TEST_ASSERT(approx_eq(out_arr[0], 7.0f) && approx_eq(out_arr[3], 16.0f));
+
+    std::array<double, 3> d_a = {1.0, 2.0, 3.0};
+    std::array<double, 3> d_out = {0.0, 0.0, 0.0};
+    {
+        ZeroMallocGuard guard("static_extent_array3");
+        d_out <<= d_a * 3.0 + 1.0;
+    }
+    TEST_ASSERT(approx_eq(d_out[0], 4.0) && approx_eq(d_out[2], 10.0));
+}
+
 } // namespace
 
 int main() {
@@ -1063,6 +1382,9 @@ int main() {
     test_simd_tails_reductions_and_fused<float>();
     test_assign_par_paths();
     test_audit_regressions();
+    test_option_a_for_type<double>();
+    test_option_a_for_type<float>();
+    test_static_extent_preservation();
 
     std::cout << "ALL EDGE CASE, CONSTEXPR, AND DETERMINISM TESTS PASSED!\n";
     return 0;

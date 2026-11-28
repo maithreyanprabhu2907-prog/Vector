@@ -14,7 +14,7 @@
 - **Invariants & Pitfalls**: Caller must ensure `dst` has at least `n` elements and `src.size() == n` (checked by higher-level `assign`).
 
 ### `assign(std::vector<T, Alloc>& dst, const Src& src)`
-- **Behavior**: Resizes `dst` if needed (unless `KEISAN_STRICT_ZERO_MALLOC` is defined, in which case a size mismatch throws `std::bad_alloc`), validates operand sizes, and dispatches to `eval_into`.
+- **Behavior**: Evaluates `src` into `dst` without reallocating; unconditionally throws `std::length_error` if `dst.capacity() < src.size()`. Dispatches to `eval_into`.
 - **Architectural Rationale**: Separating *construction* of expressions (`+`, `-`, `*`, `/`, `fma`) from *evaluation* (`assign`) guarantees a single fused pass over memory with zero temporary heap allocations.
 
 ### `assign_stream(std::vector<T, Alloc>& dst, const Src& src)`
@@ -23,7 +23,7 @@
 - **Pitfalls**: Requires 32-byte alignment for AVX (`aligned_vector<double>` / `aligned_vector<float>` handles this automatically). For small L1/L2-resident arrays, `assign()` is faster because it keeps `dst` hot in cache.
 
 ### `assign_par(std::vector<T, Alloc>& dst, const Src& src)`
-- **Behavior**: Resizes `dst` to `n` if needed (unless `KEISAN_STRICT_ZERO_MALLOC` is defined, in which case `dst.capacity() < n` throws `std::bad_alloc`), validates operand sizes, and evaluates `src` into `dst` across OpenMP threads (`#pragma omp parallel for`) when compiled with `_OPENMP`. For small/L2-resident vectors (`n < 131072`), it delegates directly to `assign(dst, src)` to avoid OpenMP fork/join overhead.
+- **Behavior**: Resizes `dst` to `n` if needed (unless `KEISAN_STRICT_ZERO_MALLOC` is defined, in which case `dst.capacity() < n` throws `std::length_error`), validates operand sizes, and evaluates `src` into `dst` across OpenMP threads (`#pragma omp parallel for`) when compiled with `_OPENMP`. For small/L2-resident vectors (`n < 131072`), it delegates directly to `assign(dst, src)` to avoid OpenMP fork/join overhead.
 - **Architectural Rationale**: Memory-bandwidth-bound kernels saturate a single core's memory controller around ~45–60 GB/s; multi-core OpenMP scaling helps on multi-socket/NUMA or compute-heavy transcendental expressions (`sin`, `cos`, `exp`, `pow`), while the `n < 131072` serial threshold keeps L1/L2 operations fast.
 
 ### Compound Assignment (`+=`, `-=`, `*=`, `/=`)
@@ -51,25 +51,25 @@
 - **Architectural Rationale**: DG solvers frequently slice a single field component out of AoS layouts or extract a face/slice without copying into a contiguous temporary. `OperandStorage` detects `is_strided_span_v` and stores `StridedSpan` directly while disabling contiguous `std::simd::unchecked_load` fast paths.
 
 ### `WorkspaceArena`
-- **Behavior**: Pre-allocates a single 64B-aligned byte buffer (`WorkspaceArena(capacity_bytes)`). `allocate<T>(count)` returns a 64B-aligned `std::span<T>` in $O(1)$ via bump-pointer arithmetic; `reset()` rewinds the offset to `0` without freeing memory. Throws `std::bad_alloc` on overflow (or aborts under `KEISAN_NO_EXCEPTIONS`).
+- **Behavior**: Pre-allocates a single 64B-aligned byte buffer (`WorkspaceArena(capacity_bytes)`). `allocate<T>(count)` returns a 64B-aligned `std::span<T>` in $O(1)$ via bump-pointer arithmetic; `reset()` rewinds the offset to `0` without freeing memory. Throws `std::length_error` on size overflow or capacity exceeded (or aborts under `KEISAN_NO_EXCEPTIONS`).
 - **Architectural Rationale**: Runge-Kutta time-stepping cannot afford `malloc`/`free` syscalls or page faults inside inner stages. `WorkspaceArena` gives deterministic, zero-fragmentation scratchpad memory.
 
 ---
 
 ## 3. `kreduce` — Reductions, Norms & Reproducibility
 
-### `ReductionPolicy` (`FAST`, `REPRO`, `DETERMINISTIC`)
+### `ReductionPolicy` (`FAST`, `REPRO`)
 - **`FAST`** (default): Uses dual-accumulator `std::simd::vec<T>` (`acc0`, `acc1`) + `std::simd::reduce` for maximum throughput. Non-associative across different SIMD widths.
-- **`REPRO` / `DETERMINISTIC`**: Executes an iterative pairwise binary-tree summation over a 64-slot stack buffer. Produces **bit-identical IEEE-754 results** regardless of CPU SIMD width or OpenMP thread count.
+- **`REPRO`**: Executes a recursive divide-and-conquer pairwise binary-tree reduction (`detail::pairwise_tree_sum` / `detail::pairwise_tree_blocks`) over 512-element blocks. Produces **bit-identical IEEE-754 results** regardless of CPU SIMD width or OpenMP thread count.
 
-### `sum(op, policy)` / `sum_repro(op)` / `sum_par(op)`
-- **Behavior**: Returns the sum of all elements in `op` (`T{0}` if empty).
+### `sum(op, policy)` / `sum_repro(op)` / `sum_par(op)` / `sum_deterministic(op)`
+- **Behavior**: Returns the sum of all elements in `op` (`T{0}` if empty). `sum_deterministic` performs a strictly sequential scalar loop for bit-identical regression baselines.
 - **Architectural Rationale**:
   - `sum()` uses `if !consteval` so `static_assert(sum(arr) == ...)` works at compile time while runtime contiguous `double`/`float` paths execute dual-accumulator `std::simd::vec` loops (hiding 4-cycle FMA/ADD latency).
   - `sum_par()` uses a serial threshold (`n < 131072`) to avoid OpenMP fork/join overhead on L1/L2-resident vectors, and delegates each thread's contiguous slice to `sum()` so every core runs `std::simd`.
 
-### `dot(lhs, rhs, policy)` / `dot_repro(lhs, rhs)` / `dot_par(lhs, rhs)`
-- **Behavior**: Computes $\sum_i \text{lhs}[i] \cdot \text{rhs}[i]$ (throws `std::invalid_argument` on size mismatch).
+### `dot(lhs, rhs, policy)` / `dot_repro(lhs, rhs)` / `dot_par(lhs, rhs)` / `dot_deterministic(lhs, rhs)`
+- **Behavior**: Computes $\sum_i \text{lhs}[i] \cdot \text{rhs}[i]$ (throws `std::invalid_argument` on size mismatch). `dot_deterministic` performs a strictly sequential scalar loop for regression baselines.
 - **Architectural Rationale**: Same dual-accumulator `std::simd` FMA pattern as `sum()`, with `dot_par` delegating thread slices to `dot()`.
 
 ### `norm(op)`, `norm_sq(op)`, `norm_l1(op)`, `norm_inf(op)`
@@ -96,12 +96,21 @@
 - **Behavior**: 3D tensor-product sum-factorization contraction along `Axis::X`, `Axis::Y`, or `Axis::Z` (supports raw pointers and `std::span`, with optional compile-time `N` for unrolling). `Axis::Y` (`nx` inner loop) and `Axis::Z` (`nxy` inner loop) are explicitly vectorized with `std::simd::vec` via `detail::scale_slice` and `detail::axpy_slice` for contiguous `double`/`float`.
 - **Architectural Rationale**: Replaces $O(N^6)$ 3D dense operator application with three $O(N^4)$ 1D contractions. `Axis::Y` and `Axis::Z` place the `nx` (`i`/`p`) dimension innermost so all loads/stores are unit-stride (`KEISAN_RESTRICT` via `detail::contract_axis_noalias`) and vectorize cleanly with `std::simd::vec`.
 
+### `contract_axis_rect<AxisParam, OutDim = 0, InDim = 0>(D, in, out, out_dim, nx, ny, nz = 1)`
+- **Behavior**: Rectangular `out_dim x in_dim` 3D tensor contraction along `Axis::X`, `Axis::Y`, or `Axis::Z` (pointer and `std::span` overloads), supporting non-square nodal-to-quadrature / projection operators with full aliasing and overflow guards.
+
+### `contract_axis_batched<AxisParam, ...>(D, in, out, [out_dim,] nx, ny, nz, batch_count)`
+- **Behavior**: Batched 3D tensor contraction across `batch_count` elements (7-arg square and 8-arg rectangular forms, pointer and `std::span` overloads). Supports exact in-place square contraction via per-element stack buffering and enforces full aliasing/overflow guards.
+
 ### `solve_nxn_batched<N>(A_soa, b_soa, x_soa, num_elements)` & `solve_4x4_batched(...)`
 - **Behavior**: Solves `num_elements` independent $N\times N$ linear systems stored in Structure-of-Arrays (SoA) layout (`A_soa[r * N + c][e]`). Supports in-place `x_soa == b_soa`. `solve_4x4_batched` delegates to `solve_nxn_batched<4>`.
 - **Architectural Rationale**:
   - Vectorizes **across systems** (`W = std::simd::vec<T>::size()` elements in lockstep) rather than within a single small matrix.
   - Uses branchless `std::simd::select` for partial pivoting, hoisting `abs_i` across the pivot loop, and for `N >= 6` reuses `rhs[]` in-place for the back-substitution solution (saving `N` vector registers without altering `N <= 4`).
   - Computes `max_abs = max(|A[r][c]|)` in registers and checks `!(abs_diag > max_abs * rel_eps)` (`1e-6` for `float`, `1e-14` for `double`), accumulating a `singular_flag` mask and throwing **after** the SIMD loop—preserving full vectorization while catching both `float` numerical singularities and `NaN` pivots without false positives on small-scale well-conditioned systems.
+
+### `lu_factor_nxn_batched<N>(A_soa, lu_soa, piv_soa, num_elements)` & `lu_solve_nxn_batched<N>(lu_soa, piv_soa, b_soa, x_soa, num_elements)`
+- **Behavior**: Splits SoA batched $N\times N$ LU factorization (`N <= 16`) and forward/back-substitution (pointer and `std::span` overloads) so multi-RHS IMEX stages can factor once and solve repeatedly without re-factoring. Uses `std::simd` for `N <= 4`, performs scale-invariant `NaN`/`Inf`/singularity checks, and supports in-place `lu_soa == A_soa` and `x_soa == b_soa`.
 
 ### `gather` & `scatter_add`
 - **Behavior**: Indirect surface flux gather (`dst[i] = src[indices[i]]`) and accumulation (`dst[indices[i]] += src[i]`) for raw pointers and `std::span`.
@@ -121,5 +130,5 @@
 - **`VecExpression<T>` / `VectorOperand<T>`**: Lazy expression AST nodes and valid operands.
 - **`sycl_compatible<T>`**: `std::is_trivially_copyable_v<std::remove_cvref_t<T>>`.
 - **`KEISAN_NO_INTRINSICS`**: Disables `<simd>` and x86 streaming intrinsics for pure portable scalar fallback.
-- **`KEISAN_STRICT_ZERO_MALLOC`**: Throws `std::bad_alloc` if `assign()` or `assign_par()` encounters `dst.capacity() < n`.
-- **`KEISAN_NO_EXCEPTIONS`**: Replaces `throw` with `std::abort()` (host) or `__builtin_trap()` (device).
+- **`KEISAN_STRICT_ZERO_MALLOC`**: Throws `std::length_error` in `assign_par()` if `dst.capacity() < n`, and throws `std::bad_alloc` if aliasing stack buffers overflow in `eval_into`, `apply_vec_inplace_ptr`, `matvec*`, `gather`, or `contract_axis`.
+- **`KEISAN_NO_EXCEPTIONS`**: Replaces `throw` with `assert` + `std::abort()` on host (`assert` on `__SYCL_DEVICE_ONLY__`).

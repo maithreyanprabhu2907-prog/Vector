@@ -27,7 +27,6 @@
 #include <cstdlib>
 #include <functional>
 #include <limits>
-#include <stdlib.h>
 #include <new>
 #if !defined(__SYCL_DEVICE_ONLY__) && __has_include(<simd>)
 #include <simd>
@@ -136,7 +135,6 @@
 #define KEISAN_DEVICE_ASSERT(cond, msg) assert((cond) && (msg))
 #elif defined(KEISAN_NO_EXCEPTIONS)
 #include <cassert>
-#include <cstdlib>
 #define KEISAN_THROW_OR_ABORT(exc_type, msg) do { assert(false && (msg)); std::abort(); } while (false)
 #define KEISAN_THROW_BAD_ALLOC(msg) do { assert(false && (msg)); std::abort(); } while (false)
 #define KEISAN_DEVICE_ASSERT(cond, msg) do { if (!(cond)) { assert(false && (msg)); std::abort(); } } while (false)
@@ -504,10 +502,27 @@ namespace keisan {
             }
         };
 
+        template<typename T>
+        struct static_extent_of : std::integral_constant<std::size_t, std::dynamic_extent> {};
+
+        template<typename U, std::size_t Extent>
+        struct static_extent_of<std::span<U, Extent>> : std::integral_constant<std::size_t, Extent> {};
+
+        template<typename U, std::size_t N>
+        struct static_extent_of<std::array<U, N>> : std::integral_constant<std::size_t, N> {};
+
+        template<typename T>
+        requires requires { T::static_extent; }
+        struct static_extent_of<T> : std::integral_constant<std::size_t, T::static_extent> {};
+
+        template<typename T>
+        inline constexpr std::size_t static_extent_v = static_extent_of<std::remove_cvref_t<T>>::value;
+
         // TriviallyCopyable View of std::vector operands for expression evaluation
         template<NumericVector Vec>
         struct VecRef {
             using value_type = typename std::remove_cvref_t<Vec>::value_type;
+            static constexpr std::size_t static_extent = static_extent_v<Vec>;
             const value_type* ptr_ = nullptr;
             std::size_t size_ = 0;
 
@@ -540,6 +555,7 @@ namespace keisan {
         template<Scalar S>
         struct ScalarVal {
             using value_type = S;
+            static constexpr std::size_t static_extent = std::dynamic_extent;
             S val;
 
             constexpr ScalarVal() noexcept : val(0) {}
@@ -603,6 +619,8 @@ namespace keisan {
                 std::declval<typename Lhs::value_type>(),
                 std::declval<typename Rhs::value_type>()
             ))>;
+            static constexpr std::size_t static_extent =
+                (static_extent_v<Lhs> != std::dynamic_extent) ? static_extent_v<Lhs> : static_extent_v<Rhs>;
 
             Op op;
             Lhs lhs;
@@ -660,6 +678,7 @@ namespace keisan {
         template<typename Op, typename Operand>
         struct UnaryExpr : ExprBase {
             using value_type = std::remove_cvref_t<decltype(std::declval<Op>()(std::declval<typename Operand::value_type>()))>;
+            static constexpr std::size_t static_extent = static_extent_v<Operand>;
 
             Op op;
             Operand operand;
@@ -708,6 +727,10 @@ namespace keisan {
                 std::declval<typename B::value_type>(),
                 std::declval<typename C::value_type>()
             ))>;
+            static constexpr std::size_t static_extent =
+                (static_extent_v<A> != std::dynamic_extent) ? static_extent_v<A> :
+                (static_extent_v<B> != std::dynamic_extent) ? static_extent_v<B> :
+                static_extent_v<C>;
 
             Op op;
             A a;
@@ -904,14 +927,16 @@ namespace keisan {
 #endif
     }
 
-    template<typename T, VectorOperand Src>
-    KEISAN_HD_INLINE void eval_into(T* dst, std::size_t n, const Src& src) {
+    template<std::size_t StaticExtent = std::dynamic_extent, typename T, VectorOperand Src>
+    KEISAN_HD_INLINE void eval_into_extent(T* dst, std::size_t n, const Src& src) {
         if (n != src.size()) [[unlikely]] {
             KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: destination size mismatch in eval_into");
             return;
         }
         if (n == 0) return;
         auto storage = detail::make_operand(src);
+        constexpr std::size_t EffectiveExtent =
+            (StaticExtent != std::dynamic_extent) ? StaticExtent : detail::static_extent_v<decltype(storage)>;
         const char* dst_begin = reinterpret_cast<const char*>(dst);
         const char* dst_end = dst_begin + n * sizeof(T);
         if (detail::has_partial_overlap(storage, dst_begin, dst_end, sizeof(T))) {
@@ -959,23 +984,46 @@ namespace keisan {
             using V = std::simd::vec<T>;
             if constexpr (detail::can_eval_simd_v<decltype(storage), V>) {
                 constexpr std::size_t W = V::size();
-                std::size_t i = 0;
-                for (; i + W <= n; i += W) {
-                    const V v = storage.template eval_simd<V>(i);
-                    std::simd::unchecked_store(v, std::span<T>(dst + i, W));
-                }
-                for (; i < n; ++i) {
-                    dst[i] = static_cast<T>(storage[i]);
+                if constexpr (EffectiveExtent != std::dynamic_extent) {
+                    constexpr std::size_t vec_end = (EffectiveExtent / W) * W;
+                    for (std::size_t i = 0; i < vec_end; i += W) {
+                        const V v = storage.template eval_simd<V>(i);
+                        std::simd::unchecked_store(v, std::span<T>(dst + i, W));
+                    }
+                    for (std::size_t i = vec_end; i < EffectiveExtent; ++i) {
+                        dst[i] = static_cast<T>(storage[i]);
+                    }
+                } else {
+                    std::size_t i = 0;
+                    for (; i + W <= n; i += W) {
+                        const V v = storage.template eval_simd<V>(i);
+                        std::simd::unchecked_store(v, std::span<T>(dst + i, W));
+                    }
+                    for (; i < n; ++i) {
+                        dst[i] = static_cast<T>(storage[i]);
+                    }
                 }
                 return;
             }
         }
 #endif
 
-        KEISAN_PRAGMA_SIMD
-        for (std::size_t i = 0; i < n; ++i) {
-            dst[i] = static_cast<T>(storage[i]);
+        if constexpr (EffectiveExtent != std::dynamic_extent) {
+            KEISAN_PRAGMA_SIMD
+            for (std::size_t i = 0; i < EffectiveExtent; ++i) {
+                dst[i] = static_cast<T>(storage[i]);
+            }
+        } else {
+            KEISAN_PRAGMA_SIMD
+            for (std::size_t i = 0; i < n; ++i) {
+                dst[i] = static_cast<T>(storage[i]);
+            }
         }
+    }
+
+    template<typename T, VectorOperand Src>
+    KEISAN_HD_INLINE void eval_into(T* dst, std::size_t n, const Src& src) {
+        eval_into_extent<std::dynamic_extent>(dst, n, src);
     }
 
     namespace detail {
@@ -1127,13 +1175,13 @@ namespace keisan {
         template<typename T, std::size_t Extent, VectorOperand Src>
         KEISAN_HD_INLINE void assign_zero_malloc(std::span<T, Extent> dst, const Src &src) {
             KEISAN_CHECK_SIZE_EQ(dst.size(), src.size(), "keisan: span size mismatch in assignment");
-            eval_into(dst.data(), dst.size(), src);
+            eval_into_extent<Extent>(dst.data(), dst.size(), src);
         }
 
         template<typename T, std::size_t N, VectorOperand Src>
         KEISAN_HD_INLINE void assign_zero_malloc(std::array<T, N> &dst, const Src &src) {
             KEISAN_CHECK_SIZE_EQ(N, src.size(), "keisan: array size mismatch in assignment");
-            eval_into(dst.data(), N, src);
+            eval_into_extent<N>(dst.data(), N, src);
         }
     }
 
@@ -3036,6 +3084,352 @@ namespace keisan {
         solve_nxn_batched<4, T>(A_soa, b_soa, x_soa, num_elements);
     }
 
+    // Reusable batched LU factorization in SoA layout: P A = L U.
+    // Stores U (with 1/U[r][r] on diagonal) and L multipliers (below diagonal) in lu_soa
+    // (which may alias A_soa for in-place factorization), and row pivot indices in piv_soa.
+    template<std::size_t N, typename T, typename PivT = std::uint8_t>
+    KEISAN_HOST_DEVICE inline void lu_factor_nxn_batched(
+        const T* const* A_soa, // N*N pointers, each pointing to array of size num_elements
+        T* const* lu_soa,      // N*N pointers, each pointing to array of size num_elements
+        PivT* const* piv_soa,  // N (or N-1) pointers, each pointing to array of size num_elements
+        std::size_t num_elements
+    ) {
+        static_assert(N <= 16, "keisan: lu_factor_nxn_batched<N> is intended for small systems (N <= 16)");
+        if constexpr (N == 0) {
+            return;
+        } else {
+            if (num_elements == 0) return;
+
+            int singular_flag = 0;
+            std::size_t e = 0;
+
+#if defined(KEISAN_HAS_STD_SIMD)
+            if constexpr ((N <= 4) && (std::is_same_v<T, double> || std::is_same_v<T, float>)) {
+                using V = std::simd::vec<T>;
+                using M = typename V::mask_type;
+                constexpr std::size_t W = V::size();
+                M any_singular(false);
+                const V max_finite(std::numeric_limits<T>::max());
+
+                for (; e + W <= num_elements; e += W) {
+                    V a[N][N];
+                    V max_abs(T{0});
+                    M nonfinite_mat(false);
+                    for (std::size_t r = 0; r < N; ++r) {
+                        for (std::size_t c = 0; c < N; ++c) {
+                            const V val = std::simd::unchecked_load<V>(
+                                std::span<const T>(A_soa[r * N + c] + e, W));
+                            a[r][c] = val;
+                            const V aval = std::simd::select(val < V(T{0}), -val, val);
+                            nonfinite_mat = nonfinite_mat || !(aval <= max_finite);
+                            max_abs = std::simd::select(aval > max_abs, aval, max_abs);
+                        }
+                    }
+                    constexpr T rel_eps = std::is_same_v<T, float> ? T{1e-6} : T{1e-14};
+                    const V sing_tol = max_abs * V(rel_eps);
+
+                    for (std::size_t i = 0; i < N; ++i) {
+                        V abs_i = std::simd::select(a[i][i] < V(T{0}), -a[i][i], a[i][i]);
+                        V piv_v(static_cast<T>(i));
+                        for (std::size_t k = i + 1; k < N; ++k) {
+                            const V abs_k = std::simd::select(a[k][i] < V(T{0}), -a[k][i], a[k][i]);
+                            const M i_nan = (abs_i != abs_i);
+                            const M k_ok = (abs_k == abs_k);
+                            const M is_better = (abs_k > abs_i) || (i_nan && k_ok);
+                            abs_i = std::simd::select(is_better, abs_k, abs_i);
+                            piv_v = std::simd::select(is_better, V(static_cast<T>(k)), piv_v);
+                        }
+                        // Perform at most one row swap per lane (i <-> piv_v) so L and P match piv_soa[i].
+                        for (std::size_t k = i + 1; k < N; ++k) {
+                            const M do_swap = (piv_v == V(static_cast<T>(k)));
+                            for (std::size_t c = 0; c < N; ++c) {
+                                const V ai = a[i][c];
+                                const V ak = a[k][c];
+                                a[i][c] = std::simd::select(do_swap, ak, ai);
+                                a[k][c] = std::simd::select(do_swap, ai, ak);
+                            }
+                        }
+
+                        if (i + 1 < N) {
+                            T piv_tmp[W];
+                            std::simd::unchecked_store(piv_v, std::span<T>(piv_tmp, W));
+                            for (std::size_t lane = 0; lane < W; ++lane) {
+                                piv_soa[i][e + lane] = static_cast<PivT>(piv_tmp[lane]);
+                            }
+                        }
+
+                        const V diag = a[i][i];
+                        const M is_sing = nonfinite_mat || !(abs_i > sing_tol) || !(abs_i <= max_finite);
+                        any_singular = any_singular || is_sing;
+                        const V safe_diag = std::simd::select(is_sing, V(T{1}), diag);
+                        const V inv_diag = V(T{1}) / safe_diag;
+                        a[i][i] = inv_diag;
+
+                        for (std::size_t k = i + 1; k < N; ++k) {
+                            const V factor = a[k][i] * inv_diag;
+                            a[k][i] = factor;
+                            for (std::size_t c = i + 1; c < N; ++c) {
+                                a[k][c] -= factor * a[i][c];
+                            }
+                        }
+                    }
+
+                    for (std::size_t r = 0; r < N; ++r) {
+                        for (std::size_t c = 0; c < N; ++c) {
+                            std::simd::unchecked_store(a[r][c], std::span<T>(lu_soa[r * N + c] + e, W));
+                        }
+                    }
+                }
+
+                if (std::simd::any_of(any_singular)) {
+                    singular_flag = 1;
+                }
+            }
+#endif
+
+            for (; e < num_elements; ++e) {
+                T a[N][N];
+                T max_abs{0};
+                bool nonfinite_mat = false;
+                for (std::size_t r = 0; r < N; ++r) {
+                    for (std::size_t c = 0; c < N; ++c) {
+                        const T val = A_soa[r * N + c][e];
+                        a[r][c] = val;
+                        const T aval = std::abs(val);
+                        if (!std::isfinite(aval)) {
+                            nonfinite_mat = true;
+                        } else if (aval > max_abs) {
+                            max_abs = aval;
+                        }
+                    }
+                }
+                constexpr T rel_eps = std::is_same_v<T, float> ? T{1e-6} : T{1e-14};
+                const T sing_tol = max_abs * rel_eps;
+
+                for (std::size_t i = 0; i < N; ++i) {
+                    std::size_t pivot_row = i;
+                    T best_abs = std::abs(a[i][i]);
+                    bool best_nan = !std::isfinite(best_abs);
+                    for (std::size_t k = i + 1; k < N; ++k) {
+                        const T cand_abs = std::abs(a[k][i]);
+                        if (std::isfinite(cand_abs) && (best_nan || cand_abs > best_abs)) {
+                            best_abs = cand_abs;
+                            best_nan = false;
+                            pivot_row = k;
+                        }
+                    }
+                    if (i + 1 < N) {
+                        piv_soa[i][e] = static_cast<PivT>(pivot_row);
+                    }
+                    if (pivot_row != i) {
+                        for (std::size_t c = 0; c < N; ++c) {
+                            const T tmp = a[i][c];
+                            a[i][c] = a[pivot_row][c];
+                            a[pivot_row][c] = tmp;
+                        }
+                    }
+
+                    const T diag = a[i][i];
+                    const bool is_sing = nonfinite_mat || !std::isfinite(diag) || !(std::abs(diag) > sing_tol);
+                    if (is_sing) { singular_flag = 1; }
+                    const T safe_diag = is_sing ? T{1} : diag;
+                    const T inv_diag = T{1} / safe_diag;
+                    a[i][i] = inv_diag;
+
+                    for (std::size_t k = i + 1; k < N; ++k) {
+                        const T factor = a[k][i] * inv_diag;
+                        a[k][i] = factor;
+                        for (std::size_t c = i + 1; c < N; ++c) {
+                            a[k][c] -= factor * a[i][c];
+                        }
+                    }
+                }
+
+                for (std::size_t r = 0; r < N; ++r) {
+                    for (std::size_t c = 0; c < N; ++c) {
+                        lu_soa[r * N + c][e] = a[r][c];
+                    }
+                }
+            }
+
+            if (singular_flag) [[unlikely]] {
+                KEISAN_THROW_OR_ABORT(std::runtime_error, "keisan: singular matrix in lu_factor_nxn_batched");
+                return;
+            }
+        }
+    }
+
+    template<std::size_t N, typename APtr, typename LuPtr, typename PivPtr,
+             std::size_t AExt, std::size_t LuExt, std::size_t PivExt>
+        requires (std::is_pointer_v<APtr> &&
+                  std::is_pointer_v<LuPtr> &&
+                  std::is_pointer_v<PivPtr> &&
+                  std::is_convertible_v<APtr, const std::remove_pointer_t<LuPtr>*>)
+    KEISAN_HOST_DEVICE inline void lu_factor_nxn_batched(
+        std::span<APtr, AExt> A_soa,
+        std::span<LuPtr, LuExt> lu_soa,
+        std::span<PivPtr, PivExt> piv_soa,
+        std::size_t num_elements
+    ) {
+        if constexpr (N == 0) {
+            return;
+        } else {
+            constexpr std::size_t req_piv = (N > 1) ? (N - 1) : 0;
+            if (A_soa.size() < N * N || lu_soa.size() < N * N || piv_soa.size() < req_piv) [[unlikely]] {
+                KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: lu_factor_nxn_batched span size too small");
+                return;
+            }
+            using T = std::remove_pointer_t<LuPtr>;
+            using PivT = std::remove_pointer_t<PivPtr>;
+            lu_factor_nxn_batched<N, T, PivT>(A_soa.data(), lu_soa.data(), piv_soa.data(), num_elements);
+        }
+    }
+
+    // Solve batched NxN linear systems using pre-factored SoA LU factors and pivot indices.
+    // x_soa may alias b_soa for in-place solves.
+    template<std::size_t N, typename T, typename PivT = std::uint8_t>
+    KEISAN_HOST_DEVICE inline void lu_solve_nxn_batched(
+        const T* const* lu_soa,     // N*N pointers, each pointing to array of size num_elements
+        const PivT* const* piv_soa, // N (or N-1) pointers, each pointing to array of size num_elements
+        const T* const* b_soa,      // N pointers, each pointing to array of size num_elements
+        T* const* x_soa,            // N pointers, each pointing to array of size num_elements
+        std::size_t num_elements
+    ) {
+        static_assert(N <= 16, "keisan: lu_solve_nxn_batched<N> is intended for small systems (N <= 16)");
+        if constexpr (N == 0) {
+            return;
+        } else {
+            if (num_elements == 0) return;
+
+            std::size_t e = 0;
+
+#if defined(KEISAN_HAS_STD_SIMD)
+            if constexpr ((N <= 4) && (std::is_same_v<T, double> || std::is_same_v<T, float>)) {
+                using V = std::simd::vec<T>;
+                using M = typename V::mask_type;
+                constexpr std::size_t W = V::size();
+
+                for (; e + W <= num_elements; e += W) {
+                    V rhs[N];
+                    for (std::size_t r = 0; r < N; ++r) {
+                        rhs[r] = std::simd::unchecked_load<V>(std::span<const T>(b_soa[r] + e, W));
+                    }
+
+                    // Apply row permutations P * b
+                    for (std::size_t i = 0; i + 1 < N; ++i) {
+                        T piv_tmp[W];
+                        for (std::size_t lane = 0; lane < W; ++lane) {
+                            piv_tmp[lane] = static_cast<T>(piv_soa[i][e + lane]);
+                        }
+                        const V piv_v = std::simd::unchecked_load<V>(std::span<const T>(piv_tmp, W));
+                        for (std::size_t k = i + 1; k < N; ++k) {
+                            const M do_swap = (piv_v == V(static_cast<T>(k)));
+                            const V bi = rhs[i];
+                            const V bk = rhs[k];
+                            rhs[i] = std::simd::select(do_swap, bk, bi);
+                            rhs[k] = std::simd::select(do_swap, bi, bk);
+                        }
+                    }
+
+                    // Forward substitution: L y = P b (unit diagonal)
+                    for (std::size_t i = 0; i < N; ++i) {
+                        for (std::size_t k = i + 1; k < N; ++k) {
+                            const V factor = std::simd::unchecked_load<V>(
+                                std::span<const T>(lu_soa[k * N + i] + e, W));
+                            rhs[k] -= factor * rhs[i];
+                        }
+                    }
+
+                    // Back substitution: U x = y (lu_soa[r*N+r] holds 1/U[r][r])
+                    V sol[N];
+                    for (std::size_t idx = N; idx > 0; --idx) {
+                        const std::size_t r = idx - 1;
+                        V acc = rhs[r];
+                        for (std::size_t c = r + 1; c < N; ++c) {
+                            const V u_rc = std::simd::unchecked_load<V>(
+                                std::span<const T>(lu_soa[r * N + c] + e, W));
+                            acc -= u_rc * sol[c];
+                        }
+                        const V inv_diag = std::simd::unchecked_load<V>(
+                            std::span<const T>(lu_soa[r * N + r] + e, W));
+                        sol[r] = acc * inv_diag;
+                    }
+
+                    for (std::size_t r = 0; r < N; ++r) {
+                        std::simd::unchecked_store(sol[r], std::span<T>(x_soa[r] + e, W));
+                    }
+                }
+            }
+#endif
+
+            for (; e < num_elements; ++e) {
+                T rhs[N];
+                for (std::size_t r = 0; r < N; ++r) {
+                    rhs[r] = b_soa[r][e];
+                }
+
+                for (std::size_t i = 0; i + 1 < N; ++i) {
+                    const std::size_t p = static_cast<std::size_t>(piv_soa[i][e]);
+                    KEISAN_DEVICE_ASSERT(p >= i && p < N, "keisan: invalid pivot index in lu_solve_nxn_batched");
+                    if (p != i) {
+                        const T tmp = rhs[i];
+                        rhs[i] = rhs[p];
+                        rhs[p] = tmp;
+                    }
+                }
+
+                for (std::size_t i = 0; i < N; ++i) {
+                    for (std::size_t k = i + 1; k < N; ++k) {
+                        rhs[k] -= lu_soa[k * N + i][e] * rhs[i];
+                    }
+                }
+
+                T sol[N];
+                for (std::size_t idx = N; idx > 0; --idx) {
+                    const std::size_t r = idx - 1;
+                    T acc = rhs[r];
+                    for (std::size_t c = r + 1; c < N; ++c) {
+                        acc -= lu_soa[r * N + c][e] * sol[c];
+                    }
+                    sol[r] = acc * lu_soa[r * N + r][e];
+                }
+
+                for (std::size_t r = 0; r < N; ++r) {
+                    x_soa[r][e] = sol[r];
+                }
+            }
+        }
+    }
+
+    template<std::size_t N, typename LuPtr, typename PivPtr, typename BPtr, typename XPtr,
+             std::size_t LuExt, std::size_t PivExt, std::size_t BExt, std::size_t XExt>
+        requires (std::is_pointer_v<LuPtr> &&
+                  std::is_pointer_v<PivPtr> &&
+                  std::is_pointer_v<BPtr> &&
+                  std::is_pointer_v<XPtr> &&
+                  std::is_convertible_v<LuPtr, const std::remove_pointer_t<XPtr>*> &&
+                  std::is_convertible_v<BPtr, const std::remove_pointer_t<XPtr>*>)
+    KEISAN_HOST_DEVICE inline void lu_solve_nxn_batched(
+        std::span<LuPtr, LuExt> lu_soa,
+        std::span<PivPtr, PivExt> piv_soa,
+        std::span<BPtr, BExt> b_soa,
+        std::span<XPtr, XExt> x_soa,
+        std::size_t num_elements
+    ) {
+        if constexpr (N == 0) {
+            return;
+        } else {
+            constexpr std::size_t req_piv = (N > 1) ? (N - 1) : 0;
+            if (lu_soa.size() < N * N || piv_soa.size() < req_piv || b_soa.size() < N || x_soa.size() < N) [[unlikely]] {
+                KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: lu_solve_nxn_batched span size too small");
+                return;
+            }
+            using T = std::remove_pointer_t<XPtr>;
+            using PivT = std::remove_const_t<std::remove_pointer_t<PivPtr>>;
+            lu_solve_nxn_batched<N, T, PivT>(lu_soa.data(), piv_soa.data(), b_soa.data(), x_soa.data(), num_elements);
+        }
+    }
+
     template<typename T>
     KEISAN_HOST_DEVICE inline void transpose_aos_to_soa(
         const T* aos,
@@ -3134,11 +3528,12 @@ namespace keisan {
             }
         }
 
-        template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
-        KEISAN_HOST_DEVICE inline void contract_axis_noalias(
+        template<auto AxisParam, std::size_t OutDim = 0, std::size_t InDim = 0, typename MatT, typename T>
+        KEISAN_HOST_DEVICE inline void contract_axis_rect_noalias(
             const MatT* KEISAN_RESTRICT D,
             const T* KEISAN_RESTRICT in,
             T* KEISAN_RESTRICT out,
+            [[maybe_unused]] std::size_t out_dim,
             [[maybe_unused]] std::size_t nx,
             [[maybe_unused]] std::size_t ny,
             [[maybe_unused]] std::size_t nz
@@ -3146,12 +3541,13 @@ namespace keisan {
             constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
             if constexpr (axis_idx == 0) {
                 const std::size_t n_pencils = ny * nz;
-                const std::size_t dim = (N > 0) ? N : nx;
+                const std::size_t in_dim = (InDim > 0) ? InDim : nx;
+                const std::size_t od = (OutDim > 0) ? OutDim : out_dim;
                 for (std::size_t p = 0; p < n_pencils; ++p) {
-                    const T* KEISAN_RESTRICT in_ptr = in + p * dim;
-                    T* KEISAN_RESTRICT out_ptr = out + p * dim;
-                    for (std::size_t i = 0; i < dim; ++i) {
-                        const MatT* KEISAN_RESTRICT row = D + i * dim;
+                    const T* KEISAN_RESTRICT in_ptr = in + p * in_dim;
+                    T* KEISAN_RESTRICT out_ptr = out + p * od;
+                    for (std::size_t i = 0; i < od; ++i) {
+                        const MatT* KEISAN_RESTRICT row = D + i * in_dim;
 #if defined(KEISAN_HAS_STD_SIMD)
                         if constexpr (std::is_same_v<MatT, T> &&
                                       (std::is_same_v<T, double> || std::is_same_v<T, float>)) {
@@ -3159,13 +3555,13 @@ namespace keisan {
                             constexpr std::size_t W = V::size();
                             V vacc(T{0});
                             std::size_t j = 0;
-                            for (; j + W <= dim; j += W) {
+                            for (; j + W <= in_dim; j += W) {
                                 const V vr = std::simd::unchecked_load<V>(std::span<const T>(row + j, W));
                                 const V vi = std::simd::unchecked_load<V>(std::span<const T>(in_ptr + j, W));
                                 vacc += vr * vi;
                             }
                             T sum = std::simd::reduce(vacc);
-                            for (; j < dim; ++j) {
+                            for (; j < in_dim; ++j) {
                                 sum += row[j] * in_ptr[j];
                             }
                             out_ptr[i] = sum;
@@ -3174,46 +3570,185 @@ namespace keisan {
 #endif
                         T acc0{0}, acc1{0}, acc2{0}, acc3{0};
                         std::size_t j = 0;
-                        for (; j + 4 <= dim; j += 4) {
+                        for (; j + 4 <= in_dim; j += 4) {
                             acc0 += static_cast<T>(row[j + 0]) * in_ptr[j + 0];
                             acc1 += static_cast<T>(row[j + 1]) * in_ptr[j + 1];
                             acc2 += static_cast<T>(row[j + 2]) * in_ptr[j + 2];
                             acc3 += static_cast<T>(row[j + 3]) * in_ptr[j + 3];
                         }
                         T sum = (acc0 + acc1) + (acc2 + acc3);
-                        for (; j < dim; ++j) {
+                        for (; j < in_dim; ++j) {
                             sum += static_cast<T>(row[j]) * in_ptr[j];
                         }
                         out_ptr[i] = sum;
                     }
                 }
             } else if constexpr (axis_idx == 1) {
-                const std::size_t dim_y = (N > 0) ? N : ny;
+                const std::size_t in_dim = (InDim > 0) ? InDim : ny;
+                const std::size_t od = (OutDim > 0) ? OutDim : out_dim;
                 for (std::size_t k = 0; k < nz; ++k) {
-                    const T* KEISAN_RESTRICT in_k = in + k * (nx * dim_y);
-                    T* KEISAN_RESTRICT out_k = out + k * (nx * dim_y);
-                    for (std::size_t j = 0; j < dim_y; ++j) {
+                    const T* KEISAN_RESTRICT in_k = in + k * (nx * in_dim);
+                    T* KEISAN_RESTRICT out_k = out + k * (nx * od);
+                    for (std::size_t j = 0; j < od; ++j) {
                         T* KEISAN_RESTRICT out_row = out_k + j * nx;
-                        const MatT* KEISAN_RESTRICT row = D + j * dim_y;
+                        const MatT* KEISAN_RESTRICT row = D + j * in_dim;
                         scale_slice(out_row, in_k, static_cast<T>(row[0]), nx);
-                        for (std::size_t q = 1; q < dim_y; ++q) {
+                        for (std::size_t q = 1; q < in_dim; ++q) {
                             axpy_slice(out_row, in_k + q * nx, static_cast<T>(row[q]), nx);
                         }
                     }
                 }
             } else if constexpr (axis_idx == 2) {
                 const std::size_t nxy = nx * ny;
-                const std::size_t dim_z = (N > 0) ? N : nz;
-                for (std::size_t k = 0; k < dim_z; ++k) {
+                const std::size_t in_dim = (InDim > 0) ? InDim : nz;
+                const std::size_t od = (OutDim > 0) ? OutDim : out_dim;
+                for (std::size_t k = 0; k < od; ++k) {
                     T* KEISAN_RESTRICT out_plane = out + k * nxy;
-                    const MatT* KEISAN_RESTRICT row = D + k * dim_z;
+                    const MatT* KEISAN_RESTRICT row = D + k * in_dim;
                     scale_slice(out_plane, in, static_cast<T>(row[0]), nxy);
-                    for (std::size_t r = 1; r < dim_z; ++r) {
+                    for (std::size_t r = 1; r < in_dim; ++r) {
                         axpy_slice(out_plane, in + r * nxy, static_cast<T>(row[r]), nxy);
                     }
                 }
             }
         }
+
+        template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
+        KEISAN_HOST_DEVICE inline void contract_axis_noalias(
+            const MatT* KEISAN_RESTRICT D,
+            const T* KEISAN_RESTRICT in,
+            T* KEISAN_RESTRICT out,
+            std::size_t nx,
+            std::size_t ny,
+            std::size_t nz
+        ) {
+            constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
+            const std::size_t dim = (N > 0) ? N : (axis_idx == 0 ? nx : (axis_idx == 1 ? ny : nz));
+            contract_axis_rect_noalias<AxisParam, N, N>(D, in, out, dim, nx, ny, nz);
+        }
+    }
+
+    // Rectangular 3D tensor contraction along AxisParam: D is (out_dim x in_dim) row-major.
+    template<auto AxisParam, std::size_t OutDim = 0, std::size_t InDim = 0, typename MatT, typename T>
+    KEISAN_HOST_DEVICE inline void contract_axis_rect(
+        const MatT* D,
+        const T* in,
+        T* out,
+        std::size_t out_dim,
+        std::size_t nx,
+        std::size_t ny,
+        std::size_t nz = 1
+    ) {
+        constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
+        static_assert(axis_idx <= 2, "keisan: contract_axis_rect Axis must be 0 (X), 1 (Y), or 2 (Z)");
+
+        if (nx == 0 || ny == 0 || nz == 0 || out_dim == 0) return;
+
+        KEISAN_DEVICE_ASSERT(D != nullptr, "keisan: null matrix pointer in contract_axis_rect");
+        KEISAN_DEVICE_ASSERT(in != nullptr, "keisan: null input pointer in contract_axis_rect");
+        KEISAN_DEVICE_ASSERT(out != nullptr, "keisan: null output pointer in contract_axis_rect");
+
+        if constexpr (OutDim > 0) {
+            KEISAN_DEVICE_ASSERT(out_dim == OutDim, "keisan: out_dim must match OutDim in contract_axis_rect");
+        }
+        if constexpr (axis_idx == 0 && InDim > 0) {
+            KEISAN_DEVICE_ASSERT(nx == InDim, "keisan: nx must match InDim for Axis 0 contraction");
+        }
+        if constexpr (axis_idx == 1 && InDim > 0) {
+            KEISAN_DEVICE_ASSERT(ny == InDim, "keisan: ny must match InDim for Axis 1 contraction");
+        }
+        if constexpr (axis_idx == 2 && InDim > 0) {
+            KEISAN_DEVICE_ASSERT(nz == InDim, "keisan: nz must match InDim for Axis 2 contraction");
+        }
+
+        const std::size_t out_nx = (axis_idx == 0) ? out_dim : nx;
+        const std::size_t out_ny = (axis_idx == 1) ? out_dim : ny;
+        const std::size_t out_nz = (axis_idx == 2) ? out_dim : nz;
+
+        if (nx > std::numeric_limits<std::size_t>::max() / ny ||
+            (nx * ny) > std::numeric_limits<std::size_t>::max() / nz ||
+            out_nx > std::numeric_limits<std::size_t>::max() / out_ny ||
+            (out_nx * out_ny) > std::numeric_limits<std::size_t>::max() / out_nz) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis_rect dimensions overflow");
+            return;
+        }
+        const std::size_t in_total = nx * ny * nz;
+        const std::size_t out_total = out_nx * out_ny * out_nz;
+        if (in_total > std::numeric_limits<std::size_t>::max() / sizeof(T) ||
+            out_total > std::numeric_limits<std::size_t>::max() / sizeof(T)) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis_rect byte size overflow");
+            return;
+        }
+
+        const bool aliased = detail::memory_ranges_overlap(in, in_total * sizeof(T), out, out_total * sizeof(T));
+        if (aliased) {
+            constexpr std::size_t STACK_TOTAL_CAP = 1024;
+            if (out_total <= STACK_TOTAL_CAP) {
+                T local_buf[STACK_TOTAL_CAP];
+                detail::contract_axis_rect_noalias<AxisParam, OutDim, InDim>(D, in, local_buf, out_dim, nx, ny, nz);
+                for (std::size_t idx = 0; idx < out_total; ++idx) {
+                    out[idx] = local_buf[idx];
+                }
+                return;
+            }
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
+            else {
+                KEISAN_THROW_BAD_ALLOC("keisan: contract_axis_rect aliased buffer exceeds stack capacity under KEISAN_STRICT_ZERO_MALLOC");
+                return;
+            }
+#elif !defined(__SYCL_DEVICE_ONLY__)
+            else {
+                std::vector<T> local_buf(out_total);
+                detail::contract_axis_rect_noalias<AxisParam, OutDim, InDim>(D, in, local_buf.data(), out_dim, nx, ny, nz);
+                for (std::size_t idx = 0; idx < out_total; ++idx) {
+                    out[idx] = local_buf[idx];
+                }
+                return;
+            }
+#else
+            else {
+                KEISAN_DEVICE_ASSERT(false, "keisan: contract_axis_rect aliased buffer exceeds device stack capacity");
+                return;
+            }
+#endif
+        }
+
+        detail::contract_axis_rect_noalias<AxisParam, OutDim, InDim>(D, in, out, out_dim, nx, ny, nz);
+    }
+
+    template<auto AxisParam, std::size_t OutDim = 0, std::size_t InDim = 0, typename MatT, typename InT, typename OutT, std::size_t DExt, std::size_t InExt, std::size_t OutExt>
+    KEISAN_HOST_DEVICE inline void contract_axis_rect(
+        std::span<MatT, DExt> D,
+        std::span<InT, InExt> in,
+        std::span<OutT, OutExt> out,
+        std::size_t out_dim,
+        std::size_t nx,
+        std::size_t ny,
+        std::size_t nz = 1
+    ) {
+        if (nx == 0 || ny == 0 || nz == 0 || out_dim == 0) return;
+        constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
+        const std::size_t in_dim = (InDim > 0) ? InDim : (axis_idx == 0 ? nx : (axis_idx == 1 ? ny : nz));
+        const std::size_t od = (OutDim > 0) ? OutDim : out_dim;
+        const std::size_t out_nx = (axis_idx == 0) ? od : nx;
+        const std::size_t out_ny = (axis_idx == 1) ? od : ny;
+        const std::size_t out_nz = (axis_idx == 2) ? od : nz;
+
+        if (nx > std::numeric_limits<std::size_t>::max() / ny ||
+            (nx * ny) > std::numeric_limits<std::size_t>::max() / nz ||
+            out_nx > std::numeric_limits<std::size_t>::max() / out_ny ||
+            (out_nx * out_ny) > std::numeric_limits<std::size_t>::max() / out_nz ||
+            od > std::numeric_limits<std::size_t>::max() / in_dim) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis_rect span dimensions overflow");
+            return;
+        }
+        const std::size_t in_total = nx * ny * nz;
+        const std::size_t out_total = out_nx * out_ny * out_nz;
+        if (D.size() < od * in_dim || in.size() < in_total || out.size() < out_total) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: contract_axis_rect span size too small");
+            return;
+        }
+        contract_axis_rect<AxisParam, OutDim, InDim>(D.data(), in.data(), out.data(), out_dim, nx, ny, nz);
     }
 
     template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
@@ -3226,72 +3761,8 @@ namespace keisan {
         [[maybe_unused]] std::size_t nz = 1
     ) {
         constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
-        static_assert(axis_idx <= 2, "keisan: contract_axis Axis must be 0 (X), 1 (Y), or 2 (Z)");
-
-        if (nx == 0 || ny == 0 || nz == 0) return;
-
-        KEISAN_DEVICE_ASSERT(D != nullptr, "keisan: null matrix pointer in contract_axis");
-        KEISAN_DEVICE_ASSERT(in != nullptr, "keisan: null input pointer in contract_axis");
-        KEISAN_DEVICE_ASSERT(out != nullptr, "keisan: null output pointer in contract_axis");
-
-        if constexpr (axis_idx == 0 && N > 0) {
-            KEISAN_DEVICE_ASSERT(nx == N, "keisan: nx must match N for Axis 0 contraction");
-        }
-        if constexpr (axis_idx == 1 && N > 0) {
-            KEISAN_DEVICE_ASSERT(ny == N, "keisan: ny must match N for Axis 1 contraction");
-        }
-        if constexpr (axis_idx == 2 && N > 0) {
-            KEISAN_DEVICE_ASSERT(nz == N, "keisan: nz must match N for Axis 2 contraction");
-        }
-
-        if (nx > std::numeric_limits<std::size_t>::max() / ny) [[unlikely]] {
-            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis dimensions overflow");
-            return;
-        }
-        const std::size_t nxy = nx * ny;
-        if (nxy > std::numeric_limits<std::size_t>::max() / nz) [[unlikely]] {
-            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis dimensions overflow");
-            return;
-        }
-        const std::size_t total = nxy * nz;
-        if (total > std::numeric_limits<std::size_t>::max() / sizeof(T)) [[unlikely]] {
-            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis byte size overflow");
-            return;
-        }
-        const bool aliased = detail::memory_ranges_overlap(in, total * sizeof(T), out, total * sizeof(T));
-        if (aliased) {
-            constexpr std::size_t STACK_TOTAL_CAP = 1024;
-            if (total <= STACK_TOTAL_CAP) {
-                T local_buf[STACK_TOTAL_CAP];
-                detail::contract_axis_noalias<AxisParam, N>(D, in, local_buf, nx, ny, nz);
-                for (std::size_t idx = 0; idx < total; ++idx) {
-                    out[idx] = local_buf[idx];
-                }
-                return;
-            }
-#if defined(KEISAN_STRICT_ZERO_MALLOC)
-            else {
-                KEISAN_THROW_BAD_ALLOC("keisan: contract_axis aliased buffer exceeds stack capacity under KEISAN_STRICT_ZERO_MALLOC");
-                return;
-            }
-#elif !defined(__SYCL_DEVICE_ONLY__)
-            else {
-                std::vector<T> local_buf(total);
-                detail::contract_axis_noalias<AxisParam, N>(D, in, local_buf.data(), nx, ny, nz);
-                for (std::size_t idx = 0; idx < total; ++idx) {
-                    out[idx] = local_buf[idx];
-                }
-                return;
-            }
-#else
-            else {
-                KEISAN_DEVICE_ASSERT(false, "keisan: contract_axis aliased buffer exceeds device stack capacity");
-                return;
-            }
-#endif
-        }
-
-        detail::contract_axis_noalias<AxisParam, N>(D, in, out, nx, ny, nz);
+        const std::size_t dim = (N > 0) ? N : (axis_idx == 0 ? nx : (axis_idx == 1 ? ny : nz));
+        contract_axis_rect<AxisParam, N, N>(D, in, out, dim, nx, ny, nz);
     }
 
     template<auto AxisParam, std::size_t N = 0, typename MatT, typename InT, typename OutT, std::size_t DExt, std::size_t InExt, std::size_t OutExt>
@@ -3318,6 +3789,215 @@ namespace keisan {
             return;
         }
         contract_axis<AxisParam, N>(D.data(), in.data(), out.data(), nx, ny, nz);
+    }
+
+    // Batched rectangular 3D tensor contraction across batch_count elements.
+    template<auto AxisParam, std::size_t OutDim = 0, std::size_t InDim = 0, typename MatT, typename T>
+    KEISAN_HOST_DEVICE inline void contract_axis_batched(
+        const MatT* D,
+        const T* in,
+        T* out,
+        std::size_t out_dim,
+        std::size_t nx,
+        std::size_t ny,
+        std::size_t nz,
+        std::size_t batch_count
+    ) {
+        constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
+        static_assert(axis_idx <= 2, "keisan: contract_axis_batched Axis must be 0 (X), 1 (Y), or 2 (Z)");
+
+        if (batch_count == 0 || nx == 0 || ny == 0 || nz == 0 || out_dim == 0) return;
+
+        KEISAN_DEVICE_ASSERT(D != nullptr, "keisan: null matrix pointer in contract_axis_batched");
+        KEISAN_DEVICE_ASSERT(in != nullptr, "keisan: null input pointer in contract_axis_batched");
+        KEISAN_DEVICE_ASSERT(out != nullptr, "keisan: null output pointer in contract_axis_batched");
+
+        if constexpr (OutDim > 0) {
+            KEISAN_DEVICE_ASSERT(out_dim == OutDim, "keisan: out_dim must match OutDim in contract_axis_batched");
+        }
+        if constexpr (axis_idx == 0 && InDim > 0) {
+            KEISAN_DEVICE_ASSERT(nx == InDim, "keisan: nx must match InDim for Axis 0 batched contraction");
+        }
+        if constexpr (axis_idx == 1 && InDim > 0) {
+            KEISAN_DEVICE_ASSERT(ny == InDim, "keisan: ny must match InDim for Axis 1 batched contraction");
+        }
+        if constexpr (axis_idx == 2 && InDim > 0) {
+            KEISAN_DEVICE_ASSERT(nz == InDim, "keisan: nz must match InDim for Axis 2 batched contraction");
+        }
+
+        const std::size_t od = (OutDim > 0) ? OutDim : out_dim;
+        const std::size_t out_nx = (axis_idx == 0) ? od : nx;
+        const std::size_t out_ny = (axis_idx == 1) ? od : ny;
+        const std::size_t out_nz = (axis_idx == 2) ? od : nz;
+
+        if (nx > std::numeric_limits<std::size_t>::max() / ny ||
+            (nx * ny) > std::numeric_limits<std::size_t>::max() / nz ||
+            out_nx > std::numeric_limits<std::size_t>::max() / out_ny ||
+            (out_nx * out_ny) > std::numeric_limits<std::size_t>::max() / out_nz) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis_batched dimensions overflow");
+            return;
+        }
+        const std::size_t in_elem = nx * ny * nz;
+        const std::size_t out_elem = out_nx * out_ny * out_nz;
+        if (batch_count > std::numeric_limits<std::size_t>::max() / in_elem ||
+            batch_count > std::numeric_limits<std::size_t>::max() / out_elem) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis_batched batch size overflow");
+            return;
+        }
+        const std::size_t total_in = batch_count * in_elem;
+        const std::size_t total_out = batch_count * out_elem;
+        if (total_in > std::numeric_limits<std::size_t>::max() / sizeof(T) ||
+            total_out > std::numeric_limits<std::size_t>::max() / sizeof(T)) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis_batched byte size overflow");
+            return;
+        }
+
+        const bool aliased = detail::memory_ranges_overlap(in, total_in * sizeof(T), out, total_out * sizeof(T));
+        if (aliased) {
+            constexpr std::size_t STACK_TOTAL_CAP = 1024;
+            if (in == out && in_elem == out_elem && out_elem <= STACK_TOTAL_CAP) {
+                T local_buf[STACK_TOTAL_CAP];
+                for (std::size_t b = 0; b < batch_count; ++b) {
+                    const T* in_b = in + b * in_elem;
+                    T* out_b = out + b * out_elem;
+                    detail::contract_axis_rect_noalias<AxisParam, OutDim, InDim>(D, in_b, local_buf, out_dim, nx, ny, nz);
+                    for (std::size_t idx = 0; idx < out_elem; ++idx) {
+                        out_b[idx] = local_buf[idx];
+                    }
+                }
+                return;
+            }
+            if (total_out <= STACK_TOTAL_CAP) {
+                T local_buf[STACK_TOTAL_CAP];
+                for (std::size_t b = 0; b < batch_count; ++b) {
+                    detail::contract_axis_rect_noalias<AxisParam, OutDim, InDim>(
+                        D, in + b * in_elem, local_buf + b * out_elem, out_dim, nx, ny, nz);
+                }
+                for (std::size_t idx = 0; idx < total_out; ++idx) {
+                    out[idx] = local_buf[idx];
+                }
+                return;
+            }
+#if defined(KEISAN_STRICT_ZERO_MALLOC)
+            else {
+                KEISAN_THROW_BAD_ALLOC("keisan: contract_axis_batched aliased buffer exceeds stack capacity under KEISAN_STRICT_ZERO_MALLOC");
+                return;
+            }
+#elif !defined(__SYCL_DEVICE_ONLY__)
+            else {
+                std::vector<T> local_buf(total_out);
+                for (std::size_t b = 0; b < batch_count; ++b) {
+                    detail::contract_axis_rect_noalias<AxisParam, OutDim, InDim>(
+                        D, in + b * in_elem, local_buf.data() + b * out_elem, out_dim, nx, ny, nz);
+                }
+                for (std::size_t idx = 0; idx < total_out; ++idx) {
+                    out[idx] = local_buf[idx];
+                }
+                return;
+            }
+#else
+            else {
+                KEISAN_DEVICE_ASSERT(false, "keisan: contract_axis_batched aliased buffer exceeds device stack capacity");
+                return;
+            }
+#endif
+        }
+
+        for (std::size_t b = 0; b < batch_count; ++b) {
+            detail::contract_axis_rect_noalias<AxisParam, OutDim, InDim>(
+                D, in + b * in_elem, out + b * out_elem, out_dim, nx, ny, nz);
+        }
+    }
+
+    template<auto AxisParam, std::size_t OutDim = 0, std::size_t InDim = 0, typename MatT, typename InT, typename OutT, std::size_t DExt, std::size_t InExt, std::size_t OutExt>
+    KEISAN_HOST_DEVICE inline void contract_axis_batched(
+        std::span<MatT, DExt> D,
+        std::span<InT, InExt> in,
+        std::span<OutT, OutExt> out,
+        std::size_t out_dim,
+        std::size_t nx,
+        std::size_t ny,
+        std::size_t nz,
+        std::size_t batch_count
+    ) {
+        if (batch_count == 0 || nx == 0 || ny == 0 || nz == 0 || out_dim == 0) return;
+        constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
+        const std::size_t in_dim = (InDim > 0) ? InDim : (axis_idx == 0 ? nx : (axis_idx == 1 ? ny : nz));
+        const std::size_t od = (OutDim > 0) ? OutDim : out_dim;
+        const std::size_t out_nx = (axis_idx == 0) ? od : nx;
+        const std::size_t out_ny = (axis_idx == 1) ? od : ny;
+        const std::size_t out_nz = (axis_idx == 2) ? od : nz;
+
+        if (nx > std::numeric_limits<std::size_t>::max() / ny ||
+            (nx * ny) > std::numeric_limits<std::size_t>::max() / nz ||
+            out_nx > std::numeric_limits<std::size_t>::max() / out_ny ||
+            (out_nx * out_ny) > std::numeric_limits<std::size_t>::max() / out_nz ||
+            od > std::numeric_limits<std::size_t>::max() / in_dim) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis_batched span dimensions overflow");
+            return;
+        }
+        const std::size_t in_elem = nx * ny * nz;
+        const std::size_t out_elem = out_nx * out_ny * out_nz;
+        if (batch_count > std::numeric_limits<std::size_t>::max() / in_elem ||
+            batch_count > std::numeric_limits<std::size_t>::max() / out_elem) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis_batched span batch overflow");
+            return;
+        }
+        const std::size_t total_in = batch_count * in_elem;
+        const std::size_t total_out = batch_count * out_elem;
+        if (D.size() < od * in_dim || in.size() < total_in || out.size() < total_out) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: contract_axis_batched span size too small");
+            return;
+        }
+        contract_axis_batched<AxisParam, OutDim, InDim>(D.data(), in.data(), out.data(), out_dim, nx, ny, nz, batch_count);
+    }
+
+    // Batched square 3D tensor contraction across batch_count elements.
+    template<auto AxisParam, std::size_t N = 0, typename MatT, typename T>
+    KEISAN_HOST_DEVICE inline void contract_axis_batched(
+        const MatT* D,
+        const T* in,
+        T* out,
+        std::size_t nx,
+        std::size_t ny,
+        std::size_t nz,
+        std::size_t batch_count
+    ) {
+        constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
+        const std::size_t dim = (N > 0) ? N : (axis_idx == 0 ? nx : (axis_idx == 1 ? ny : nz));
+        contract_axis_batched<AxisParam, N, N>(D, in, out, dim, nx, ny, nz, batch_count);
+    }
+
+    template<auto AxisParam, std::size_t N = 0, typename MatT, typename InT, typename OutT, std::size_t DExt, std::size_t InExt, std::size_t OutExt>
+    KEISAN_HOST_DEVICE inline void contract_axis_batched(
+        std::span<MatT, DExt> D,
+        std::span<InT, InExt> in,
+        std::span<OutT, OutExt> out,
+        std::size_t nx,
+        std::size_t ny,
+        std::size_t nz,
+        std::size_t batch_count
+    ) {
+        if (batch_count == 0 || nx == 0 || ny == 0 || nz == 0) return;
+        constexpr std::size_t axis_idx = static_cast<std::size_t>(AxisParam);
+        const std::size_t dim = (N > 0) ? N : (axis_idx == 0 ? nx : (axis_idx == 1 ? ny : nz));
+        if (nx > std::numeric_limits<std::size_t>::max() / ny ||
+            (nx * ny) > std::numeric_limits<std::size_t>::max() / nz ||
+            dim > std::numeric_limits<std::size_t>::max() / dim) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis_batched span dimensions overflow");
+            return;
+        }
+        const std::size_t elem = nx * ny * nz;
+        if (batch_count > std::numeric_limits<std::size_t>::max() / elem) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::length_error, "keisan: contract_axis_batched span batch overflow");
+            return;
+        }
+        const std::size_t total = batch_count * elem;
+        if (D.size() < dim * dim || in.size() < total || out.size() < total) [[unlikely]] {
+            KEISAN_THROW_OR_ABORT(std::invalid_argument, "keisan: contract_axis_batched span size too small");
+            return;
+        }
+        contract_axis_batched<AxisParam, N>(D.data(), in.data(), out.data(), nx, ny, nz, batch_count);
     }
 
     // ============================================================================

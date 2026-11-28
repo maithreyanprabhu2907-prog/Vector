@@ -42,15 +42,36 @@ jobs:
             cxx_flags: "-O1 -g -fno-omit-frame-pointer -fsanitize=address,undefined -mavx2 -mfma"
             build_benchmarks: "OFF"
 
+          # Linux Clang (C++26)
+          - name: "Linux Clang Release (AVX2+FMA)"
+            os: ubuntu-latest
+            cxx: clang++
+            build_type: Release
+            cxx_flags: "-mavx2 -mfma"
+          - name: "Linux Clang Release (Default)"
+            os: ubuntu-latest
+            cxx: clang++
+            build_type: Release
+            cxx_flags: ""
+
     steps:
       - uses: actions/checkout@v4
 
       - name: Ensure GCC 16 is available
+        if: matrix.cxx == 'g++-16'
         run: |
           if ! command -v g++-16 >/dev/null 2>&1; then
             sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test || true
             sudo apt-get update
             sudo apt-get install -y g++-16
+          fi
+
+      - name: Ensure Clang is available
+        if: matrix.cxx == 'clang++'
+        run: |
+          if ! command -v clang++ >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang
           fi
 
       - name: Configure CMake
@@ -70,6 +91,7 @@ jobs:
           fi
           cmake -B build -S . \
             -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}" \
+            -DCMAKE_CXX_STANDARD=26 \
             -DCMAKE_BUILD_TYPE="${{ matrix.build_type }}" \
             -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
             -DKEISAN_BUILD_TESTS=ON \
@@ -94,3 +116,75 @@ jobs:
       - name: Run Regression Benchmark Smoke Check
         if: matrix.build_type == 'Release' && contains(matrix.cxx_flags, 'mavx2')
         run: ./build/regression_bench --quick
+
+  edge-cases-matrix:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "Edge Cases GCC 16 (KEISAN_STRICT_ZERO_MALLOC)"
+            os: ubuntu-latest
+            cxx: g++-16
+            cxx_flags: "-DKEISAN_STRICT_ZERO_MALLOC"
+          - name: "Edge Cases GCC 16 (KEISAN_NO_INTRINSICS)"
+            os: ubuntu-latest
+            cxx: g++-16
+            cxx_flags: "-DKEISAN_NO_INTRINSICS"
+          - name: "Edge Cases GCC 16 (KEISAN_NO_EXCEPTIONS)"
+            os: ubuntu-latest
+            cxx: g++-16
+            cxx_flags: "-DKEISAN_NO_EXCEPTIONS"
+          - name: "Edge Cases Clang (KEISAN_STRICT_ZERO_MALLOC)"
+            os: ubuntu-latest
+            cxx: clang++
+            cxx_flags: "-DKEISAN_STRICT_ZERO_MALLOC"
+          - name: "Edge Cases Clang (KEISAN_NO_INTRINSICS)"
+            os: ubuntu-latest
+            cxx: clang++
+            cxx_flags: "-DKEISAN_NO_INTRINSICS"
+          - name: "Edge Cases Clang (KEISAN_NO_EXCEPTIONS -fno-exceptions)"
+            os: ubuntu-latest
+            cxx: clang++
+            cxx_flags: "-DKEISAN_NO_EXCEPTIONS -fno-exceptions"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure GCC 16 is available
+        if: matrix.cxx == 'g++-16'
+        run: |
+          if ! command -v g++-16 >/dev/null 2>&1; then
+            sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test || true
+            sudo apt-get update
+            sudo apt-get install -y g++-16
+          fi
+
+      - name: Ensure Clang is available
+        if: matrix.cxx == 'clang++'
+        run: |
+          if ! command -v clang++ >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y clang
+          fi
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_CXX_COMPILER="${{ matrix.cxx }}" \
+            -DCMAKE_CXX_STANDARD=26 \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS="${{ matrix.cxx_flags }}" \
+            -DKEISAN_BUILD_TESTS=ON \
+            -DKEISAN_BUILD_BENCHMARKS=OFF \
+            -DKEISAN_BUILD_EXAMPLES=OFF
+
+      - name: Build edge_cases_test
+        run: cmake --build build --config Release --target edge_cases_test
+
+      - name: Run edge_cases_test
+        run: ctest --test-dir build -C Release -R '^edge_cases_test$' --output-on-failure

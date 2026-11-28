@@ -12,7 +12,7 @@
 | `assign` | `assign(dst, src)` / `dst = expr` (via `eval_into`) | Fused single-pass evaluation into `std::vector`, `aligned_vector`, or `std::span` |
 | `eval_into` | `eval_into(T* dst, size_t n, const Src& src)` | Low-level fused `std::simd` (`eval_simd`) & scalar evaluator; `constexpr` & SYCL device-safe |
 | `assign_stream` | `assign_stream(dst, src)` | Non-temporal (`_mm256_stream_*`) cache-bypassing store for multi-MB writes |
-| `assign_par` | `assign_par(dst, src)` | OpenMP parallel fused evaluation (`n < 16384` falls back to `assign`; resizes unless `KEISAN_STRICT_ZERO_MALLOC`) |
+| `assign_par` | `assign_par(dst, src)` | OpenMP parallel fused evaluation (`n < 131072` falls back to `assign`; resizes unless `KEISAN_STRICT_ZERO_MALLOC`) |
 | `+=`, `-=`, `*=`, `/=` | `dst op= expr` | In-place `std::simd`-fused compound assignment on `std::vector`, `std::span`, `std::array` |
 | `+`, `-`, `*`, `/` | `a op b` | Lazy `BinExpr` / `UnaryExpr` nodes (zero heap allocations) |
 | `fma` | `fma(a, b, c)` | Fused multiply-add expression (`a * b + c`, supports vector/scalar mixes) |
@@ -36,11 +36,13 @@
 
 | Symbol | Signature / Form | Purpose |
 |---|---|---|
-| `ReductionPolicy` | `FAST`, `REPRO`, `DETERMINISTIC` | Controls speed vs. bit-identical IEEE-754 pairwise tree reduction |
+| `ReductionPolicy` | `FAST`, `REPRO` | Controls speed vs. bit-identical IEEE-754 pairwise tree reduction |
 | `sum` | `sum(expr, policy = FAST)` | Elementwise sum (`std::simd` dual-accumulator in `FAST`; pairwise tree in `REPRO`) |
 | `sum_repro` / `sum_par` | `sum_repro(expr)` / `sum_par(expr)` | Explicit bit-reproducible or OpenMP multi-core sum |
+| `sum_deterministic` | `sum_deterministic(expr)` | Strictly sequential bit-identical sum for regression baselines |
 | `dot` | `dot(lhs, rhs, policy = FAST)` | Fused inner product (`std::simd` FMA in `FAST`; pairwise tree in `REPRO`) |
 | `dot_repro` / `dot_par` | `dot_repro(lhs, rhs)` / `dot_par(lhs, rhs)` | Explicit bit-reproducible or OpenMP multi-core dot product |
+| `dot_deterministic` | `dot_deterministic(lhs, rhs)` | Strictly sequential bit-identical inner product for regression baselines |
 | `norm` / `norm_sq` / `norm_l1` / `norm_inf` | `norm*(expr)` | `std::simd` $L_2$, squared $L_2$, dual-acc $L_1$, and `NaN`-propagating $L_\infty$ norms |
 | `min_val` / `max_val` | `min_val(expr)` / `max_val(expr)` | `std::simd`-accelerated minimum / maximum element (throws on empty input) |
 
@@ -55,8 +57,12 @@
 | `matvec_fixed<R, C>` | `matvec_fixed<Rows, Cols>(A, x, y)` | Compile-time sized $y = Ax$ with alias-safe stack buffering |
 | `matvec_transposed_fixed<R, C>` | `matvec_transposed_fixed<Rows, Cols>(A, x, y)` | Compile-time sized $y = A^T x$ |
 | `contract_axis<Axis, N>` | `contract_axis<Axis::X\|Y\|Z, N>(D, in, out, nx, ny, nz)` | 3D tensor sum-factorization contraction along X, Y, or Z (`std::simd` Y/Z slices) |
+| `contract_axis_rect<Axis, OutDim, InDim>` | `contract_axis_rect<Axis>(D, in, out, out_dim, nx, ny, nz = 1)` | Rectangular `out_dim × in_dim` 3D tensor contraction along X, Y, or Z (`ptr` or `std::span`) |
+| `contract_axis_batched<Axis, ...>` | `contract_axis_batched<Axis>(D, in, out, [out_dim,] nx, ny, nz, batch_count)` | Batched square or rectangular 3D tensor contraction across `batch_count` elements |
 | `solve_nxn_batched<N>` | `solve_nxn_batched<N>(A_soa, b_soa, x_soa, count)` | `std::simd` SoA batched $N\times N$ solve with partial pivoting & scale-invariant singularity check |
 | `solve_4x4_batched` | `solve_4x4_batched(A_soa, b_soa, x_soa, count)` | Convenience wrapper for `solve_nxn_batched<4>` |
+| `lu_factor_nxn_batched<N>` | `lu_factor_nxn_batched<N>(A_soa, lu_soa, piv_soa, count)` | Reusable SoA batched $N\times N$ LU factorization with partial pivoting (`N <= 16`, `std::simd` for `N <= 4`) |
+| `lu_solve_nxn_batched<N>` | `lu_solve_nxn_batched<N>(lu_soa, piv_soa, b_soa, x_soa, count)` | Multi-RHS SoA batched solve reusing `lu_soa` / `piv_soa` (`x_soa == b_soa` supported) |
 | `gather` / `scatter_add` | `gather(dst, src, idx)` / `scatter_add(dst, idx, src)` | Indirect surface flux gather and accumulation (`ptr` or `std::span`) |
 | `broadcast_multiply` | `broadcast_multiply(data, count, factor)` | In-place scalar scaling (`ptr` or `std::span`) |
 | `transpose_aos_to_soa` / `transpose_soa_to_aos` | `transpose_*(src, dst, num_elem, num_comp)` | AoS ↔ SoA layout conversion for vectorization |
@@ -71,5 +77,5 @@
 | `sycl_compatible<T>` / `is_sycl_compatible_v<T>` | Concept / Trait | Verifies `std::is_trivially_copyable_v` for device kernel capture |
 | `real_of_t<T>` | Type Trait | Extracts underlying real scalar type (`std::complex<T>` → `T`) |
 | `KEISAN_NO_INTRINSICS` | Macro | Disables `<simd>` & x86 intrinsics, forcing pure portable scalar loops |
-| `KEISAN_STRICT_ZERO_MALLOC` | Macro | Throws `std::bad_alloc` if `assign` / `assign_par` would resize a `std::vector` (`capacity() < n`) |
-| `KEISAN_NO_EXCEPTIONS` | Macro | Replaces `throw` with `abort()` / `__builtin_trap()` for device/noexcept builds |
+| `KEISAN_STRICT_ZERO_MALLOC` | Macro | Throws `std::length_error` in `assign_par` if `capacity() < n`, and `std::bad_alloc` if aliasing stack buffers overflow |
+| `KEISAN_NO_EXCEPTIONS` | Macro | Replaces `throw` with `assert` + `std::abort()` on host (`assert` on `__SYCL_DEVICE_ONLY__`) |

@@ -38,7 +38,7 @@ Like raylib, `keisan` separates **what the user writes** from **how loops are fu
 **Solution in `keisan`**:
 - Operators only construct lightweight AST types; **no memory is touched until a sink** (`assign`, `eval_into`, `assign_stream`, `assign_par`, `+=`, or a reduction).
 - `WorkspaceArena` pre-allocates a 64-byte-aligned slab once at solver startup and hands out `std::span<T>` slices via bump-pointer arithmetic (`O(1)`, zero `malloc`/`free` inside RK stages).
-- Defining `KEISAN_STRICT_ZERO_MALLOC` turns any insufficient-capacity resize (`dst.capacity() < n`) inside `assign()` or `assign_par()` into an immediate `std::bad_alloc`.
+- `assign()` unconditionally enforces pre-allocated capacity (`dst.capacity() < n` throws `std::length_error`). Defining `KEISAN_STRICT_ZERO_MALLOC` also makes `assign_par()` throw `std::length_error` on insufficient capacity (`dst.capacity() < n`) and turns any aliasing scratch-buffer overflow in `eval_into`, `matvec*`, `gather`, or `contract_axis` into `std::bad_alloc` instead of heap-allocating a temporary buffer.
 
 ### Pattern C: Dual-Accumulator Unrolling (`acc0`, `acc1`) for FMA Latency
 **Problem**: On modern out-of-order CPUs (Zen 3, Skylake, Neoverse), floating-point `add`/`fma` has a 3–4 cycle latency. A single SIMD accumulator (`acc += load * load`) stalls at 1 operation every 4 cycles—leaving 75% of FMA throughput on the table.
@@ -67,4 +67,4 @@ Like raylib, `keisan` separates **what the user writes** from **how loops are fu
 **Problem**: SIMD lanes and OpenMP threads reassociate floating-point additions, causing `sum()` / `dot()` results to drift across CPU widths (AVX2 vs AVX-512) or thread counts.
 
 **Solution in `keisan`**:
-- `ReductionPolicy::REPRO` (`sum_repro`, `dot_repro`) executes an iterative **pairwise binary-tree reduction** over a fixed 64-element stack buffer—producing bit-identical IEEE-754 results regardless of SIMD ISA or thread count, at ~15–22 GB/s.
+- `ReductionPolicy::REPRO` (`sum_repro`, `dot_repro`) executes a recursive divide-and-conquer **pairwise binary-tree reduction** (`detail::pairwise_tree_sum` / `detail::pairwise_tree_blocks`) over 512-element blocks—producing bit-identical IEEE-754 results regardless of SIMD ISA or thread count, at ~15–22 GB/s. For strictly sequential regression baselines, `sum_deterministic` and `dot_deterministic` are provided as separate functions.
