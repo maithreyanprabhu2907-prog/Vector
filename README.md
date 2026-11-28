@@ -52,6 +52,7 @@ ctest --test-dir build --output-on-failure
 
 | Document | What it covers |
 |---|---|
+| **[CMake Setup Guide](docs/cmake_setup.md)** | `FetchContent`, `add_subdirectory`, `find_package`, OpenMP, SIMD flags, and feature macros |
 | **[API Cheatsheet](docs/cheatsheet.md)** | 1-page, color-grouped reference of every public function, type, concept, and macro |
 | **[Detailed API & Design Reference](docs/api_reference.md)** | Per-public-function reference + architectural rationale, complexity, and invariants |
 | **[Architectural Design Guide](docs/architecture.md)** | Deep dive into the 4-layer design, `VecRef` / `std::simd` lowering, aliasing, and zero-malloc patterns |
@@ -67,6 +68,6 @@ include/keisan/keisan.hpp          Single-header C++26 library
 examples/                          Runnable micro-examples (01..05)
 tests/                             CTest suite (vector_math_test, audit_math, edge_cases_test, no_intrinsics_test)
 benchmarks/                        regression_bench, benchmark, opt_compare
-docs/                              architecture.svg, cheatsheet.md, api_reference.md, architecture.md, benchmarks.md
+docs/                              architecture.svg, cmake_setup.md, cheatsheet.md, api_reference.md, architecture.md, benchmarks.md
 CMakeLists.txt                     C++26 build, CTest targets, and install/export rules
 ```
